@@ -1,0 +1,15 @@
+{
+  "expo": {
+    "name": "Orbit",
+    "slug": "orbit",
+    "scheme": "orbit",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "splash": { "image": "./assets/splash.png", "resizeMode": "contain", "backgroundColor": "#ffffff" },
+    "updates": { "enabled": true },
+    "ios": { "supportsTablet": false, "bundleIdentifier": "com.example.orbit" },
+    "android": { "package": "com.example.orbit" }
+  }
+}
+

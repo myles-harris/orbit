@@ -1,0 +1,96 @@
+// Prisma schema (draft) matching PRD
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id         String   @id @default(uuid())
+  phone      String   @unique
+  username   String   @unique
+  time_zone  String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  members    GroupMember[]
+  devices    PushDevice[]
+}
+
+enum Cadence {
+  daily
+  weekly
+}
+
+enum Role {
+  owner
+  member
+}
+
+enum CallStatus {
+  scheduled
+  active
+  ended
+}
+
+model Group {
+  id                   String        @id @default(uuid())
+  name                 String
+  owner_id             String
+  owner                User          @relation(fields: [owner_id], references: [id])
+  cadence              Cadence
+  weekly_frequency     Int?
+  call_duration_minutes Int
+  created_at           DateTime      @default(now()) @db.Timestamptz(6)
+  members              GroupMember[]
+  calls                CallSession[]
+}
+
+model GroupMember {
+  id        String  @id @default(uuid())
+  group_id  String
+  user_id   String
+  role      Role
+  joined_at DateTime @default(now()) @db.Timestamptz(6)
+
+  group Group @relation(fields: [group_id], references: [id])
+  user  User  @relation(fields: [user_id], references: [id])
+}
+
+model CallSession {
+  id          String     @id @default(uuid())
+  group_id    String
+  status      CallStatus
+  scheduled_at DateTime? @db.Timestamptz(6)
+  started_at   DateTime? @db.Timestamptz(6)
+  ends_at      DateTime? @db.Timestamptz(6)
+  ended_at     DateTime? @db.Timestamptz(6)
+  room_name    String?
+
+  group Group @relation(fields: [group_id], references: [id])
+  participants CallParticipant[]
+}
+
+model CallParticipant {
+  id       String   @id @default(uuid())
+  call_id  String
+  user_id  String
+  joined_at DateTime @default(now()) @db.Timestamptz(6)
+  left_at   DateTime? @db.Timestamptz(6)
+
+  call CallSession @relation(fields: [call_id], references: [id])
+  user User        @relation(fields: [user_id], references: [id])
+}
+
+model PushDevice {
+  id        String   @id @default(uuid())
+  user_id   String
+  token     String
+  platform  String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+
+  user User @relation(fields: [user_id], references: [id])
+}
+
