@@ -1,0 +1,27 @@
+{
+  "name": "@orbit/mobile",
+  "private": true,
+  "version": "0.1.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@orbit/shared": "*",
+    "expo": "~51.0.0",
+    "expo-notifications": "~0.28.12",
+    "expo-secure-store": "~13.0.2",
+    "@react-native-async-storage/async-storage": "^1.23.1",
+    "react": "18.2.0",
+    "react-native": "0.74.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.45",
+    "@types/react-native": "^0.73.0",
+    "typescript": "^5.5.4"
+  }
+}
+
