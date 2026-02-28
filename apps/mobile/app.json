@@ -27,7 +27,8 @@
       ]
     },
     "plugins": [
-      "expo-notifications"
+      "expo-notifications",
+      "./plugins/withTwilioVideoUpdate.js"
     ],
     "extra": {
       "eas": {
