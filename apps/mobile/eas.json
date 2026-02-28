@@ -19,6 +19,7 @@
     },
     "production": {
       "autoIncrement": true,
+      "distribution": "store",
       "ios": {
         "simulator": false
       }
@@ -27,8 +28,6 @@
   "submit": {
     "production": {
       "ios": {
-        "appleId": "your-apple-id@example.com",
-        "ascAppId": "placeholder",
         "appleTeamId": "4B85QC9P6S"
       }
     }
