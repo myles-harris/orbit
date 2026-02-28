@@ -1,3 +1,28 @@
+# Secrets & credentials
+apps/server/secrets/
+*.p8
+
+# Environment files
+.env
+apps/server/.env
+apps/mobile/.env
+
+# Dependencies
+node_modules/
+apps/server/node_modules/
+apps/mobile/node_modules/
+packages/shared/node_modules/
+
+# Build output
+apps/mobile/ios/build/
+apps/mobile/android/build/
+
+# Expo
+.expo/
+apps/mobile/.expo/
+apps/mobile/ios/
+apps/mobile/android/
+
 target/
 pom.xml.tag
 pom.xml.releaseBackup

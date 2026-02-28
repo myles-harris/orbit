@@ -7,21 +7,41 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "prebuild:shared": "cd ../../packages/shared && npm run build"
   },
   "dependencies": {
     "@orbit/shared": "*",
-    "expo": "~51.0.0",
-    "expo-notifications": "~0.28.12",
-    "expo-secure-store": "~13.0.2",
-    "@react-native-async-storage/async-storage": "^1.23.1",
-    "react": "18.2.0",
-    "react-native": "0.74.3"
+    "@react-native-async-storage/async-storage": "2.2.0",
+    "@react-navigation/bottom-tabs": "^7.8.5",
+    "@react-navigation/native": "^7.1.20",
+    "@react-navigation/stack": "^7.6.4",
+    "expo": "^54.0.0",
+    "expo-av": "~16.0.8",
+    "expo-camera": "~17.0.10",
+    "expo-clipboard": "~8.0.8",
+    "expo-constants": "~18.0.13",
+    "expo-device": "~8.0.10",
+    "expo-notifications": "~0.32.16",
+    "expo-secure-store": "~15.0.8",
+    "expo-status-bar": "~3.0.9",
+    "node-abort-controller": "^3.1.1",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "react-native-gesture-handler": "~2.28.0",
+    "react-native-safe-area-context": "~5.6.0",
+    "react-native-screens": "~4.16.0",
+    "react-native-twilio-video-webrtc": "^3.2.1"
   },
   "devDependencies": {
-    "@types/react": "^18.2.45",
-    "@types/react-native": "^0.73.0",
-    "typescript": "^5.5.4"
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
+  },
+  "expo": {
+    "doctor": {
+      "reactNativeDirectoryCheck": {
+        "exclude": ["react-native-twilio-video-webrtc"]
+      }
+    }
   }
 }
-

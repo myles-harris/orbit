@@ -5,11 +5,33 @@
     "scheme": "orbit",
     "version": "0.1.0",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
-    "splash": { "image": "./assets/splash.png", "resizeMode": "contain", "backgroundColor": "#ffffff" },
-    "updates": { "enabled": true },
-    "ios": { "supportsTablet": false, "bundleIdentifier": "com.example.orbit" },
-    "android": { "package": "com.example.orbit" }
+    "updates": {
+      "enabled": true
+    },
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.mylesharris.orbit",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Orbit needs camera access for video calls",
+        "NSMicrophoneUsageDescription": "Orbit needs microphone access for video calls",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.mylesharris.orbit",
+      "permissions": [
+        "CAMERA",
+        "RECORD_AUDIO",
+        "MODIFY_AUDIO_SETTINGS"
+      ]
+    },
+    "plugins": [
+      "expo-notifications"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "8bfe8018-2ae5-4dbb-b0d4-a9a3ed5ffe6a"
+      }
+    }
   }
 }
-
