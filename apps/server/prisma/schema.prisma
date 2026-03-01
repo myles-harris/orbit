@@ -15,8 +15,14 @@ model User {
   username   String   @unique
   time_zone  String
   created_at DateTime @default(now()) @db.Timestamptz(6)
-  members    GroupMember[]
-  devices    PushDevice[]
+
+  // Relations
+  owned_groups      Group[]           @relation("GroupOwner")
+  members           GroupMember[]
+  devices           PushDevice[]
+  call_participants CallParticipant[]
+  created_invites   Invite[]          @relation("InviteCreator")
+  used_invites      Invite[]          @relation("InviteUser")
 }
 
 enum Cadence {
@@ -36,61 +42,105 @@ enum CallStatus {
 }
 
 model Group {
-  id                   String        @id @default(uuid())
-  name                 String
-  owner_id             String
-  owner                User          @relation(fields: [owner_id], references: [id])
-  cadence              Cadence
-  weekly_frequency     Int?
-  call_duration_minutes Int
-  created_at           DateTime      @default(now()) @db.Timestamptz(6)
-  members              GroupMember[]
-  calls                CallSession[]
+  id                    String        @id @default(uuid())
+  name                  String
+  owner_id              String
+  owner                 User          @relation("GroupOwner", fields: [owner_id], references: [id])
+  cadence               Cadence
+  weekly_frequency      Int?
+  call_duration_minutes Int           @default(30)
+  created_at            DateTime      @default(now()) @db.Timestamptz(6)
+
+  // Relations
+  members GroupMember[]
+  calls   CallSession[]
+  invites Invite[]
+
+  @@index([owner_id])
 }
 
 model GroupMember {
-  id        String  @id @default(uuid())
+  id        String   @id @default(uuid())
   group_id  String
   user_id   String
   role      Role
   joined_at DateTime @default(now()) @db.Timestamptz(6)
 
-  group Group @relation(fields: [group_id], references: [id])
-  user  User  @relation(fields: [user_id], references: [id])
+  // Relations
+  group Group @relation(fields: [group_id], references: [id], onDelete: Cascade)
+  user  User  @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([group_id, user_id])
+  @@index([user_id])
+  @@index([group_id])
 }
 
 model CallSession {
-  id          String     @id @default(uuid())
-  group_id    String
-  status      CallStatus
-  scheduled_at DateTime? @db.Timestamptz(6)
-  started_at   DateTime? @db.Timestamptz(6)
-  ends_at      DateTime? @db.Timestamptz(6)
-  ended_at     DateTime? @db.Timestamptz(6)
+  id           String     @id @default(uuid())
+  group_id     String
+  status       CallStatus
+  scheduled_at DateTime?  @db.Timestamptz(6)
+  started_at   DateTime?  @db.Timestamptz(6)
+  ends_at      DateTime?  @db.Timestamptz(6)
+  ended_at     DateTime?  @db.Timestamptz(6)
   room_name    String?
+  room_url     String?
 
-  group Group @relation(fields: [group_id], references: [id])
+  // Relations
+  group        Group             @relation(fields: [group_id], references: [id], onDelete: Cascade)
   participants CallParticipant[]
+
+  @@index([group_id])
+  @@index([status])
+  @@index([scheduled_at])
 }
 
 model CallParticipant {
-  id       String   @id @default(uuid())
-  call_id  String
-  user_id  String
-  joined_at DateTime @default(now()) @db.Timestamptz(6)
+  id        String    @id @default(uuid())
+  call_id   String
+  user_id   String
+  joined_at DateTime  @default(now()) @db.Timestamptz(6)
   left_at   DateTime? @db.Timestamptz(6)
 
-  call CallSession @relation(fields: [call_id], references: [id])
-  user User        @relation(fields: [user_id], references: [id])
+  // Relations
+  call CallSession @relation(fields: [call_id], references: [id], onDelete: Cascade)
+  user User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@index([call_id])
+  @@index([user_id])
 }
 
 model PushDevice {
-  id        String   @id @default(uuid())
-  user_id   String
-  token     String
-  platform  String
+  id         String   @id @default(uuid())
+  user_id    String
+  token      String
+  platform   String
   created_at DateTime @default(now()) @db.Timestamptz(6)
 
-  user User @relation(fields: [user_id], references: [id])
+  // Relations
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([token])
+  @@index([user_id])
+}
+
+model Invite {
+  id         String   @id @default(uuid())
+  group_id   String
+  code       String   @unique
+  created_by String
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  expires_at DateTime @db.Timestamptz(6)
+  used_by    String?
+  used_at    DateTime? @db.Timestamptz(6)
+
+  // Relations
+  group   Group @relation(fields: [group_id], references: [id], onDelete: Cascade)
+  creator User  @relation("InviteCreator", fields: [created_by], references: [id])
+  user    User? @relation("InviteUser", fields: [used_by], references: [id])
+
+  @@index([group_id])
+  @@index([code])
+  @@index([expires_at])
 }
 
