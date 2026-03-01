@@ -11,11 +11,15 @@
     "prebuild:shared": "cd ../../packages/shared && npm run build"
   },
   "dependencies": {
+    "@daily-co/config-plugin-rn-daily-js": "^0.0.11",
+    "@daily-co/react-native-daily-js": "^0.83.0",
+    "@daily-co/react-native-webrtc": "^124.0.6-daily.1",
     "@orbit/shared": "*",
     "@react-native-async-storage/async-storage": "2.2.0",
     "@react-navigation/bottom-tabs": "^7.8.5",
     "@react-navigation/native": "^7.1.20",
     "@react-navigation/stack": "^7.6.4",
+    "base-64": "^1.0.0",
     "expo": "^54.0.0",
     "expo-av": "~16.0.8",
     "expo-camera": "~17.0.10",
@@ -28,10 +32,12 @@
     "node-abort-controller": "^3.1.1",
     "react": "19.1.0",
     "react-native": "0.81.5",
+    "react-native-background-timer": "^2.4.1",
     "react-native-gesture-handler": "~2.28.0",
+    "react-native-get-random-values": "^1.11.0",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
-    "react-native-twilio-video-webrtc": "^3.2.1"
+    "react-native-url-polyfill": "^1.3.0"
   },
   "devDependencies": {
     "@types/react": "~19.1.10",
@@ -40,7 +46,9 @@
   "expo": {
     "doctor": {
       "reactNativeDirectoryCheck": {
-        "exclude": ["react-native-twilio-video-webrtc"]
+        "exclude": [
+          "react-native-twilio-video-webrtc"
+        ]
       }
     }
   }

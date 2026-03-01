@@ -1,9 +1,9 @@
 # orbit
 mobile app for staying connected
-Orbit — Take5 Mobile App (Monorepo)
+Orbit — Orbit Mobile App (Monorepo)
 
 Overview
-Orbit is a mobile-first group video calling app (Take5) built as a monorepo:
+Orbit is a mobile-first group video calling app (Orbit) built as a monorepo:
 - apps/server: Node.js + Express API (PERN backend) with scheduling worker
 - apps/mobile: React Native (Expo) client for iOS/Android
 - packages/shared: Shared DTOs and lightweight API client

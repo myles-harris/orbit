@@ -1,13 +1,7 @@
 {
+  "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "target": "ES2022",
-    "module": "ES2022",
-    "jsx": "react-jsx",
-    "moduleResolution": "Node",
     "strict": true,
-    "skipLibCheck": true,
-    "types": ["react", "react-native"]
-  },
-  "include": ["**/*.ts", "**/*.tsx"]
+    "skipLibCheck": true
+  }
 }
-
