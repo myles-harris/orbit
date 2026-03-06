@@ -4,6 +4,7 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import Daily, { DailyCall, DailyParticipant, DailyEventObject } from '@daily-co/react-native-daily-js';
+import { DailyMediaView } from '@daily-co/react-native-daily-js';
 
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 
@@ -123,6 +124,7 @@ export default function CallScreen() {
   };
 
   const remoteParticipants = Object.values(participants).filter(p => !p.local);
+  const localParticipant = Object.values(participants).find(p => p.local);
 
   return (
     <View style={styles.container}>
@@ -133,11 +135,30 @@ export default function CallScreen() {
             <Text style={styles.waitingText}>Waiting for others to join...</Text>
           </View>
         ) : (
-          <Text style={styles.placeholderText}>
-            {remoteParticipants.length} participant{remoteParticipants.length !== 1 ? 's' : ''} in call
-          </Text>
+          remoteParticipants.map((participant) => (
+            <View key={participant.session_id} style={styles.participantView}>
+              <DailyMediaView
+                videoTrack={(participant.tracks.video.state === 'playable' ? participant.tracks.video.track : null) || null}
+                audioTrack={(participant.tracks.audio.state === 'playable' ? participant.tracks.audio.track : null) || null}
+                mirror={false}
+                style={styles.participantVideo}
+              />
+            </View>
+          ))
         )}
       </View>
+
+      {/* Local video (self view) */}
+      {localParticipant && (
+        <View style={styles.localVideoContainer}>
+          <DailyMediaView
+            videoTrack={(localParticipant.tracks.video.state === 'playable' ? localParticipant.tracks.video.track : null) || null}
+            audioTrack={null}
+            mirror={true}
+            style={styles.localVideo}
+          />
+        </View>
+      )}
 
       {/* Controls */}
       <View style={styles.controls}>

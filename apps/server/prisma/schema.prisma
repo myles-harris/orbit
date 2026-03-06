@@ -41,6 +41,11 @@ enum CallStatus {
   ended
 }
 
+enum CallType {
+  spontaneous
+  scheduled
+}
+
 model Group {
   id                    String        @id @default(uuid())
   name                  String
@@ -79,6 +84,7 @@ model CallSession {
   id           String     @id @default(uuid())
   group_id     String
   status       CallStatus
+  call_type    CallType   @default(spontaneous)
   scheduled_at DateTime?  @db.Timestamptz(6)
   started_at   DateTime?  @db.Timestamptz(6)
   ends_at      DateTime?  @db.Timestamptz(6)
@@ -92,6 +98,7 @@ model CallSession {
 
   @@index([group_id])
   @@index([status])
+  @@index([call_type])
   @@index([scheduled_at])
 }
 
