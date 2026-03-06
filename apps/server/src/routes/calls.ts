@@ -54,21 +54,31 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
     });
 
     if (existingCall) {
+      // Block spontaneous calls if scheduled call is active
+      if (existingCall.call_type === 'scheduled') {
+        return res.status(400).json({
+          error: 'Cannot start spontaneous call while scheduled call is active',
+          call: existingCall
+        });
+      }
       return res.status(400).json({ error: 'A call is already active for this group', call: existingCall });
     }
 
     const startedAt = new Date();
-    const endsAt = new Date(startedAt.getTime() + group.call_duration_minutes * 60 * 1000);
-    const roomName = `${groupId}_${startedAt.toISOString()}`;
+    // Spontaneous calls have no fixed end time - they stay open until all participants leave
+    const endsAt = null;
+    // Replace invalid characters (: and .) with valid ones for Daily.co room names
+    const roomName = `${groupId}_${startedAt.toISOString().replace(/[:.]/g, '-')}`;
 
-    // Create Daily.co room
-    const roomUrl = await dailyVideo.createRoom(roomName, endsAt);
+    // Create Daily.co room with no expiry (will be closed when last participant leaves)
+    const roomUrl = await dailyVideo.createRoom(roomName);
 
     // Create call session in database
     const call = await prisma.callSession.create({
       data: {
         group_id: groupId,
         status: 'active',
+        call_type: 'spontaneous',
         started_at: startedAt,
         ends_at: endsAt,
         room_name: roomName,
@@ -97,14 +107,15 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
       );
     }
 
-    console.log(`[call-now] User ${userId} started call ${call.id} for group ${groupId}`);
+    console.log(`[call-now] User ${userId} started spontaneous call ${call.id} for group ${groupId}`);
 
     res.json({
       id: call.id,
       group_id: groupId,
       status: call.status,
+      call_type: 'spontaneous',
       started_at: startedAt.toISOString(),
-      ends_at: endsAt.toISOString(),
+      ends_at: null, // Spontaneous calls have no fixed end time
       participant_count: 0,
       room_name: call.room_name
     });
@@ -339,6 +350,36 @@ callsRouter.post('/:id/calls/:callId/leave', requireJwt, async (req, res) => {
       });
 
       console.log(`[leave-call] User ${userId} left call ${callId}`);
+
+      // For spontaneous calls, check if all participants have left
+      const call = await prisma.callSession.findUnique({
+        where: { id: callId },
+        include: {
+          participants: {
+            where: {
+              left_at: null // Still in the call
+            }
+          }
+        }
+      });
+
+      if (call && call.call_type === 'spontaneous' && call.participants.length === 0) {
+        // All participants have left - close the spontaneous call
+        await prisma.callSession.update({
+          where: { id: callId },
+          data: {
+            status: 'ended',
+            ended_at: new Date()
+          }
+        });
+
+        // Delete the Daily.co room
+        if (call.room_name) {
+          await dailyVideo.deleteRoom(call.room_name);
+        }
+
+        console.log(`[leave-call] Spontaneous call ${callId} closed - all participants left`);
+      }
     }
 
     res.json({ success: true });
