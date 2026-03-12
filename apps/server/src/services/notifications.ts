@@ -79,25 +79,90 @@ export const notifications = {
   ) {
     const results = { success: 0, failure: 0 };
 
-    // Group tokens by platform
-    const iosTokens = tokens.filter(t => t.platform === 'ios').map(t => t.token);
-    const androidTokens = tokens.filter(t => t.platform === 'android').map(t => t.token);
+    // Check if tokens are Expo push tokens
+    const expoTokens = tokens.filter(t => t.token.startsWith('ExponentPushToken[')).map(t => t.token);
+    const nativeTokens = tokens.filter(t => !t.token.startsWith('ExponentPushToken['));
 
-    // Send to iOS devices
-    if (iosTokens.length > 0) {
-      const iosResults = await this.sendApns(iosTokens, title, body, data);
-      results.success += iosResults.success;
-      results.failure += iosResults.failure;
+    // Send to Expo push notification service
+    if (expoTokens.length > 0) {
+      const expoResults = await this.sendExpo(expoTokens, title, body, data);
+      results.success += expoResults.success;
+      results.failure += expoResults.failure;
     }
 
-    // Send to Android devices
-    if (androidTokens.length > 0) {
-      const androidResults = await this.sendFcm(androidTokens, title, body, data);
-      results.success += androidResults.success;
-      results.failure += androidResults.failure;
+    // Send native tokens by platform
+    if (nativeTokens.length > 0) {
+      // Group tokens by platform
+      const iosTokens = nativeTokens.filter(t => t.platform === 'ios').map(t => t.token);
+      const androidTokens = nativeTokens.filter(t => t.platform === 'android').map(t => t.token);
+
+      // Send to iOS devices
+      if (iosTokens.length > 0) {
+        const iosResults = await this.sendApns(iosTokens, title, body, data);
+        results.success += iosResults.success;
+        results.failure += iosResults.failure;
+      }
+
+      // Send to Android devices
+      if (androidTokens.length > 0) {
+        const androidResults = await this.sendFcm(androidTokens, title, body, data);
+        results.success += androidResults.success;
+        results.failure += androidResults.failure;
+      }
     }
 
     console.log(`[push] Sent notifications: ${results.success} succeeded, ${results.failure} failed`);
+    return results;
+  },
+
+  /**
+   * Send push notification via Expo Push Notification service
+   */
+  async sendExpo(
+    tokens: string[],
+    title: string,
+    body: string,
+    data?: Record<string, string>
+  ) {
+    const results = { success: 0, failure: 0 };
+
+    try {
+      const messages = tokens.map(token => ({
+        to: token,
+        sound: 'default',
+        title,
+        body,
+        data: data || {},
+      }));
+
+      const response = await fetch('https://exp.host/--/api/v2/push/send', {
+        method: 'POST',
+        headers: {
+          'Accept': 'application/json',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(messages),
+      });
+
+      const result = await response.json();
+
+      if (result.data) {
+        for (const receipt of result.data) {
+          if (receipt.status === 'ok') {
+            results.success++;
+          } else {
+            console.error(`[push] Expo push failed:`, receipt);
+            results.failure++;
+          }
+        }
+      }
+
+      console.log(`[push] Expo: sent to ${tokens.length} tokens, ${results.success} succeeded, ${results.failure} failed`);
+    } catch (error) {
+      console.error(`[push] Expo push error:`, error);
+      results.failure = tokens.length;
+    }
+
     return results;
   },
 

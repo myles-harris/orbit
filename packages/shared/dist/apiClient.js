@@ -70,4 +70,21 @@ export class ApiClient {
     async delete(path) {
         return this.request('DELETE', path);
     }
+    // User search
+    async searchUsers(query, groupId) {
+        const params = new URLSearchParams({ q: query });
+        if (groupId)
+            params.append('groupId', groupId);
+        return this.get(`/users/search?${params.toString()}`);
+    }
+    // Direct invitations
+    async inviteUserToGroup(groupId, username) {
+        return this.post(`/groups/${groupId}/invite-user`, { username });
+    }
+    async respondToInvitation(inviteId, action) {
+        return this.post(`/groups/invites/${inviteId}/respond`, { action });
+    }
+    async getMyInvitations() {
+        return this.get('/me/invitations');
+    }
 }

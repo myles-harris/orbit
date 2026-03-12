@@ -40,3 +40,71 @@ meRouter.delete('/devices/register-push', requireJwt, async (req, res) => {
   res.json({ status: 'unregistered' });
 });
 
+/**
+ * Get all pending invitations for the current user
+ */
+meRouter.get('/invitations', requireJwt, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+
+    const invitations = await prisma.invite.findMany({
+      where: {
+        invited_user_id: userId,
+        status: 'pending',
+        expires_at: {
+          gt: new Date()
+        }
+      },
+      include: {
+        group: {
+          select: {
+            id: true,
+            name: true,
+            cadence: true,
+            weekly_frequency: true,
+            call_duration_minutes: true,
+            members: {
+              select: {
+                user: {
+                  select: {
+                    username: true
+                  }
+                }
+              }
+            }
+          }
+        },
+        creator: {
+          select: {
+            id: true,
+            username: true
+          }
+        }
+      },
+      orderBy: {
+        created_at: 'desc'
+      }
+    });
+
+    res.json({
+      invitations: invitations.map(invite => ({
+        id: invite.id,
+        group: {
+          id: invite.group.id,
+          name: invite.group.name,
+          cadence: invite.group.cadence,
+          weekly_frequency: invite.group.weekly_frequency,
+          call_duration_minutes: invite.group.call_duration_minutes,
+          member_count: invite.group.members.length
+        },
+        invited_by: invite.creator.username,
+        created_at: invite.created_at.toISOString(),
+        expires_at: invite.expires_at.toISOString()
+      }))
+    });
+  } catch (error) {
+    console.error('[get-invitations] Error:', error);
+    res.status(500).json({ error: 'Failed to get invitations' });
+  }
+});
+

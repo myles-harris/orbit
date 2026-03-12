@@ -91,5 +91,49 @@ export class ApiClient {
   async delete<T>(path: string): Promise<T> {
     return this.request<T>('DELETE', path);
   }
+
+  // User search
+  async searchUsers(query: string, groupId?: string): Promise<{ users: Array<{ id: string; username: string }> }> {
+    const params = new URLSearchParams({ q: query });
+    if (groupId) params.append('groupId', groupId);
+    return this.get(`/users/search?${params.toString()}`);
+  }
+
+  // Direct invitations
+  async inviteUserToGroup(groupId: string, username: string): Promise<{
+    success: boolean;
+    invite_id: string;
+    invited_user: { id: string; username: string };
+    expires_at: string;
+  }> {
+    return this.post(`/groups/${groupId}/invite-user`, { username });
+  }
+
+  async respondToInvitation(inviteId: string, action: 'accept' | 'decline' | 'dismiss'): Promise<{
+    success: boolean;
+    action: string;
+    group?: { id: string; name: string };
+  }> {
+    return this.post(`/groups/invites/${inviteId}/respond`, { action });
+  }
+
+  async getMyInvitations(): Promise<{
+    invitations: Array<{
+      id: string;
+      group: {
+        id: string;
+        name: string;
+        cadence: string;
+        weekly_frequency: number | null;
+        call_duration_minutes: number;
+        member_count: number;
+      };
+      invited_by: string;
+      created_at: string;
+      expires_at: string;
+    }>;
+  }> {
+    return this.get('/me/invitations');
+  }
 }
 

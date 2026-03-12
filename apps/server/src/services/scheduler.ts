@@ -175,15 +175,15 @@ export const scheduler = {
     const now = new Date();
 
     try {
-      // Find all scheduled calls that should start now (within the last minute)
-      const oneMinuteAgo = new Date(now.getTime() - 60000);
-
+      // Find all scheduled calls that are due and haven't expired yet
       const dueCalls = await prisma.callSession.findMany({
         where: {
           status: 'scheduled',
           scheduled_at: {
-            gte: oneMinuteAgo,
             lte: now
+          },
+          ends_at: {
+            gt: now
           }
         },
         include: {
@@ -227,6 +227,13 @@ export const scheduler = {
       if (!call || !call.room_name) {
         console.error(`[scheduler] Call ${callId} not found or missing room name`);
         return;
+      }
+
+      // Sanitize room name - Daily.co only allows A-Z, a-z, 0-9, '-', and '_'
+      const sanitizedRoomName = call.room_name.replace(/[^A-Za-z0-9\-_]/g, '-');
+      if (sanitizedRoomName !== call.room_name) {
+        await prisma.callSession.update({ where: { id: callId }, data: { room_name: sanitizedRoomName } });
+        (call as any).room_name = sanitizedRoomName;
       }
 
       // Check for active spontaneous calls and close them first
@@ -304,14 +311,17 @@ export const scheduler = {
     const now = new Date();
 
     try {
-      // Find all active SCHEDULED calls that should have ended
-      // Spontaneous calls have ends_at = null and are closed when all participants leave
+      // Find all active SCHEDULED calls that ended more than 15 seconds ago.
+      // The 15s grace period lets clients leave via their countdown timer before
+      // the room is deleted, avoiding the "room was deleted" error.
+      const gracePeriodMs = 5 * 1000;
+      const cutoff = new Date(now.getTime() - gracePeriodMs);
       const expiredCalls = await prisma.callSession.findMany({
         where: {
           status: 'active',
           call_type: 'scheduled',
           ends_at: {
-            lte: now
+            lte: cutoff
           }
         }
       });
@@ -342,11 +352,9 @@ export const scheduler = {
         return;
       }
 
-      // Close Twilio room if it exists
+      // Delete the Daily.co room — this kicks all participants out immediately
       if (call.room_name) {
-        // Note: We'd need to get the room SID from Twilio to close it
-        // For now, we'll just update our database
-        // In production, you'd want to track the Twilio room SID
+        await dailyVideo.deleteRoom(call.room_name);
       }
 
       // Update call status to ended

@@ -14,12 +14,17 @@ type CallNavigationProp = StackNavigationProp<RootStackParamList, 'Call'>;
 export default function CallScreen() {
   const route = useRoute<CallRouteProp>();
   const navigation = useNavigation<CallNavigationProp>();
-  const { callId, groupId, roomUrl, token } = route.params;
+  const { callId, groupId, roomUrl, token, endsAt } = route.params;
 
   const callObjectRef = useRef<DailyCall | null>(null);
+  const endCallRef = useRef<(expired?: boolean) => void>(() => {});
+  const hasLeftRef = useRef(false);
   const [participants, setParticipants] = useState<{ [id: string]: DailyParticipant }>({});
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(true);
+  const [secondsLeft, setSecondsLeft] = useState<number | null>(
+    endsAt ? Math.max(0, Math.round((new Date(endsAt).getTime() - Date.now()) / 1000)) : null
+  );
 
   useEffect(() => {
     initializeCall();
@@ -30,6 +35,30 @@ export default function CallScreen() {
       }
     };
   }, []);
+
+  // Keep endCallRef current so the interval always calls the latest version
+  useEffect(() => {
+    endCallRef.current = endCall;
+  });
+
+  // Countdown timer for scheduled calls — runs the interval
+  useEffect(() => {
+    if (secondsLeft === null || secondsLeft <= 0) return;
+
+    const timer = setInterval(() => {
+      setSecondsLeft(prev => (prev !== null && prev > 0 ? prev - 1 : prev));
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [secondsLeft === null]); // only restart if endsAt appears/disappears
+
+  // Trigger leave when countdown reaches 0 — pass expired=true so the server
+  // ends the call for all remaining participants, not just this user
+  useEffect(() => {
+    if (secondsLeft === 0) {
+      endCallRef.current(true);
+    }
+  }, [secondsLeft]);
 
   const initializeCall = async () => {
     try {
@@ -87,18 +116,33 @@ export default function CallScreen() {
 
   const handleLeftMeeting = () => {
     console.log('Left meeting');
-    navigation.goBack();
+    if (!hasLeftRef.current) {
+      hasLeftRef.current = true;
+      navigation.goBack();
+    }
   };
 
   const handleError = (event: DailyEventObject<'error'>) => {
     console.error('Daily error:', event.error);
+    // Navigate back on fatal errors (e.g. room was deleted by the server)
+    if (!hasLeftRef.current) {
+      hasLeftRef.current = true;
+      navigation.goBack();
+    }
   };
 
-  const endCall = async () => {
+  const endCall = async (expired = false) => {
     try {
-      // Notify backend
       const client = await createAuthenticatedApiClient();
-      await client.post(`/groups/${groupId}/calls/${callId}/leave`, {});
+      if (expired) {
+        // Timer expired: end the call for all participants and delete the room.
+        // The server deletion will fire a left-meeting event on all clients,
+        // so navigation is handled by handleLeftMeeting.
+        await client.post(`/groups/${groupId}/calls/${callId}/end`, {});
+      } else {
+        // User manually left: just record their departure
+        await client.post(`/groups/${groupId}/calls/${callId}/leave`, {});
+      }
     } catch (error) {
       console.error('Failed to notify backend:', error);
     }
@@ -106,7 +150,6 @@ export default function CallScreen() {
     if (callObjectRef.current) {
       await callObjectRef.current.leave();
     }
-    navigation.goBack();
   };
 
   const toggleVideo = () => {
@@ -121,6 +164,12 @@ export default function CallScreen() {
       callObjectRef.current.setLocalAudio(!audioEnabled);
       setAudioEnabled(!audioEnabled);
     }
+  };
+
+  const formatTime = (secs: number) => {
+    const m = Math.floor(secs / 60).toString().padStart(2, '0');
+    const s = (secs % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
   };
 
   const remoteParticipants = Object.values(participants).filter(p => !p.local);
@@ -160,6 +209,15 @@ export default function CallScreen() {
         </View>
       )}
 
+      {/* Countdown timer for scheduled calls */}
+      {secondsLeft !== null && (
+        <View style={styles.timerContainer}>
+          <Text style={[styles.timerText, secondsLeft <= 60 && styles.timerTextUrgent]}>
+            {formatTime(secondsLeft)}
+          </Text>
+        </View>
+      )}
+
       {/* Controls */}
       <View style={styles.controls}>
         <TouchableOpacity
@@ -169,8 +227,8 @@ export default function CallScreen() {
           <Text style={styles.controlText}>{audioEnabled ? '🎤' : '🔇'}</Text>
         </TouchableOpacity>
 
-        <TouchableOpacity style={styles.endCallButton} onPress={endCall}>
-          <Text style={styles.endCallText}>End Call</Text>
+        <TouchableOpacity style={styles.endCallButton} onPress={() => endCall(false)}>
+          <Text style={styles.endCallText}>Leave Call</Text>
         </TouchableOpacity>
 
         <TouchableOpacity
@@ -263,5 +321,24 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 16,
     fontWeight: '600',
+  },
+  timerContainer: {
+    position: 'absolute',
+    bottom: 110,
+    alignSelf: 'center',
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: 16,
+    paddingVertical: 6,
+    borderRadius: 20,
+    zIndex: 10,
+  },
+  timerText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  timerTextUrgent: {
+    color: '#FF3B30',
   },
 });

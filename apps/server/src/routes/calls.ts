@@ -86,13 +86,17 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
       }
     });
 
-    // Send push notifications to all group members
-    const tokens = group.members.flatMap((m: any) =>
-      m.user.devices.map((d: any) => ({
-        token: d.token,
-        platform: d.platform as 'ios' | 'android'
-      }))
-    );
+    // Send push notifications to all group members except the caller
+    const tokens = group.members
+      .filter((m: any) => m.user_id !== userId) // Exclude the user who initiated the call
+      .flatMap((m: any) =>
+        m.user.devices.map((d: any) => ({
+          token: d.token,
+          platform: d.platform as 'ios' | 'android'
+        }))
+      );
+
+    console.log(`[call-now] Found ${tokens.length} device tokens for ${group.members.length - 1} other group members (excluding caller)`);
 
     if (tokens.length > 0) {
       await notifications.sendPushTokens(
@@ -105,6 +109,8 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
           groupId: groupId
         }
       );
+    } else {
+      console.log(`[call-now] No push tokens registered for group ${groupId}`);
     }
 
     console.log(`[call-now] User ${userId} started spontaneous call ${call.id} for group ${groupId}`);
@@ -386,5 +392,310 @@ callsRouter.post('/:id/calls/:callId/leave', requireJwt, async (req, res) => {
   } catch (error) {
     console.error('[leave-call] Error:', error);
     res.status(500).json({ error: 'Failed to record leave event' });
+  }
+});
+
+/**
+ * End an active call for all participants and delete the room
+ * Called by the client when the countdown timer reaches zero
+ */
+callsRouter.post('/:id/calls/:callId/end', requireJwt, async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    const callId = req.params.callId;
+    const userId = (req as any).userId as string;
+
+    // Verify user is a member of the group
+    const membership = await prisma.groupMember.findFirst({
+      where: { group_id: groupId, user_id: userId }
+    });
+
+    if (!membership) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    const call = await prisma.callSession.findFirst({
+      where: { id: callId, group_id: groupId, status: 'active' }
+    });
+
+    if (!call) {
+      // Already ended — idempotent success
+      return res.json({ success: true });
+    }
+
+    // Delete the Daily.co room — this kicks all remaining participants immediately
+    if (call.room_name) {
+      await dailyVideo.deleteRoom(call.room_name);
+    }
+
+    await prisma.callSession.update({
+      where: { id: callId },
+      data: { status: 'ended', ended_at: new Date() }
+    });
+
+    console.log(`[end-call] User ${userId} ended call ${callId} for group ${groupId}`);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[end-call] Error:', error);
+    res.status(500).json({ error: 'Failed to end call' });
+  }
+});
+
+/**
+ * DEV: Get all scheduled calls for a group
+ * Useful for testing and debugging
+ */
+callsRouter.get('/:id/scheduled', requireJwt, async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    const userId = (req as any).userId as string;
+
+    // Verify user is a member of the group
+    const membership = await prisma.groupMember.findFirst({
+      where: {
+        group_id: groupId,
+        user_id: userId
+      }
+    });
+
+    if (!membership) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    // Get all scheduled calls (pending, active, and past)
+    const calls = await prisma.callSession.findMany({
+      where: {
+        group_id: groupId,
+        call_type: 'scheduled'
+      },
+      orderBy: {
+        scheduled_at: 'asc'
+      }
+    });
+
+    console.log(`[get-scheduled-calls] User ${userId} fetched ${calls.length} scheduled calls for group ${groupId}`);
+
+    res.json({
+      calls: calls.map(call => ({
+        id: call.id,
+        status: call.status,
+        scheduled_at: call.scheduled_at?.toISOString(),
+        started_at: call.started_at?.toISOString(),
+        ends_at: call.ends_at?.toISOString(),
+        ended_at: call.ended_at?.toISOString(),
+        room_name: call.room_name,
+        room_url: call.room_url
+      }))
+    });
+  } catch (error) {
+    console.error('[get-scheduled-calls] Error:', error);
+    res.status(500).json({ error: 'Failed to fetch scheduled calls' });
+  }
+});
+
+/**
+ * DEV: Create a scheduled call for testing
+ * Allows developers to manually create scheduled calls
+ */
+callsRouter.post('/:id/scheduled', requireJwt, async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    const userId = (req as any).userId as string;
+    const { scheduled_at } = req.body;
+
+    if (!scheduled_at) {
+      return res.status(400).json({ error: 'scheduled_at is required (ISO 8601 format)' });
+    }
+
+    // Verify user is a member of the group
+    const membership = await prisma.groupMember.findFirst({
+      where: {
+        group_id: groupId,
+        user_id: userId
+      }
+    });
+
+    if (!membership) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    // Verify group exists
+    const group = await prisma.group.findUnique({
+      where: { id: groupId }
+    });
+
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Parse and validate scheduled time
+    const scheduledTime = new Date(scheduled_at);
+    if (isNaN(scheduledTime.getTime())) {
+      return res.status(400).json({ error: 'Invalid scheduled_at format. Use ISO 8601 format.' });
+    }
+
+    // Create scheduled call
+    const roomName = `${groupId}_${scheduledTime.toISOString().replace(/[:.]/g, '-')}`;
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: groupId,
+        status: 'scheduled',
+        call_type: 'scheduled',
+        scheduled_at: scheduledTime,
+        ends_at: new Date(scheduledTime.getTime() + group.call_duration_minutes * 60 * 1000),
+        room_name: roomName
+      }
+    });
+
+    console.log(`[create-scheduled-call] User ${userId} created scheduled call ${call.id} for group ${groupId} at ${scheduledTime.toISOString()}`);
+
+    res.json({
+      id: call.id,
+      group_id: call.group_id,
+      status: call.status,
+      call_type: call.call_type,
+      scheduled_at: call.scheduled_at?.toISOString(),
+      ends_at: call.ends_at?.toISOString()
+    });
+  } catch (error) {
+    console.error('[create-scheduled-call] Error:', error);
+    res.status(500).json({ error: 'Failed to create scheduled call' });
+  }
+});
+
+/**
+ * DEV: Update a scheduled call
+ * Allows developers to modify scheduled call times for testing
+ */
+callsRouter.patch('/:groupId/scheduled/:callId', requireJwt, async (req, res) => {
+  try {
+    const { groupId, callId } = req.params;
+    const userId = (req as any).userId as string;
+    const { scheduled_at } = req.body;
+
+    if (!scheduled_at) {
+      return res.status(400).json({ error: 'scheduled_at is required (ISO 8601 format)' });
+    }
+
+    // Verify user is a member of the group
+    const membership = await prisma.groupMember.findFirst({
+      where: {
+        group_id: groupId,
+        user_id: userId
+      }
+    });
+
+    if (!membership) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    // Verify call exists and belongs to this group
+    const call = await prisma.callSession.findFirst({
+      where: {
+        id: callId,
+        group_id: groupId,
+        call_type: 'scheduled'
+      }
+    });
+
+    if (!call) {
+      return res.status(404).json({ error: 'Scheduled call not found' });
+    }
+
+    // Can only modify scheduled calls that haven't started
+    if (call.status !== 'scheduled') {
+      return res.status(400).json({ error: 'Can only modify calls with status "scheduled"' });
+    }
+
+    // Parse and validate new scheduled time
+    const newScheduledTime = new Date(scheduled_at);
+    if (isNaN(newScheduledTime.getTime())) {
+      return res.status(400).json({ error: 'Invalid scheduled_at format. Use ISO 8601 format.' });
+    }
+
+    // Get group to calculate new ends_at
+    const group = await prisma.group.findUnique({
+      where: { id: groupId }
+    });
+
+    if (!group) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Update the call
+    const updatedCall = await prisma.callSession.update({
+      where: { id: callId },
+      data: {
+        scheduled_at: newScheduledTime,
+        ends_at: new Date(newScheduledTime.getTime() + group.call_duration_minutes * 60 * 1000)
+      }
+    });
+
+    console.log(`[update-scheduled-call] User ${userId} updated scheduled call ${callId} to ${newScheduledTime.toISOString()}`);
+
+    res.json({
+      id: updatedCall.id,
+      group_id: updatedCall.group_id,
+      status: updatedCall.status,
+      call_type: updatedCall.call_type,
+      scheduled_at: updatedCall.scheduled_at?.toISOString(),
+      ends_at: updatedCall.ends_at?.toISOString()
+    });
+  } catch (error) {
+    console.error('[update-scheduled-call] Error:', error);
+    res.status(500).json({ error: 'Failed to update scheduled call' });
+  }
+});
+
+/**
+ * DEV: Delete a scheduled call
+ * Allows developers to remove scheduled calls for testing
+ */
+callsRouter.delete('/:groupId/scheduled/:callId', requireJwt, async (req, res) => {
+  try {
+    const { groupId, callId } = req.params;
+    const userId = (req as any).userId as string;
+
+    // Verify user is a member of the group
+    const membership = await prisma.groupMember.findFirst({
+      where: {
+        group_id: groupId,
+        user_id: userId
+      }
+    });
+
+    if (!membership) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    // Verify call exists and belongs to this group
+    const call = await prisma.callSession.findFirst({
+      where: {
+        id: callId,
+        group_id: groupId,
+        call_type: 'scheduled'
+      }
+    });
+
+    if (!call) {
+      return res.status(404).json({ error: 'Scheduled call not found' });
+    }
+
+    // Can only delete scheduled calls that haven't started
+    if (call.status !== 'scheduled') {
+      return res.status(400).json({ error: 'Can only delete calls with status "scheduled"' });
+    }
+
+    // Delete the call
+    await prisma.callSession.delete({
+      where: { id: callId }
+    });
+
+    console.log(`[delete-scheduled-call] User ${userId} deleted scheduled call ${callId} from group ${groupId}`);
+
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[delete-scheduled-call] Error:', error);
+    res.status(500).json({ error: 'Failed to delete scheduled call' });
   }
 });

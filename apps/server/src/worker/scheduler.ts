@@ -35,14 +35,14 @@ export function startScheduler() {
     }
   }, 60 * 1000); // Every minute
 
-  // Check for calls that should be closed (run every minute)
+  // Check for calls that should be closed (run every 10 seconds)
   setInterval(async () => {
     try {
       await scheduler.closeExpiredCalls();
     } catch (error) {
       console.error('[scheduler] Error closing expired calls:', error);
     }
-  }, 60 * 1000); // Every minute
+  }, 10 * 1000); // Every 10 seconds
 
   console.log('[scheduler] Scheduler started successfully');
 }

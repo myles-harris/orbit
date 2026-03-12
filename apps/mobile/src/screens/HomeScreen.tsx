@@ -13,6 +13,7 @@ export default function HomeScreen() {
   const navigation = useNavigation<HomeScreenNavigationProp>();
   const [groups, setGroups] = useState<GroupDTO[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [invitationCount, setInvitationCount] = useState(0);
 
   const loadGroups = async () => {
     try {
@@ -24,9 +25,28 @@ export default function HomeScreen() {
     }
   };
 
+  const loadInvitationCount = async () => {
+    try {
+      const client = await createAuthenticatedApiClient();
+      const result = await client.getMyInvitations();
+      setInvitationCount(result.invitations.length);
+    } catch (error) {
+      console.error('Failed to load invitation count:', error);
+    }
+  };
+
   useEffect(() => {
     loadGroups();
-  }, []);
+    loadInvitationCount();
+
+    // Refresh invitations when screen comes into focus
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadInvitationCount();
+      loadGroups();
+    });
+
+    return unsubscribe;
+  }, [navigation]);
 
   const onRefresh = async () => {
     setRefreshing(true);
@@ -34,41 +54,19 @@ export default function HomeScreen() {
     setRefreshing(false);
   };
 
-  const joinWithCode = () => {
-    Alert.prompt(
-      'Join Group',
-      'Enter the invite code shared by the group owner:',
-      async (inviteCode) => {
-        if (!inviteCode || inviteCode.trim().length === 0) {
-          return;
-        }
-
-        try {
-          const client = await createAuthenticatedApiClient();
-          const code = inviteCode.trim().toUpperCase();
-
-          // First, we need to validate the invite and get the group ID
-          // We'll use a special endpoint or get all groups and search
-          // For now, let's call a validation endpoint that returns group info
-          const inviteInfo = await client.get<any>(`/groups/invites/${code}/info`);
-
-          // Now join using the group ID
-          await client.post<any>(`/groups/${inviteInfo.group_id}/join`, {
-            invite_code: code,
-          });
-
-          Alert.alert('Success', `You've joined the group!`);
-          await loadGroups(); // Refresh the list
-        } catch (error: any) {
-          Alert.alert('Error', error.message || 'Invalid invite code or already a member');
-        }
-      },
-      'plain-text'
-    );
-  };
-
   return (
     <View style={styles.container}>
+      {invitationCount > 0 && (
+        <TouchableOpacity
+          style={styles.invitationBanner}
+          onPress={() => navigation.navigate('Invitations')}
+        >
+          <Text style={styles.invitationBannerText}>
+            You have {invitationCount} pending invitation{invitationCount > 1 ? 's' : ''}
+          </Text>
+          <Text style={styles.invitationBannerArrow}>→</Text>
+        </TouchableOpacity>
+      )}
       <FlatList
         data={groups}
         keyExtractor={(item) => item.id}
@@ -92,12 +90,6 @@ export default function HomeScreen() {
         }
       />
       <TouchableOpacity
-        style={styles.joinCodeButton}
-        onPress={joinWithCode}
-      >
-        <Text style={styles.joinCodeButtonText}>Join with Code</Text>
-      </TouchableOpacity>
-      <TouchableOpacity
         style={styles.fab}
         onPress={() => navigation.navigate('CreateGroup')}
       >
@@ -111,6 +103,31 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#f5f5f5',
+  },
+  invitationBanner: {
+    backgroundColor: '#007AFF',
+    padding: 15,
+    marginHorizontal: 15,
+    marginTop: 15,
+    borderRadius: 12,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  invitationBannerText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#fff',
+  },
+  invitationBannerArrow: {
+    fontSize: 20,
+    color: '#fff',
+    fontWeight: 'bold',
   },
   groupCard: {
     backgroundColor: '#fff',
@@ -147,25 +164,6 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: '#999',
     marginTop: 5,
-  },
-  joinCodeButton: {
-    position: 'absolute',
-    left: 20,
-    bottom: 20,
-    backgroundColor: '#34C759',
-    paddingHorizontal: 20,
-    paddingVertical: 15,
-    borderRadius: 25,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 6,
-    elevation: 6,
-  },
-  joinCodeButtonText: {
-    fontSize: 16,
-    color: '#fff',
-    fontWeight: '600',
   },
   fab: {
     position: 'absolute',

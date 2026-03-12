@@ -17,6 +17,7 @@
     "ios": "expo run:ios"
   },
   "dependencies": {
+    "@daily-co/react-native-webrtc": "^124.0.6-daily.1",
     "expo": "~54.0.23",
     "react": "19.1.0",
     "react-native": "0.81.5"
