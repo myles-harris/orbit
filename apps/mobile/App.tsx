@@ -5,6 +5,7 @@ import * as Notifications from 'expo-notifications';
 import AppNavigator from './src/navigation/AppNavigator';
 import { ApiClient } from '@orbit/shared';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { navigationRef } from './src/navigation/navigationRef';
 
 import { API_URL } from './src/config';
 
@@ -52,7 +53,7 @@ function AppContent() {
       const accessToken = await SecureStore.getItemAsync('access_token');
       if (accessToken) {
         const client = new ApiClient(API_URL, () => accessToken);
-        await client.post('/devices/register-push', {
+        await client.post('/me/devices/register-push', {
           token: pushToken,
           platform: 'ios', // or 'android' based on Platform.OS
         });
@@ -78,9 +79,10 @@ function AppContent() {
       console.log('Notification tapped:', response);
       const data = response.notification.request.content.data;
 
-      if (data.type === 'call_started') {
-        // TODO: Navigate to call screen or group detail
-        console.log('Call started notification:', data);
+      if (data.type === 'call_started' && data.groupId) {
+        if (navigationRef.isReady()) {
+          navigationRef.navigate('GroupDetail', { groupId: data.groupId as string });
+        }
       }
     });
 

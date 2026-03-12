@@ -2,6 +2,7 @@ import React from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { navigationRef } from './navigationRef';
 
 // Screens
 import AuthScreen from '../screens/AuthScreen';
@@ -10,13 +11,19 @@ import GroupDetailScreen from '../screens/GroupDetailScreen';
 import CreateGroupScreen from '../screens/CreateGroupScreen';
 import CallScreen from '../screens/CallScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import InviteUserScreen from '../screens/InviteUserScreen';
+import InvitationsScreen from '../screens/InvitationsScreen';
+import GroupSettingsScreen from '../screens/GroupSettingsScreen';
 
 export type RootStackParamList = {
   Auth: undefined;
   Main: undefined;
   GroupDetail: { groupId: string };
   CreateGroup: undefined;
-  Call: { callId: string; groupId: string; roomUrl: string; token: string };
+  Call: { callId: string; groupId: string; roomUrl: string; token: string; endsAt?: string };
+  InviteUser: { groupId: string };
+  Invitations: undefined;
+  GroupSettings: { groupId: string; isOwner: boolean };
 };
 
 export type MainTabParamList = {
@@ -50,7 +57,7 @@ export default function AppNavigator({
   isAuthenticated: boolean;
 }) {
   return (
-    <NavigationContainer>
+    <NavigationContainer ref={navigationRef}>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
         {!isAuthenticated ? (
           <Stack.Screen
@@ -77,6 +84,21 @@ export default function AppNavigator({
               name="Call"
               component={CallScreen}
               options={{ headerShown: false, presentation: 'modal' }}
+            />
+            <Stack.Screen
+              name="InviteUser"
+              component={InviteUserScreen}
+              options={{ headerShown: true, title: 'Invite by Username' }}
+            />
+            <Stack.Screen
+              name="Invitations"
+              component={InvitationsScreen}
+              options={{ headerShown: true, title: 'Invitations' }}
+            />
+            <Stack.Screen
+              name="GroupSettings"
+              component={GroupSettingsScreen}
+              options={{ headerShown: true, title: 'Group Settings' }}
             />
           </>
         )}

@@ -40,7 +40,38 @@ export default function GroupDetailScreen() {
 
   useEffect(() => {
     loadGroupDetails();
-  }, [groupId]);
+
+    // Reload group details when screen comes into focus
+    const unsubscribe = navigation.addListener('focus', () => {
+      loadGroupDetails();
+    });
+
+    // Poll for active calls every 10s so scheduled calls appear automatically
+    const poll = setInterval(loadGroupDetails, 10000);
+
+    return () => {
+      unsubscribe();
+      clearInterval(poll);
+    };
+  }, [groupId, navigation]);
+
+  // Set up settings button once we have group data
+  useEffect(() => {
+    if (!group || !currentUserId) return;
+
+    const isOwner = group.owner_id === currentUserId;
+
+    navigation.setOptions({
+      headerRight: () => (
+        <TouchableOpacity
+          onPress={() => navigation.navigate('GroupSettings', { groupId, isOwner })}
+          style={{ marginRight: 15 }}
+        >
+          <Text style={{ fontSize: 18, color: '#007AFF' }}>⚙️</Text>
+        </TouchableOpacity>
+      ),
+    });
+  }, [group, currentUserId, groupId, navigation]);
 
   const startCall = async () => {
     try {
@@ -55,6 +86,7 @@ export default function GroupDetailScreen() {
         groupId,
         roomUrl: tokenData.room_url,
         token: tokenData.token,
+        endsAt: tokenData.ends_at ?? undefined,
       });
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to start call');
@@ -73,43 +105,38 @@ export default function GroupDetailScreen() {
         groupId,
         roomUrl: tokenData.room_url,
         token: tokenData.token,
+        endsAt: tokenData.ends_at ?? undefined,
       });
     } catch (error: any) {
       Alert.alert('Error', error.message || 'Failed to join call');
     }
   };
 
-  const generateInvite = async () => {
-    try {
-      const client = await createAuthenticatedApiClient();
-      const invite = await client.post<any>(`/groups/${groupId}/invite`, {});
-
-      // Copy to clipboard
-      await Clipboard.setStringAsync(invite.invite_code);
-
-      // Show share dialog
-      Alert.alert(
-        'Invite Code Generated',
-        `Share this code with others to invite them:\n\n${invite.invite_code}\n\n(Code copied to clipboard)`,
-        [
-          {
-            text: 'Share',
-            onPress: async () => {
-              try {
-                await Share.share({
-                  message: `Join my group "${group.name}" on Orbit! Use invite code: ${invite.invite_code}`,
-                });
-              } catch (error) {
-                console.error('Share failed:', error);
-              }
-            },
+  const removeMember = async (memberId: string, memberUsername: string) => {
+    Alert.alert(
+      'Remove Member',
+      `Are you sure you want to remove ${memberUsername} from the group?`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Remove',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const client = await createAuthenticatedApiClient();
+              await client.delete(`/groups/${groupId}/members/${memberId}`);
+              Alert.alert('Success', `${memberUsername} has been removed from the group`);
+              await loadGroupDetails(); // Refresh the group details
+            } catch (error: any) {
+              Alert.alert('Error', error.message || 'Failed to remove member');
+            }
           },
-          { text: 'Done', style: 'cancel' },
-        ]
-      );
-    } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to generate invite');
-    }
+        },
+      ]
+    );
   };
 
   const isOwner = group?.owner_id === currentUserId;
@@ -146,8 +173,11 @@ export default function GroupDetailScreen() {
       )}
 
       {isOwner && (
-        <TouchableOpacity style={styles.inviteButton} onPress={generateInvite}>
-          <Text style={styles.inviteButtonText}>Invite Members</Text>
+        <TouchableOpacity
+          style={styles.inviteButton}
+          onPress={() => navigation.navigate('InviteUser', { groupId })}
+        >
+          <Text style={styles.inviteButtonText}>Invite Member</Text>
         </TouchableOpacity>
       )}
 
@@ -155,9 +185,19 @@ export default function GroupDetailScreen() {
         <Text style={styles.sectionTitle}>Members ({group.member_count})</Text>
         {group.members.map((member: any) => (
           <View key={member.user_id} style={styles.memberRow}>
-            <Text style={styles.memberText}>{member.username}</Text>
-            {member.role === 'owner' && (
-              <Text style={styles.ownerBadge}>Owner</Text>
+            <View style={styles.memberInfo}>
+              <Text style={styles.memberText}>{member.username}</Text>
+              {member.role === 'owner' && (
+                <Text style={styles.ownerBadge}>Owner</Text>
+              )}
+            </View>
+            {isOwner && member.role !== 'owner' && (
+              <TouchableOpacity
+                style={styles.removeButton}
+                onPress={() => removeMember(member.user_id, member.username)}
+              >
+                <Text style={styles.removeButtonText}>Remove</Text>
+              </TouchableOpacity>
             )}
           </View>
         ))}
@@ -223,9 +263,8 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   inviteButton: {
-    backgroundColor: '#34C759',
-    marginHorizontal: 15,
-    marginBottom: 15,
+    backgroundColor: '#007AFF',
+    margin: 15,
     padding: 15,
     borderRadius: 8,
     alignItems: 'center',
@@ -251,6 +290,11 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: '#f0f0f0',
   },
+  memberInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
   memberText: {
     fontSize: 16,
   },
@@ -262,5 +306,16 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 10,
+  },
+  removeButton: {
+    backgroundColor: '#FF3B30',
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 6,
+  },
+  removeButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
