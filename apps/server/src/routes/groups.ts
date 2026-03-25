@@ -10,8 +10,9 @@ export const groupsRouter = Router();
 const createSchema = z.object({
   name: z.string(),
   cadence: z.enum(['daily', 'weekly']),
-  weekly_frequency: z.number().int().min(1).max(7).optional(),
-  call_duration_minutes: z.number().int().min(5).max(120)
+  daily_frequency: z.number().int().min(1).max(5).optional(),
+  weekly_frequency: z.number().int().min(1).max(6).optional(),
+  call_duration_minutes: z.number().int().min(2).max(120)
 });
 
 groupsRouter.post('/', requireJwt, async (req, res) => {
@@ -23,6 +24,7 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
       name: parsed.data.name,
       owner_id: userId,
       cadence: parsed.data.cadence as any,
+      daily_frequency: parsed.data.cadence === 'daily' ? (parsed.data.daily_frequency ?? 5) : null,
       weekly_frequency: parsed.data.cadence === 'weekly' ? (parsed.data.weekly_frequency ?? 1) : null,
       call_duration_minutes: parsed.data.call_duration_minutes,
       members: { create: { user_id: userId, role: 'owner' } },
@@ -34,6 +36,7 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
     name: group.name,
     owner_id: group.owner_id,
     cadence: group.cadence,
+    daily_frequency: group.daily_frequency,
     weekly_frequency: group.weekly_frequency,
     call_duration_minutes: group.call_duration_minutes,
     member_count: group.members.length,
@@ -50,8 +53,10 @@ groupsRouter.get('/', requireJwt, async (req, res) => {
     name: m.group.name,
     owner_id: m.group.owner_id,
     cadence: m.group.cadence,
+    daily_frequency: m.group.daily_frequency,
     weekly_frequency: m.group.weekly_frequency,
     call_duration_minutes: m.group.call_duration_minutes,
+    is_muted: m.is_muted,
     member_count: m.group.members.length,
     members: m.group.members.map((mm: any) => ({ user_id: mm.user_id, role: mm.role })),
     created_at: m.group.created_at,
@@ -60,6 +65,7 @@ groupsRouter.get('/', requireJwt, async (req, res) => {
 });
 
 groupsRouter.get('/:id', requireJwt, async (req, res) => {
+  const userId = (req as any).userId as string;
   const grp = await prisma.group.findUnique({
     where: { id: req.params.id },
     include: {
@@ -68,13 +74,16 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
     },
   });
   if (!grp) return res.status(404).json({ error: 'not_found' });
+  const myMembership = grp.members.find((m: any) => m.user_id === userId);
   res.json({
     id: grp.id,
     name: grp.name,
     owner_id: grp.owner_id,
     cadence: grp.cadence,
+    daily_frequency: grp.daily_frequency,
     weekly_frequency: grp.weekly_frequency,
     call_duration_minutes: grp.call_duration_minutes,
+    is_muted: myMembership?.is_muted ?? false,
     member_count: grp.members.length,
     members: grp.members.map((m: any) => ({
       user_id: m.user_id,
@@ -89,8 +98,9 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
 const patchSchema = z.object({
   name: z.string().optional(),
   cadence: z.enum(['daily', 'weekly']).optional(),
-  weekly_frequency: z.number().int().min(1).max(7).optional(),
-  call_duration_minutes: z.number().int().min(5).max(120).optional(),
+  daily_frequency: z.number().int().min(1).max(5).optional(),
+  weekly_frequency: z.number().int().min(1).max(6).optional(),
+  call_duration_minutes: z.number().int().min(2).max(120).optional(),
 });
 
 groupsRouter.patch('/:id', requireJwt, async (req, res) => {
@@ -149,6 +159,9 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       if (parsed.data.cadence !== undefined) {
         updateData.cadence = parsed.data.cadence;
       }
+      if (parsed.data.daily_frequency !== undefined) {
+        updateData.daily_frequency = parsed.data.daily_frequency;
+      }
       if (parsed.data.weekly_frequency !== undefined) {
         updateData.weekly_frequency = parsed.data.weekly_frequency;
       }
@@ -158,6 +171,7 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
     } else {
       // If non-owner tries to change owner-only fields, reject
       if (parsed.data.cadence !== undefined ||
+          parsed.data.daily_frequency !== undefined ||
           parsed.data.weekly_frequency !== undefined ||
           parsed.data.call_duration_minutes !== undefined) {
         return res.status(403).json({ error: 'Only the group owner can change frequency and duration settings' });
@@ -174,6 +188,7 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
     // If any scheduling-related field changed, cancel future scheduled calls and regenerate
     const schedulingChanged = isOwner && (
       updateData.cadence !== undefined ||
+      updateData.daily_frequency !== undefined ||
       updateData.weekly_frequency !== undefined ||
       updateData.call_duration_minutes !== undefined
     );
@@ -238,6 +253,39 @@ groupsRouter.delete('/:id', requireJwt, async (req, res) => {
   } catch (error) {
     console.error('[delete-group] Error:', error);
     res.status(500).json({ error: 'Failed to delete group' });
+  }
+});
+
+/**
+ * Mute or unmute notifications for a group (any member)
+ */
+groupsRouter.put('/:id/mute', requireJwt, async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    const userId = (req as any).userId as string;
+    const { muted } = req.body;
+
+    if (typeof muted !== 'boolean') {
+      return res.status(400).json({ error: 'muted must be a boolean' });
+    }
+
+    const membership = await prisma.groupMember.findFirst({
+      where: { group_id: groupId, user_id: userId }
+    });
+
+    if (!membership) {
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+
+    await prisma.groupMember.update({
+      where: { id: membership.id },
+      data: { is_muted: muted }
+    });
+
+    res.json({ is_muted: muted });
+  } catch (error) {
+    console.error('[mute-group] Error:', error);
+    res.status(500).json({ error: 'Failed to update mute setting' });
   }
 });
 
@@ -645,7 +693,7 @@ groupsRouter.post('/:id/invite-user', requireJwt, async (req, res) => {
     // Send push notification to invited user
     const tokens = invitedUser.devices.map(device => ({
       token: device.token,
-      platform: device.platform
+      platform: device.platform as 'ios' | 'android'
     }));
 
     if (tokens.length > 0) {
