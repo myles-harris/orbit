@@ -53,6 +53,7 @@ model Group {
   owner_id              String
   owner                 User          @relation("GroupOwner", fields: [owner_id], references: [id])
   cadence               Cadence
+  daily_frequency       Int?
   weekly_frequency      Int?
   call_duration_minutes Int           @default(30)
   created_at            DateTime      @default(now()) @db.Timestamptz(6)
@@ -70,6 +71,7 @@ model GroupMember {
   group_id  String
   user_id   String
   role      Role
+  is_muted  Boolean  @default(false)
   joined_at DateTime @default(now()) @db.Timestamptz(6)
 
   // Relations
