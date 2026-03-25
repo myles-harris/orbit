@@ -86,9 +86,9 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
       }
     });
 
-    // Send push notifications to all group members except the caller
+    // Send push notifications to all group members except the caller and muted members
     const tokens = group.members
-      .filter((m: any) => m.user_id !== userId) // Exclude the user who initiated the call
+      .filter((m: any) => m.user_id !== userId && !m.is_muted)
       .flatMap((m: any) =>
         m.user.devices.map((d: any) => ({
           token: d.token,
@@ -313,7 +313,7 @@ callsRouter.post('/:id/calls/:callId/join-token', requireJwt, async (req, res) =
     });
 
     // Generate Daily.co meeting token
-    const token = await dailyVideo.createMeetingToken(call.room_name, userId, call.ends_at);
+    const token = await dailyVideo.createMeetingToken(call.room_name, userId, call.ends_at ?? undefined);
 
     console.log(`[join-token] User ${userId} joining call ${callId}`);
 
