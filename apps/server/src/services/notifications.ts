@@ -12,9 +12,20 @@ type Platform = 'ios' | 'android';
 // Initialize Firebase Admin SDK via service account
 let firebaseApp: admin.app.App | null = null;
 
+const serviceAccountJson = process.env.GOOGLE_APPLICATION_CREDENTIALS_JSON;
 const serviceAccountPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
 
-if (serviceAccountPath) {
+if (serviceAccountJson) {
+  try {
+    const serviceAccount = JSON.parse(serviceAccountJson);
+    firebaseApp = admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount)
+    });
+    console.log('[push] Firebase Admin SDK configured for Android push notifications');
+  } catch (error) {
+    console.error('[push] Failed to initialize Firebase Admin SDK:', error);
+  }
+} else if (serviceAccountPath) {
   try {
     const serviceAccount = JSON.parse(
       readFileSync(resolve(process.cwd(), serviceAccountPath), 'utf-8')
@@ -34,14 +45,15 @@ if (serviceAccountPath) {
 let apnProvider: apn.Provider | null = null;
 const apnsKeyId = process.env.APNS_KEY_ID;
 const apnsTeamId = process.env.APNS_TEAM_ID;
+const apnsKeyContent = process.env.APNS_KEY_CONTENT;
 const apnsKeyPath = process.env.APNS_KEY_PATH;
 const apnsProduction = process.env.APNS_PRODUCTION === 'true';
 
-if (apnsKeyId && apnsTeamId && apnsKeyPath) {
+if (apnsKeyId && apnsTeamId && (apnsKeyContent || apnsKeyPath)) {
   try {
     apnProvider = new apn.Provider({
       token: {
-        key: apnsKeyPath,
+        key: apnsKeyContent ?? apnsKeyPath!,
         keyId: apnsKeyId,
         teamId: apnsTeamId
       },
