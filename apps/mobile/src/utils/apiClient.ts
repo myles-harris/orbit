@@ -2,6 +2,12 @@ import { ApiClient } from '@orbit/shared';
 import * as SecureStore from 'expo-secure-store';
 import { API_URL } from '../config';
 
+let _onSessionExpired: (() => void) | null = null;
+
+export function setSessionExpiredHandler(handler: () => void) {
+  _onSessionExpired = handler;
+}
+
 async function refreshAccessToken(): Promise<string | null> {
   try {
     const refreshToken = await SecureStore.getItemAsync('refresh_token');
@@ -31,14 +37,14 @@ export const createApiClient = () => {
 };
 
 export const createAuthenticatedApiClient = async () => {
-  // For synchronous getToken callback, we use a mutable reference
-  // that gets updated after successful token refresh
   let cachedToken = await SecureStore.getItemAsync('access_token');
 
   const refreshWithCache = async (): Promise<string | null> => {
     const newToken = await refreshAccessToken();
     if (newToken) {
-      cachedToken = newToken; // Update cache so next getToken() returns new token
+      cachedToken = newToken;
+    } else {
+      _onSessionExpired?.();
     }
     return newToken;
   };

@@ -1,168 +1,118 @@
-import React, { useState } from 'react';
-import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ScrollView } from 'react-native';
+import React, { useState, useMemo } from 'react';
+import {
+  View,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  StyleSheet,
+  Alert,
+  ScrollView,
+  KeyboardAvoidingView,
+  Platform,
+} from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
-
 import { createAuthenticatedApiClient } from '../utils/apiClient';
+import { spacing, radius } from '../theme';
+import { useTheme } from '../context/ThemeContext';
+import NumberPicker from '../components/NumberPicker';
 
 type CreateGroupNavigationProp = StackNavigationProp<RootStackParamList, 'CreateGroup'>;
 
 export default function CreateGroupScreen() {
   const navigation = useNavigation<CreateGroupNavigationProp>();
+  const { theme: { colors, typography, shadow } } = useTheme();
+  const styles = useMemo(() => makeStyles(colors, typography, shadow), [colors]);
+
   const [name, setName] = useState('');
   const [cadence, setCadence] = useState<'daily' | 'weekly'>('daily');
-  const [weeklyFrequency, setWeeklyFrequency] = useState('2');
-  const [duration, setDuration] = useState('30');
+  const [frequency, setFrequency] = useState(5);
+  const [duration, setDuration] = useState(30);
+
+  const handleCadenceChange = (value: 'daily' | 'weekly') => {
+    setCadence(value);
+    setFrequency(value === 'daily' ? 5 : 1);
+  };
 
   const createGroup = async () => {
-    if (!name.trim()) {
-      Alert.alert('Error', 'Please enter a group name');
-      return;
-    }
-
+    if (!name.trim()) { Alert.alert('Missing Name', 'Please enter a group name'); return; }
     try {
-      console.log('[CreateGroup] Starting group creation...');
-
       const client = await createAuthenticatedApiClient();
-
-      const data: any = {
-        name: name.trim(),
-        cadence,
-        call_duration_minutes: parseInt(duration),
-      };
-
-      if (cadence === 'weekly') {
-        data.weekly_frequency = parseInt(weeklyFrequency);
-      }
-
-      console.log('[CreateGroup] Sending request with data:', data);
+      const data: any = { name: name.trim(), cadence, call_duration_minutes: duration };
+      if (cadence === 'daily') data.daily_frequency = frequency;
+      else data.weekly_frequency = frequency;
       await client.post('/groups', data);
-      console.log('[CreateGroup] Group created successfully!');
-      Alert.alert('Success', 'Group created!');
       navigation.goBack();
     } catch (error: any) {
-      console.error('[CreateGroup] Error creating group:', error);
       Alert.alert('Error', error.message || 'Failed to create group');
     }
   };
 
   return (
-    <ScrollView style={styles.container}>
-      <View style={styles.form}>
-        <Text style={styles.label}>Group Name</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="Saturday Crew"
-          value={name}
-          onChangeText={setName}
-        />
+    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+      <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 
-        <Text style={styles.label}>Call Schedule</Text>
-        <View style={styles.radioGroup}>
-          <TouchableOpacity
-            style={[styles.radio, cadence === 'daily' && styles.radioSelected]}
-            onPress={() => setCadence('daily')}
-          >
-            <Text style={[styles.radioText, cadence === 'daily' && styles.radioTextSelected]}>
-              Daily
-            </Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.radio, cadence === 'weekly' && styles.radioSelected]}
-            onPress={() => setCadence('weekly')}
-          >
-            <Text style={[styles.radioText, cadence === 'weekly' && styles.radioTextSelected]}>
-              Weekly
-            </Text>
-          </TouchableOpacity>
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Group Name</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="e.g. Saturday Crew"
+            placeholderTextColor={colors.textTertiary}
+            value={name}
+            onChangeText={setName}
+          />
         </View>
 
-        {cadence === 'weekly' && (
-          <>
-            <Text style={styles.label}>Calls per Week</Text>
-            <TextInput
-              style={styles.input}
-              placeholder="2"
-              value={weeklyFrequency}
-              onChangeText={setWeeklyFrequency}
-              keyboardType="number-pad"
-            />
-          </>
-        )}
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Call Frequency</Text>
+          <View style={styles.segmentRow}>
+            <TouchableOpacity
+              style={[styles.segment, cadence === 'daily' && styles.segmentActive]}
+              onPress={() => handleCadenceChange('daily')}
+            >
+              <Text style={[styles.segmentText, cadence === 'daily' && styles.segmentTextActive]}>Daily</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.segment, cadence === 'weekly' && styles.segmentActive]}
+              onPress={() => handleCadenceChange('weekly')}
+            >
+              <Text style={[styles.segmentText, cadence === 'weekly' && styles.segmentTextActive]}>Weekly</Text>
+            </TouchableOpacity>
+          </View>
+          <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>
+            {cadence === 'daily' ? 'Calls per Day' : 'Calls per Week'}
+          </Text>
+          <NumberPicker min={1} max={cadence === 'daily' ? 5 : 6} value={frequency} onChange={setFrequency} />
+        </View>
 
-        <Text style={styles.label}>Call Duration (minutes)</Text>
-        <TextInput
-          style={styles.input}
-          placeholder="30"
-          value={duration}
-          onChangeText={setDuration}
-          keyboardType="number-pad"
-        />
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Call Duration</Text>
+          <NumberPicker min={2} max={120} value={duration} onChange={setDuration} suffix="min" />
+        </View>
 
-        <TouchableOpacity style={styles.button} onPress={createGroup}>
-          <Text style={styles.buttonText}>Create Group</Text>
+        <TouchableOpacity style={styles.createButton} onPress={createGroup} activeOpacity={0.85}>
+          <Text style={styles.createButtonText}>Create Group</Text>
         </TouchableOpacity>
-      </View>
-    </ScrollView>
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#fff',
-  },
-  form: {
-    padding: 20,
-  },
-  label: {
-    fontSize: 16,
-    fontWeight: '600',
-    marginBottom: 8,
-    marginTop: 15,
-  },
-  input: {
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    padding: 12,
-    fontSize: 16,
-  },
-  radioGroup: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  radio: {
-    flex: 1,
-    padding: 12,
-    borderWidth: 1,
-    borderColor: '#ddd',
-    borderRadius: 8,
-    alignItems: 'center',
-  },
-  radioSelected: {
-    backgroundColor: '#007AFF',
-    borderColor: '#007AFF',
-  },
-  radioText: {
-    fontSize: 16,
-    color: '#333',
-  },
-  radioTextSelected: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  button: {
-    backgroundColor: '#007AFF',
-    padding: 15,
-    borderRadius: 8,
-    alignItems: 'center',
-    marginTop: 30,
-  },
-  buttonText: {
-    color: '#fff',
-    fontSize: 16,
-    fontWeight: '600',
-  },
-});
+function makeStyles(colors: any, typography: any, shadow: any) {
+  return StyleSheet.create({
+    flex: { flex: 1, backgroundColor: colors.background },
+    container: { flex: 1 },
+    content: { padding: spacing.xl, paddingBottom: 60 },
+    card: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.xl, marginBottom: spacing.md, ...shadow.sm },
+    fieldLabel: { ...typography.captionMedium, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '600', marginBottom: spacing.sm },
+    input: { backgroundColor: colors.background, borderRadius: radius.md, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, fontSize: 16, color: colors.text },
+    segmentRow: { flexDirection: 'row', backgroundColor: colors.background, borderRadius: radius.md, padding: 3 },
+    segment: { flex: 1, paddingVertical: spacing.sm + 2, borderRadius: radius.sm, alignItems: 'center' },
+    segmentActive: { backgroundColor: colors.surface, ...shadow.sm },
+    segmentText: { ...typography.captionMedium, color: colors.textSecondary, fontWeight: '600' },
+    segmentTextActive: { color: colors.primary },
+    createButton: { backgroundColor: colors.primary, borderRadius: radius.full, paddingVertical: spacing.md + 2, alignItems: 'center', marginTop: spacing.lg, ...shadow.lg },
+    createButtonText: { ...typography.bodySemibold, color: '#fff' },
+  });
+}

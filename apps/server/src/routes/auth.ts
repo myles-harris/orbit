@@ -16,22 +16,47 @@ authRouter.post('/request-otp', async (req, res) => {
   res.json({ status: 'sent' });
 });
 
-const verifyOtpSchema = z.object({ phone: z.string(), code: z.string(), username: z.string().optional() });
+const verifyOtpSchema = z.object({ phone: z.string(), code: z.string() });
 authRouter.post('/verify-otp', async (req, res) => {
   const parsed = verifyOtpSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
-  const { phone, code, username } = parsed.data;
+  const { phone, code } = parsed.data;
   const verified = await twilioVerify.verifyOtp(phone, code);
   if (!verified) return res.status(401).json({ error: 'invalid_code' });
 
-  const created = await prisma.user.upsert({
-    where: { phone },
-    update: { username: username ?? undefined },
-    create: { phone, username: username ?? `user_${phone.slice(-4)}`, time_zone: 'UTC' },
-  });
+  const existing = await prisma.user.findUnique({ where: { phone } });
 
-  const tokens = issueAccessAndRefreshTokens({ userId: created.id });
-  res.json({ user: { id: created.id, phone: created.phone, username: created.username, time_zone: created.time_zone, created_at: created.created_at }, ...tokens });
+  if (!existing) {
+    // New user — issue a short-lived signup token; account created after username is chosen
+    const signup_token = jwt.sign({ type: 'signup', phone }, process.env.JWT_SECRET || 'dev', { expiresIn: 600 });
+    return res.json({ is_new_user: true, signup_token });
+  }
+
+  const tokens = issueAccessAndRefreshTokens({ userId: existing.id });
+  res.json({ user: { id: existing.id, phone: existing.phone, username: existing.username, time_zone: existing.time_zone, created_at: existing.created_at }, is_new_user: false, ...tokens });
+});
+
+const completeSignupSchema = z.object({ signup_token: z.string(), username: z.string().min(1) });
+authRouter.post('/complete-signup', async (req, res) => {
+  const parsed = completeSignupSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  const { signup_token, username } = parsed.data;
+
+  let phone: string;
+  try {
+    const decoded = jwt.verify(signup_token, process.env.JWT_SECRET || 'dev') as jwt.JwtPayload;
+    if (decoded.type !== 'signup' || !decoded.phone) return res.status(401).json({ error: 'invalid_token' });
+    phone = decoded.phone;
+  } catch {
+    return res.status(401).json({ error: 'invalid_token' });
+  }
+
+  const existing = await prisma.user.findUnique({ where: { username } });
+  if (existing) return res.status(409).json({ error: 'username_taken' });
+
+  const user = await prisma.user.create({ data: { phone, username, time_zone: 'UTC' } });
+  const tokens = issueAccessAndRefreshTokens({ userId: user.id });
+  res.json({ user: { id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at }, ...tokens });
 });
 
 const refreshSchema = z.object({ refresh_token: z.string() });

@@ -276,13 +276,15 @@ export const scheduler = {
         }
       });
 
-      // Send push notifications to all group members
-      const tokens = group.members.flatMap((member: any) =>
-        member.user.devices.map((device: any) => ({
-          token: device.token,
-          platform: device.platform
-        }))
-      );
+      // Send push notifications to all non-muted group members
+      const tokens = group.members
+        .filter((member: any) => !member.is_muted)
+        .flatMap((member: any) =>
+          member.user.devices.map((device: any) => ({
+            token: device.token,
+            platform: device.platform
+          }))
+        );
 
       if (tokens.length > 0) {
         await notifications.sendPushTokens(

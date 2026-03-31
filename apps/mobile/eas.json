@@ -15,6 +15,9 @@
       "distribution": "internal",
       "ios": {
         "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://orbitserver-production.up.railway.app"
       }
     },
     "production": {
@@ -22,6 +25,9 @@
       "distribution": "store",
       "ios": {
         "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://orbitserver-production.up.railway.app"
       }
     }
   },

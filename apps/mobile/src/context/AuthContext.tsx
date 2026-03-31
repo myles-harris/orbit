@@ -1,5 +1,8 @@
-import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
+import { setSessionExpiredHandler, API_URL } from '../utils/apiClient';
+import { ApiClient } from '@orbit/shared';
 
 interface AuthContextType {
   isAuthenticated: boolean;
@@ -13,6 +16,7 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const sessionExpiredShown = useRef(false);
 
   useEffect(() => {
     checkAuth();
@@ -30,8 +34,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
-  const onLogin = () => setIsAuthenticated(true);
-  const onLogout = () => setIsAuthenticated(false);
+  const onLogin = () => {
+    sessionExpiredShown.current = false;
+    setIsAuthenticated(true);
+  };
+
+  const onLogout = async () => {
+    try {
+      const [accessToken, pushToken] = await Promise.all([
+        SecureStore.getItemAsync('access_token'),
+        SecureStore.getItemAsync('push_token'),
+      ]);
+      if (accessToken && pushToken) {
+        const client = new ApiClient(API_URL, () => accessToken);
+        await client.delete(`/me/devices/register-push?token=${encodeURIComponent(pushToken)}`);
+      }
+    } catch (error) {
+      console.error('Failed to deregister push token:', error);
+    }
+    await Promise.all([
+      SecureStore.deleteItemAsync('access_token').catch(() => {}),
+      SecureStore.deleteItemAsync('refresh_token').catch(() => {}),
+      SecureStore.deleteItemAsync('push_token').catch(() => {}),
+    ]);
+    setIsAuthenticated(false);
+  };
+
+  useEffect(() => {
+    setSessionExpiredHandler(() => {
+      if (sessionExpiredShown.current) return;
+      sessionExpiredShown.current = true;
+      Alert.alert(
+        'Session Expired',
+        'Your session has expired. Please log in again.',
+        [{ text: 'OK', onPress: onLogout }]
+      );
+    });
+  }, []);
 
   return (
     <AuthContext.Provider value={{ isAuthenticated, isLoading, onLogin, onLogout }}>

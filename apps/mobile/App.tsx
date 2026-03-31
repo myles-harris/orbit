@@ -2,9 +2,22 @@ import React, { useEffect } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import * as Notifications from 'expo-notifications';
+import {
+  useFonts,
+  Roboto_400Regular,
+  Roboto_500Medium,
+  Roboto_700Bold,
+} from '@expo-google-fonts/roboto';
+import {
+  RobotoMono_400Regular,
+  RobotoMono_500Medium,
+  RobotoMono_700Bold,
+} from '@expo-google-fonts/roboto-mono';
+import { Chango_400Regular } from '@expo-google-fonts/chango';
 import AppNavigator from './src/navigation/AppNavigator';
 import { ApiClient } from '@orbit/shared';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { navigationRef } from './src/navigation/navigationRef';
 
 import { API_URL } from './src/config';
@@ -57,6 +70,7 @@ function AppContent() {
           token: pushToken,
           platform: 'ios', // or 'android' based on Platform.OS
         });
+        await SecureStore.setItemAsync('push_token', pushToken);
         console.log('Push token registered with backend');
       }
     } catch (error) {
@@ -89,22 +103,40 @@ function AppContent() {
     return () => subscription.remove();
   }, []);
 
+  const { mode } = useTheme();
+
   if (isLoading) {
     return null; // Or a splash screen
   }
 
   return (
     <>
-      <StatusBar style="auto" />
+      <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
       <AppNavigator isAuthenticated={isAuthenticated} />
     </>
   );
 }
 
 export default function App() {
+  const [fontsLoaded] = useFonts({
+    Roboto_400Regular,
+    Roboto_500Medium,
+    Roboto_700Bold,
+    RobotoMono_400Regular,
+    RobotoMono_500Medium,
+    RobotoMono_700Bold,
+    Chango_400Regular,
+  });
+
+  if (!fontsLoaded) {
+    return null;
+  }
+
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <ThemeProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </ThemeProvider>
   );
 }

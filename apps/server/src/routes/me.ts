@@ -12,7 +12,7 @@ meRouter.get('/', requireJwt, async (req, res) => {
   res.json({ id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at });
 });
 
-const patchSchema = z.object({ username: z.string().optional(), time_zone: z.string().optional() });
+const patchSchema = z.object({ username: z.string().min(1).optional(), time_zone: z.string().optional() });
 meRouter.patch('/', requireJwt, async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
