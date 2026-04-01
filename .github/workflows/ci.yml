@@ -48,6 +48,7 @@ jobs:
         with:
           node-version: 20
       - run: npm ci
+      - run: npm run prisma:generate -w apps/server
       - run: npm run build -w apps/server
 
   # ─── Mobile Typecheck ──────────────────────────────────────────
