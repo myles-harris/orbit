@@ -1,5 +1,5 @@
 import { PrismaClient, Cadence, CallStatus } from '@prisma/client';
-import { dailyVideo } from './dailyVideo.js';
+import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
 
 const prisma = new PrismaClient();
@@ -153,8 +153,7 @@ export const scheduler = {
     const endsAt = new Date(scheduledAt);
     endsAt.setMinutes(endsAt.getMinutes() + group.call_duration_minutes);
 
-    // Replace invalid characters (: and .) with valid ones for Daily.co room names
-    const roomName = `${groupId}_${scheduledAt.toISOString().replace(/[:.]/g, '-')}`;
+    const roomName = buildRoomName(groupId, scheduledAt);
 
     await prisma.callSession.create({
       data: {
