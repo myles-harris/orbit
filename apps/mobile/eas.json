@@ -20,6 +20,15 @@
         "EXPO_PUBLIC_API_BASE": "https://orbitserver-production.up.railway.app"
       }
     },
+    "staging": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_API_BASE": "https://orbitserver-staging.up.railway.app"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "distribution": "store",

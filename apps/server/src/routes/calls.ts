@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { requireJwt } from '../util/requireJwt.js';
-import { dailyVideo } from '../services/dailyVideo.js';
+import { dailyVideo, buildRoomName } from '../services/dailyVideo.js';
 import { prisma } from '../db/prisma.js';
 import { notifications } from '../services/notifications.js';
 
@@ -67,8 +67,7 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
     const startedAt = new Date();
     // Spontaneous calls have no fixed end time - they stay open until all participants leave
     const endsAt = null;
-    // Replace invalid characters (: and .) with valid ones for Daily.co room names
-    const roomName = `${groupId}_${startedAt.toISOString().replace(/[:.]/g, '-')}`;
+    const roomName = buildRoomName(groupId, startedAt);
 
     // Create Daily.co room with no expiry (will be closed when last participant leaves)
     const roomUrl = await dailyVideo.createRoom(roomName);
@@ -535,7 +534,7 @@ callsRouter.post('/:id/scheduled', requireJwt, async (req, res) => {
     }
 
     // Create scheduled call
-    const roomName = `${groupId}_${scheduledTime.toISOString().replace(/[:.]/g, '-')}`;
+    const roomName = buildRoomName(groupId, scheduledTime);
     const call = await prisma.callSession.create({
       data: {
         group_id: groupId,

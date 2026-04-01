@@ -213,7 +213,7 @@ export default function CallScreen() {
         videoTrack={(p.tracks.video.state === 'playable' ? p.tracks.video.track : null) || null}
         audioTrack={(p.tracks.audio.state === 'playable' ? p.tracks.audio.track : null) || null}
         mirror={false}
-        style={StyleSheet.absoluteFill}
+        style={StyleSheet.absoluteFillObject}
       />
     </View>
   );

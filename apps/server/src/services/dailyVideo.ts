@@ -3,6 +3,17 @@ import DailyIframe from '@daily-co/daily-js';
 const DAILY_API_KEY = process.env.DAILY_API_KEY;
 const DAILY_DOMAIN = process.env.DAILY_DOMAIN || 'orbit-calls.daily.co';
 
+// Prefix non-production room names so staging/dev rooms are identifiable in the Daily.co dashboard
+const ROOM_ENV_PREFIX = process.env.NODE_ENV === 'production' ? '' : `${process.env.NODE_ENV || 'dev'}-`;
+
+/**
+ * Build a Daily.co room name for a call, scoped by environment.
+ * Staging rooms appear as e.g. "staging-<groupId>_<timestamp>" in the dashboard.
+ */
+export function buildRoomName(groupId: string, date: Date): string {
+  return `${ROOM_ENV_PREFIX}${groupId}_${date.toISOString().replace(/[:.]/g, '-')}`;
+}
+
 interface DailyRoomProperties {
   max_participants?: number;
   enable_screenshare?: boolean;
