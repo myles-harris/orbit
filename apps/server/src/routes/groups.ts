@@ -18,81 +18,96 @@ const createSchema = z.object({
 groupsRouter.post('/', requireJwt, async (req, res) => {
   const parsed = createSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
-  const userId = (req as any).userId as string;
-  const group = await prisma.group.create({
-    data: {
-      name: parsed.data.name,
-      owner_id: userId,
-      cadence: parsed.data.cadence as any,
-      daily_frequency: parsed.data.cadence === 'daily' ? (parsed.data.daily_frequency ?? 5) : null,
-      weekly_frequency: parsed.data.cadence === 'weekly' ? (parsed.data.weekly_frequency ?? 1) : null,
-      call_duration_minutes: parsed.data.call_duration_minutes,
-      members: { create: { user_id: userId, role: 'owner' } },
-    },
-    include: { members: true },
-  });
-  res.status(201).json({
-    id: group.id,
-    name: group.name,
-    owner_id: group.owner_id,
-    cadence: group.cadence,
-    daily_frequency: group.daily_frequency,
-    weekly_frequency: group.weekly_frequency,
-    call_duration_minutes: group.call_duration_minutes,
-    member_count: group.members.length,
-    members: group.members.map((m: any) => ({ user_id: m.user_id, role: m.role })),
-    created_at: group.created_at,
-  });
+  try {
+    const userId = (req as any).userId as string;
+    const group = await prisma.group.create({
+      data: {
+        name: parsed.data.name,
+        owner_id: userId,
+        cadence: parsed.data.cadence as any,
+        daily_frequency: parsed.data.cadence === 'daily' ? (parsed.data.daily_frequency ?? 5) : null,
+        weekly_frequency: parsed.data.cadence === 'weekly' ? (parsed.data.weekly_frequency ?? 1) : null,
+        call_duration_minutes: parsed.data.call_duration_minutes,
+        members: { create: { user_id: userId, role: 'owner' } },
+      },
+      include: { members: true },
+    });
+    res.status(201).json({
+      id: group.id,
+      name: group.name,
+      owner_id: group.owner_id,
+      cadence: group.cadence,
+      daily_frequency: group.daily_frequency,
+      weekly_frequency: group.weekly_frequency,
+      call_duration_minutes: group.call_duration_minutes,
+      member_count: group.members.length,
+      members: group.members.map((m: any) => ({ user_id: m.user_id, role: m.role })),
+      created_at: group.created_at,
+    });
+  } catch (error) {
+    console.error('[POST /groups] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
 });
 
 groupsRouter.get('/', requireJwt, async (req, res) => {
-  const userId = (req as any).userId as string;
-  const memberships = await prisma.groupMember.findMany({ where: { user_id: userId }, include: { group: { include: { members: true } } } });
-  const groups = memberships.map((m: any) => ({
-    id: m.group.id,
-    name: m.group.name,
-    owner_id: m.group.owner_id,
-    cadence: m.group.cadence,
-    daily_frequency: m.group.daily_frequency,
-    weekly_frequency: m.group.weekly_frequency,
-    call_duration_minutes: m.group.call_duration_minutes,
-    is_muted: m.is_muted,
-    member_count: m.group.members.length,
-    members: m.group.members.map((mm: any) => ({ user_id: mm.user_id, role: mm.role })),
-    created_at: m.group.created_at,
-  }));
-  res.json({ groups });
+  try {
+    const userId = (req as any).userId as string;
+    const memberships = await prisma.groupMember.findMany({ where: { user_id: userId }, include: { group: { include: { members: true } } } });
+    const groups = memberships.map((m: any) => ({
+      id: m.group.id,
+      name: m.group.name,
+      owner_id: m.group.owner_id,
+      cadence: m.group.cadence,
+      daily_frequency: m.group.daily_frequency,
+      weekly_frequency: m.group.weekly_frequency,
+      call_duration_minutes: m.group.call_duration_minutes,
+      is_muted: m.is_muted,
+      member_count: m.group.members.length,
+      members: m.group.members.map((mm: any) => ({ user_id: mm.user_id, role: mm.role })),
+      created_at: m.group.created_at,
+    }));
+    res.json({ groups });
+  } catch (error) {
+    console.error('[GET /groups] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
 });
 
 groupsRouter.get('/:id', requireJwt, async (req, res) => {
-  const userId = (req as any).userId as string;
-  const grp = await prisma.group.findUnique({
-    where: { id: req.params.id },
-    include: {
-      members: { include: { user: { select: { id: true, username: true } } } },
-      calls: { orderBy: { started_at: 'desc' }, take: 1 },
-    },
-  });
-  if (!grp) return res.status(404).json({ error: 'not_found' });
-  const myMembership = grp.members.find((m: any) => m.user_id === userId);
-  res.json({
-    id: grp.id,
-    name: grp.name,
-    owner_id: grp.owner_id,
-    cadence: grp.cadence,
-    daily_frequency: grp.daily_frequency,
-    weekly_frequency: grp.weekly_frequency,
-    call_duration_minutes: grp.call_duration_minutes,
-    is_muted: myMembership?.is_muted ?? false,
-    member_count: grp.members.length,
-    members: grp.members.map((m: any) => ({
-      user_id: m.user_id,
-      username: m.user.username,
-      role: m.user_id === grp.owner_id ? 'owner' : 'member'
-    })),
-    last_call: grp.calls[0] ? { id: grp.calls[0].id, ended_at: grp.calls[0].ended_at?.toISOString?.() ?? '' } : null,
-    created_at: grp.created_at,
-  });
+  try {
+    const userId = (req as any).userId as string;
+    const grp = await prisma.group.findUnique({
+      where: { id: req.params.id },
+      include: {
+        members: { include: { user: { select: { id: true, username: true } } } },
+        calls: { orderBy: { started_at: 'desc' }, take: 1 },
+      },
+    });
+    if (!grp) return res.status(404).json({ error: 'not_found' });
+    const myMembership = grp.members.find((m: any) => m.user_id === userId);
+    res.json({
+      id: grp.id,
+      name: grp.name,
+      owner_id: grp.owner_id,
+      cadence: grp.cadence,
+      daily_frequency: grp.daily_frequency,
+      weekly_frequency: grp.weekly_frequency,
+      call_duration_minutes: grp.call_duration_minutes,
+      is_muted: myMembership?.is_muted ?? false,
+      member_count: grp.members.length,
+      members: grp.members.map((m: any) => ({
+        user_id: m.user_id,
+        username: m.user.username,
+        role: m.user_id === grp.owner_id ? 'owner' : 'member'
+      })),
+      last_call: grp.calls[0] ? { id: grp.calls[0].id, ended_at: grp.calls[0].ended_at?.toISOString?.() ?? '' } : null,
+      created_at: grp.created_at,
+    });
+  } catch (error) {
+    console.error('[GET /groups/:id] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
 });
 
 const patchSchema = z.object({
@@ -106,11 +121,16 @@ const patchSchema = z.object({
 groupsRouter.patch('/:id', requireJwt, async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
-  const updated = await prisma.group.update({
-    where: { id: req.params.id },
-    data: parsed.data as any,
-  });
-  res.json({ id: updated.id, ...parsed.data });
+  try {
+    const updated = await prisma.group.update({
+      where: { id: req.params.id },
+      data: parsed.data as any,
+    });
+    res.json({ id: updated.id, ...parsed.data });
+  } catch (error) {
+    console.error('[PATCH /groups/:id] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
 });
 
 groupsRouter.put('/:id', requireJwt, async (req, res) => {

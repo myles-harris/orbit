@@ -204,10 +204,12 @@ export default function HomeScreen() {
   const [colorPrefs, setColorPrefs] = useState<Record<string, number | null>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterTab>('All');
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const styles = useMemo(() => makeStyles(colors, shadow), [colors]);
 
   const loadData = async () => {
+    setLoadError(null);
     try {
       const client = await createAuthenticatedApiClient();
       const [groupsRes, invitationsRes] = await Promise.all([
@@ -223,6 +225,7 @@ export default function HomeScreen() {
       setColorPrefs(await getGroupColorIndices(allIds));
     } catch (error) {
       console.error('Failed to load data:', error);
+      setLoadError("Couldn't load your groups. Pull down to retry.");
     }
   };
 
@@ -294,7 +297,15 @@ export default function HomeScreen() {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
         }
       >
-        {isEmpty ? (
+        {loadError && isEmpty ? (
+          <View style={styles.empty}>
+            <View style={styles.emptyIconContainer}>
+              <Ionicons name="cloud-offline-outline" size={48} color={colors.textTertiary} />
+            </View>
+            <Text style={styles.emptyTitle}>Couldn't load groups</Text>
+            <Text style={styles.emptySubtitle}>{loadError}</Text>
+          </View>
+        ) : isEmpty ? (
           <View style={styles.empty}>
             <View style={styles.emptyIconContainer}>{emptyIcon}</View>
             <Text style={styles.emptyTitle}>{emptyMessage.title}</Text>
