@@ -11,12 +11,14 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { UserDTO } from '@orbit/shared';
 import { useAuth } from '../context/AuthContext';
+import { useTutorial } from '../context/TutorialContext';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 
 export default function SettingsScreen() {
   const { onLogout } = useAuth();
+  const { showTutorial } = useTutorial();
   const { theme: { colors, shadow }, mode, toggleTheme } = useTheme();
   const [user, setUser] = useState<UserDTO | null>(null);
 
@@ -122,6 +124,10 @@ export default function SettingsScreen() {
       <View style={styles.section}>
         <Text style={styles.sectionLabel}>About</Text>
         <View style={styles.card}>
+          <TouchableOpacity style={styles.row} onPress={showTutorial} activeOpacity={0.75}>
+            <Text style={styles.rowLabel}>How it works</Text>
+            <Ionicons name="chevron-forward" size={16} color={colors.textTertiary} />
+          </TouchableOpacity>
           <View style={styles.row}>
             <Text style={styles.rowLabel}>App</Text>
             <Text style={styles.rowValue}>Orbit</Text>

@@ -18,6 +18,8 @@ import AppNavigator from './src/navigation/AppNavigator';
 import { ApiClient } from '@orbit/shared';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
+import { TutorialProvider } from './src/context/TutorialContext';
+import TutorialModal from './src/components/TutorialModal';
 import { navigationRef } from './src/navigation/navigationRef';
 
 import { API_URL } from './src/config';
@@ -113,6 +115,7 @@ function AppContent() {
     <>
       <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
       <AppNavigator isAuthenticated={isAuthenticated} />
+      <TutorialModal />
     </>
   );
 }
@@ -135,7 +138,9 @@ export default function App() {
   return (
     <ThemeProvider>
       <AuthProvider>
-        <AppContent />
+        <TutorialProvider>
+          <AppContent />
+        </TutorialProvider>
       </AuthProvider>
     </ThemeProvider>
   );
