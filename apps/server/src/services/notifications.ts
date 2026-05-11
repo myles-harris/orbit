@@ -6,6 +6,7 @@ import twilio from 'twilio';
 import admin from 'firebase-admin';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
+import { prisma } from '../db/prisma.js';
 
 type Platform = 'ios' | 'android';
 
@@ -193,6 +194,7 @@ export const notifications = {
     }
 
     const results = { success: 0, failure: 0 };
+    const staleTokens: string[] = [];
 
     const notification = new apn.Notification({
       alert: {
@@ -210,7 +212,11 @@ export const notifications = {
         const result = await apnProvider.send(notification, token);
 
         if (result.failed.length > 0) {
-          console.error(`[push] APNs failed for token ${token}:`, result.failed[0].response);
+          const reason = result.failed[0].response?.reason;
+          console.error(`[push] APNs failed for token ${token}: ${reason}`);
+          if (reason === 'BadDeviceToken' || reason === 'Unregistered') {
+            staleTokens.push(token);
+          }
           results.failure++;
         } else {
           results.success++;
@@ -219,6 +225,11 @@ export const notifications = {
         console.error(`[push] APNs error for token ${token}:`, error);
         results.failure++;
       }
+    }
+
+    if (staleTokens.length > 0) {
+      console.log(`[push] Removing ${staleTokens.length} stale APNs token(s) from DB`);
+      await prisma.pushDevice.deleteMany({ where: { token: { in: staleTokens } } });
     }
 
     return results;
@@ -239,6 +250,7 @@ export const notifications = {
     }
 
     const results = { success: 0, failure: 0 };
+    const staleTokens: string[] = [];
 
     for (const token of tokens) {
       try {
@@ -252,13 +264,87 @@ export const notifications = {
           }
         });
         results.success++;
-      } catch (error) {
-        console.error(`[push] FCM error for token ${token}:`, error);
+      } catch (error: any) {
+        console.error(`[push] FCM error for token ${token}:`, error?.code ?? error);
+        const staleErrorCodes = [
+          'messaging/registration-token-not-registered',
+          'messaging/invalid-registration-token',
+        ];
+        if (staleErrorCodes.includes(error?.code)) {
+          staleTokens.push(token);
+        }
         results.failure++;
       }
     }
 
+    if (staleTokens.length > 0) {
+      console.log(`[push] Removing ${staleTokens.length} stale FCM token(s) from DB`);
+      await prisma.pushDevice.deleteMany({ where: { token: { in: staleTokens } } });
+    }
+
     return results;
+  },
+
+  /**
+   * Send a silent (data-only) push to all devices — used to signal call end so
+   * clients can dismiss Live Activities and ongoing notifications.
+   * No alert is shown; the app wakes in the background to handle the payload.
+   */
+  async sendSilentPushTokens(
+    tokens: { token: string; platform: Platform }[],
+    data: Record<string, string>
+  ) {
+    if (tokens.length === 0) return;
+
+    const expoTokens = tokens.filter(t => t.token.startsWith('ExponentPushToken[')).map(t => t.token);
+    const nativeTokens = tokens.filter(t => !t.token.startsWith('ExponentPushToken['));
+
+    if (expoTokens.length > 0) {
+      try {
+        const messages = expoTokens.map(token => ({
+          to: token,
+          _contentAvailable: true,
+          priority: 'normal',
+          data,
+        }));
+        await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify(messages),
+        });
+      } catch (error) {
+        console.error('[push] Silent push (Expo) error:', error);
+      }
+    }
+
+    const iosNativeTokens = nativeTokens.filter(t => t.platform === 'ios').map(t => t.token);
+    if (iosNativeTokens.length > 0) {
+      if (apnProvider) {
+        const notification = new apn.Notification();
+        notification.contentAvailable = 1;
+        notification.priority = 5; // silent pushes must use priority 5
+        notification.topic = process.env.APNS_BUNDLE_ID || 'com.orbit.app';
+        notification.payload = data;
+        for (const token of iosNativeTokens) {
+          try { await apnProvider.send(notification, token); } catch {}
+        }
+      } else {
+        console.log(`[push] STUB: Would send silent APNs to ${iosNativeTokens.length} token(s)`);
+      }
+    }
+
+    const androidNativeTokens = nativeTokens.filter(t => t.platform === 'android').map(t => t.token);
+    for (const token of androidNativeTokens) {
+      if (firebaseApp) {
+        try {
+          await admin.messaging(firebaseApp).send({ token, data, android: { priority: 'normal' } });
+        } catch {}
+      } else {
+        console.log(`[push] STUB: Would send silent FCM to token`);
+      }
+    }
+
+    console.log(`[push] Sent silent push to ${tokens.length} device(s)`);
   },
 
   /**

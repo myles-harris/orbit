@@ -259,6 +259,18 @@ export const scheduler = {
           await dailyVideo.deleteRoom(activeSpontaneousCall.room_name);
         }
 
+        // Notify members to dismiss Live Activities / ongoing notifications for the spontaneous call
+        const spontaneousTokens = group.members.flatMap((m: any) =>
+          m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
+        );
+        if (spontaneousTokens.length > 0) {
+          await notifications.sendSilentPushTokens(spontaneousTokens, {
+            type: 'call_ended',
+            callId: activeSpontaneousCall.id,
+            groupId: group.id,
+          });
+        }
+
         console.log(`[scheduler] Closed spontaneous call ${activeSpontaneousCall.id} to make way for scheduled call`);
       }
 
@@ -293,7 +305,10 @@ export const scheduler = {
           {
             type: 'call_started',
             callId: callId,
-            groupId: group.id
+            groupId: group.id,
+            callType: 'scheduled',
+            groupName: group.name,
+            endsAt: call.ends_at?.toISOString() ?? '',
           }
         );
       }
@@ -366,6 +381,24 @@ export const scheduler = {
           ended_at: new Date()
         }
       });
+
+      // Notify all group members to dismiss Live Activities / ongoing notifications
+      const groupWithDevices = await prisma.group.findUnique({
+        where: { id: call.group_id },
+        include: { members: { include: { user: { include: { devices: true } } } } }
+      });
+      if (groupWithDevices) {
+        const allTokens = groupWithDevices.members.flatMap((m: any) =>
+          m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
+        );
+        if (allTokens.length > 0) {
+          await notifications.sendSilentPushTokens(allTokens, {
+            type: 'call_ended',
+            callId,
+            groupId: call.group_id,
+          });
+        }
+      }
 
       console.log(`[scheduler] Closed call ${callId}`);
     } catch (error) {

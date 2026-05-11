@@ -17,7 +17,9 @@
         "NSCameraUsageDescription": "Orbit needs camera access for video calls",
         "NSMicrophoneUsageDescription": "Orbit needs microphone access for video calls",
         "ITSAppUsesNonExemptEncryption": false,
-        "UIBackgroundModes": ["voip"]
+        "UIBackgroundModes": ["voip"],
+        "NSSupportsLiveActivities": true,
+        "NSSupportsLiveActivitiesFrequentUpdates": true
       }
     },
     "android": {
