@@ -495,17 +495,13 @@ describe('Users endpoints', () => {
       expect(res.body.users.find((u: any) => u.id === user.id)).toBeUndefined();
     });
 
-    it('excludes current group members and pending invitees when groupId is provided', async () => {
+    it('returns status field for group members and pending invitees when groupId is provided', async () => {
       const { user: owner, token: ownerToken } = await createTestUserWithToken();
       const { user: member } = await createTestUserWithToken({ username: 'already_member_xyz' });
       const { user: invited } = await createTestUserWithToken({ username: 'already_invited_xyz' });
 
-      // Create group and add member via join
+      // Create group
       const group = await createGroup(ownerToken);
-      const inviteRes = await request(app)
-        .post(`/groups/${group.id}/invite`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-      const code = inviteRes.body.invite_code;
 
       // Add member directly to DB
       await prisma.groupMember.create({
@@ -524,9 +520,13 @@ describe('Users endpoints', () => {
         .query({ q: 'xyz', groupId: group.id });
 
       expect(res.status).toBe(200);
-      const ids = res.body.users.map((u: any) => u.id);
-      expect(ids).not.toContain(member.id);
-      expect(ids).not.toContain(invited.id);
+      const users = res.body.users as Array<{ id: string; status: string | null }>;
+      const memberResult = users.find((u) => u.id === member.id);
+      const invitedResult = users.find((u) => u.id === invited.id);
+      expect(memberResult).toBeDefined();
+      expect(memberResult!.status).toBe('member');
+      expect(invitedResult).toBeDefined();
+      expect(invitedResult!.status).toBe('invited');
     });
 
     it('returns 400 when query is less than 2 characters', async () => {

@@ -93,7 +93,7 @@ export class ApiClient {
   }
 
   // User search
-  async searchUsers(query: string, groupId?: string): Promise<{ users: Array<{ id: string; username: string }> }> {
+  async searchUsers(query: string, groupId?: string): Promise<{ users: Array<{ id: string; username: string; status: 'member' | 'invited' | null }> }> {
     const params = new URLSearchParams({ q: query });
     if (groupId) params.append('groupId', groupId);
     return this.get(`/users/search?${params.toString()}`);
