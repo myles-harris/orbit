@@ -321,7 +321,7 @@ export const notifications = {
     if (iosNativeTokens.length > 0) {
       if (apnProvider) {
         const notification = new apn.Notification();
-        notification.contentAvailable = 1;
+        notification.contentAvailable = true;
         notification.priority = 5; // silent pushes must use priority 5
         notification.topic = process.env.APNS_BUNDLE_ID || 'com.orbit.app';
         notification.payload = data;
