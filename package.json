@@ -8,10 +8,14 @@
     "packages/shared"
   ],
   "scripts": {
+    "postinstall": "patch-package",
     "dev:server": "npm run dev -w apps/server",
     "start:mobile": "npm run start -w apps/mobile",
     "build": "npm run build -w apps/server && npm run typecheck -w apps/mobile",
     "lint": "echo 'lint placeholder'",
     "test": "echo 'tests placeholder'"
+  },
+  "devDependencies": {
+    "patch-package": "^8.0.1"
   }
 }

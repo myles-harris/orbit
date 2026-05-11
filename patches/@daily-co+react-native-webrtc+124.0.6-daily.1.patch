@@ -1,0 +1,22 @@
+diff --git a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
+index 532276a..35f94c4 100644
+--- a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
++++ b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
+@@ -90,6 +90,17 @@ - (void)startCapture {
+                             } else {
+                                 RCTLog(@"[VideoCaptureController] Capture started");
+                                 weakSelf.running = YES;
++                                // Set a predictable stabilization mode to prevent OIS oscillation
++                                // on back camera. Without this iOS picks Auto which can conflict
++                                // with hardware Optical Image Stabilization, causing the video to
++                                // vibrate. Standard uses software-only stabilization.
++                                // isVideoStabilizationSupported is false on front camera (no OIS)
++                                // so this is a no-op when on front camera.
++                                for (AVCaptureConnection *conn in weakSelf.capturer.captureSession.connections) {
++                                    if (conn.isVideoStabilizationSupported) {
++                                        conn.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeStandard;
++                                    }
++                                }
+                             }
+                             dispatch_semaphore_signal(semaphore);
+                         }];
