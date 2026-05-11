@@ -109,7 +109,8 @@ function AppContent() {
             data: { callId, groupId, type: 'call_started' },
             sticky: true,
             autoDismiss: false,
-            channelId: 'call-ongoing',
+            // channelId is valid at runtime but missing from this SDK's TS types
+            ...({ channelId: 'call-ongoing' } as any),
           },
           trigger: null,
         });
