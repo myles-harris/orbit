@@ -12,6 +12,7 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
+import { parseApiError } from '@orbit/shared';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
@@ -45,8 +46,10 @@ export default function GroupDetailScreen() {
   const [currentCall, setCurrentCall] = useState<any>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [paletteIndex, setPaletteIndex] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadGroupDetails = async () => {
+    setLoadError(null);
     try {
       const client = await createAuthenticatedApiClient();
       const userInfo = await client.get<any>('/me');
@@ -59,6 +62,7 @@ export default function GroupDetailScreen() {
       setPaletteIndex(saved);
     } catch (error) {
       console.error('Failed to load group:', error);
+      setLoadError('Could not load group details.');
     }
   };
 
@@ -99,7 +103,7 @@ export default function GroupDetailScreen() {
         token: tokenData.token, endsAt: tokenData.ends_at ?? undefined,
       });
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to start call');
+      Alert.alert('Error', parseApiError(error));
     }
   };
 
@@ -113,7 +117,7 @@ export default function GroupDetailScreen() {
         token: tokenData.token, endsAt: tokenData.ends_at ?? undefined,
       });
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to join call');
+      Alert.alert('Error', parseApiError(error));
     }
   };
 
@@ -128,7 +132,7 @@ export default function GroupDetailScreen() {
             await client.delete(`/groups/${groupId}/members/${memberId}`);
             await loadGroupDetails();
           } catch (error: any) {
-            Alert.alert('Error', error.message || 'Failed to remove member');
+            Alert.alert('Error', parseApiError(error));
           }
         },
       },
@@ -139,6 +143,16 @@ export default function GroupDetailScreen() {
   const resolvedPaletteIndex = paletteIndex ?? (group ? defaultPaletteIndex(group.name) : 0);
 
   if (!group) {
+    if (loadError) {
+      return (
+        <View style={styles.loadingContainer}>
+          <Text style={{ color: colors.textSecondary, marginBottom: 16, textAlign: 'center' }}>{loadError}</Text>
+          <TouchableOpacity onPress={loadGroupDetails}>
+            <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 16 }}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={colors.primary} />

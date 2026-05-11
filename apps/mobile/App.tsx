@@ -1,7 +1,9 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
+import { Platform } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import * as Notifications from 'expo-notifications';
+import { Asset } from 'expo-asset';
 import {
   useFonts,
   Roboto_400Regular,
@@ -17,6 +19,7 @@ import { Chango_400Regular } from '@expo-google-fonts/chango';
 import AppNavigator from './src/navigation/AppNavigator';
 import { ApiClient } from '@orbit/shared';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { navigationRef } from './src/navigation/navigationRef';
 
@@ -37,8 +40,10 @@ function AppContent() {
   const { isAuthenticated, isLoading } = useAuth();
 
   useEffect(() => {
-    setupPushNotifications();
-  }, []);
+    if (isAuthenticated) {
+      setupPushNotifications();
+    }
+  }, [isAuthenticated]);
 
   const setupPushNotifications = async () => {
     // Request permissions
@@ -56,7 +61,9 @@ function AppContent() {
     }
 
     // Get token
-    const tokenData = await Notifications.getExpoPushTokenAsync();
+    const tokenData = await Notifications.getExpoPushTokenAsync({
+      projectId: '8bfe8018-2ae5-4dbb-b0d4-a9a3ed5ffe6a',
+    });
     const pushToken = tokenData.data;
 
     console.log('Push token:', pushToken);
@@ -68,7 +75,7 @@ function AppContent() {
         const client = new ApiClient(API_URL, () => accessToken);
         await client.post('/me/devices/register-push', {
           token: pushToken,
-          platform: 'ios', // or 'android' based on Platform.OS
+          platform: Platform.OS as 'ios' | 'android',
         });
         await SecureStore.setItemAsync('push_token', pushToken);
         console.log('Push token registered with backend');
@@ -128,15 +135,24 @@ export default function App() {
     Chango_400Regular,
   });
 
-  if (!fontsLoaded) {
+  const [assetsLoaded, setAssetsLoaded] = useState(false);
+  useEffect(() => {
+    Asset.loadAsync([require('./assets/background-gradient-4.jpeg')])
+      .then(() => setAssetsLoaded(true))
+      .catch(() => setAssetsLoaded(true)); // don't block on failure
+  }, []);
+
+  if (!fontsLoaded || !assetsLoaded) {
     return null;
   }
 
   return (
-    <ThemeProvider>
-      <AuthProvider>
-        <AppContent />
-      </AuthProvider>
-    </ThemeProvider>
+    <ErrorBoundary>
+      <ThemeProvider>
+        <AuthProvider>
+          <AppContent />
+        </AuthProvider>
+      </ThemeProvider>
+    </ErrorBoundary>
   );
 }
