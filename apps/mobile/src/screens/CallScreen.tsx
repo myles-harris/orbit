@@ -1,12 +1,13 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, PanResponder, Dimensions, Alert } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, PanResponder, Dimensions, Alert, AppState, Platform } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
-import Daily, { DailyCall, DailyParticipant, DailyEventObject } from '@daily-co/react-native-daily-js';
-import { DailyMediaView } from '@daily-co/react-native-daily-js';
+import Daily, { DailyCall, DailyParticipant, DailyEventObject, DailyMediaView, RTCPIPView, MediaStream as RTCMediaStream } from '@daily-co/react-native-daily-js';
+import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { Ionicons } from '@expo/vector-icons';
+import PipModule from '../../modules/pip';
 
 type CallRouteProp = RouteProp<RootStackParamList, 'Call'>;
 type CallNavigationProp = StackNavigationProp<RootStackParamList, 'Call'>;
@@ -23,6 +24,10 @@ export default function CallScreen() {
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [useFrontCamera, setUseFrontCamera] = useState(true);
+  const [localVideoKey, setLocalVideoKey] = useState(0);
+  const videoEnabledRef = useRef(true);
+  const preBackgroundVideoEnabled = useRef(true);
+  const appStateRef = useRef(AppState.currentState);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(
     endsAt ? Math.max(0, Math.round((new Date(endsAt).getTime() - Date.now()) / 1000)) : null
   );
@@ -40,6 +45,42 @@ export default function CallScreen() {
     endCallRef.current = endCall;
   });
 
+  // Keep a ref in sync so async callbacks always read the current value
+  useEffect(() => {
+    videoEnabledRef.current = videoEnabled;
+  }, [videoEnabled]);
+
+  // Handle app state transitions during an active call:
+  // • active → background: disable local video (camera is suspended by the OS
+  //   anyway; being explicit signals Daily.co to send a placeholder frame
+  //   rather than a frozen one). On Android, trigger system PiP.
+  // • background/inactive → active: re-enable local video and force the
+  //   DailyMediaView to remount so it re-attaches the fresh (unfrozen) track.
+  //   This also fixes the screenshot-freeze case on iOS.
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (appStateRef.current === 'active' && nextState === 'background') {
+        if (callObjectRef.current) {
+          preBackgroundVideoEnabled.current = videoEnabledRef.current;
+          callObjectRef.current.setLocalVideo(false);
+          videoEnabledRef.current = false;
+          setVideoEnabled(false);
+        }
+        if (Platform.OS === 'android') {
+          PipModule.enterPipMode();
+        }
+      } else if (appStateRef.current !== 'active' && nextState === 'active') {
+        if (callObjectRef.current && preBackgroundVideoEnabled.current) {
+          callObjectRef.current.setLocalVideo(false);
+          callObjectRef.current.setLocalVideo(true);
+          setLocalVideoKey(k => k + 1);
+        }
+      }
+      appStateRef.current = nextState;
+    });
+    return () => sub.remove();
+  }, []);
+
   useEffect(() => {
     if (secondsLeft === null || secondsLeft <= 0) return;
     const timer = setInterval(() => {
@@ -54,6 +95,18 @@ export default function CallScreen() {
 
   const initializeCall = async () => {
     try {
+      // Keep audio alive when the app is sent to the background.
+      // UIBackgroundModes: ["voip"] in app.json enables this on iOS.
+      // On Android the Daily.co foreground service already handles it.
+      await Audio.setAudioModeAsync({
+        allowsRecordingIOS: true,
+        staysActiveInBackground: true,
+        playsInSilentModeIOS: true,
+        interruptionModeIOS: InterruptionModeIOS.DoNotMix,
+        shouldDuckAndroid: false,
+        interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
+      });
+
       const callObject = Daily.createCallObject();
       callObjectRef.current = callObject;
 
@@ -64,6 +117,7 @@ export default function CallScreen() {
         .on('participant-left', handleParticipantLeft)
         .on('left-meeting', handleLeftMeeting)
         .on('active-speaker-change', handleActiveSpeakerChange)
+        .on('track-started', handleTrackStarted)
         .on('error', handleError);
 
       await callObject.join({ url: roomUrl, token });
@@ -85,6 +139,13 @@ export default function CallScreen() {
 
   const handleParticipantUpdated = (event: DailyEventObject<'participant-updated'>) => {
     setParticipants(prev => ({ ...prev, [event.participant.session_id]: event.participant }));
+  };
+
+  // Fires when any track (including local video) transitions to playable. This
+  // catches the rejoin case where joined-meeting fires before the local video
+  // track is ready — we refresh participant state as soon as the track is live.
+  const handleTrackStarted = () => {
+    if (callObjectRef.current) setParticipants(callObjectRef.current.participants());
   };
 
   const handleParticipantLeft = (event: DailyEventObject<'participant-left'>) => {
@@ -135,9 +196,14 @@ export default function CallScreen() {
   };
 
   const toggleVideo = () => {
-    if (callObjectRef.current) {
-      callObjectRef.current.setLocalVideo(!videoEnabled);
-      setVideoEnabled(!videoEnabled);
+    if (!callObjectRef.current) return;
+    const next = !videoEnabled;
+    callObjectRef.current.setLocalVideo(next);
+    setVideoEnabled(next);
+    if (next) {
+      // Force DailyMediaView to remount so it re-attaches the new track instead
+      // of holding a reference to the paused/stale one.
+      setLocalVideoKey(k => k + 1);
     }
   };
 
@@ -185,6 +251,28 @@ export default function CallScreen() {
     () => Object.values(participants).find(p => p.local),
     [participants]
   );
+
+  // Most-recently active remote speaker — used as the subject of the system PiP
+  // window when the user backgrounds the app.
+  const pipSpeaker = useMemo(() => {
+    for (const id of speakerHistory) {
+      const p = Object.values(participants).find(p => p.session_id === id && !p.local);
+      if (p) return p;
+    }
+    return Object.values(participants).find(p => !p.local) ?? null;
+  }, [speakerHistory, participants]);
+
+  // Build a WebRTC stream URL from the pip speaker's tracks. RTCPIPView (unlike
+  // DailyMediaView) takes a streamURL string, so we create an RTCMediaStream.
+  const [pipStreamURL, setPipStreamURL] = useState<string | null>(null);
+  useEffect(() => {
+    const video = pipSpeaker?.tracks.video.state === 'playable' ? pipSpeaker.tracks.video.track : null;
+    const audio = pipSpeaker?.tracks.audio.state === 'playable' ? pipSpeaker.tracks.audio.track : null;
+    const tracks = [video, audio].filter(Boolean) as any[];
+    const stream = tracks.length > 0 ? new RTCMediaStream(tracks) : null;
+    setPipStreamURL(stream?.toURL() ?? null);
+    return () => { (stream as any)?.release?.(); };
+  }, [pipSpeaker]);
 
   // ─── PiP drag ────────────────────────────────────────────────────────────────
 
@@ -360,6 +448,19 @@ export default function CallScreen() {
         {renderLayout()}
       </View>
 
+      {/* iOS system PiP source — 1×1 invisible anchor used by AVKit's
+          PIPController. AVKit renders the actual floating window using an
+          AVPictureInPictureVideoCallViewController fed by RTCPIPView's
+          SampleBufferVideoCallView; the visual size of this element doesn't
+          matter. startAutomatically fires as soon as the app is backgrounded. */}
+      {Platform.OS === 'ios' && pipStreamURL && (
+        <RTCPIPView
+          streamURL={pipStreamURL}
+          iosPIP={{ startAutomatically: true, stopAutomatically: true }}
+          style={{ position: 'absolute', width: 1, height: 1, bottom: 0, right: 0 }}
+        />
+      )}
+
       {/* Local PiP (draggable) */}
       {localParticipant && (
         <Animated.View
@@ -367,6 +468,7 @@ export default function CallScreen() {
           {...pipPanResponder.panHandlers}
         >
           <DailyMediaView
+            key={`local-video-${localVideoKey}`}
             videoTrack={(localParticipant.tracks.video.state === 'playable' ? localParticipant.tracks.video.track : null) || null}
             audioTrack={null}
             mirror={useFrontCamera}
