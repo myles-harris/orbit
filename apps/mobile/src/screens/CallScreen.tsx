@@ -22,6 +22,7 @@ export default function CallScreen() {
   const [participants, setParticipants] = useState<{ [id: string]: DailyParticipant }>({});
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [audioEnabled, setAudioEnabled] = useState(true);
+  const [useFrontCamera, setUseFrontCamera] = useState(true);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(
     endsAt ? Math.max(0, Math.round((new Date(endsAt).getTime() - Date.now()) / 1000)) : null
   );
@@ -147,16 +148,30 @@ export default function CallScreen() {
     }
   };
 
+  const toggleCamera = async () => {
+    if (callObjectRef.current) {
+      await callObjectRef.current.cycleCamera();
+      setUseFrontCamera(prev => !prev);
+    }
+  };
+
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60).toString().padStart(2, '0');
     const s = (secs % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
   };
 
-  // Sort remotes: most-recent speaker first, then arbitrary order. Cap at 9.
+  // Cap at 9. Only sort by most-recent speaker in the two-size layout (7+ remotes),
+  // where featured slots are meaningfully larger than thumbnails. In equal-size
+  // layouts (1–6) tiles stay in stable join order so they don't shuffle on
+  // every speaker change.
   const visibleRemote = useMemo(() => {
     const remote = Object.values(participants).filter(p => !p.local);
-    const sorted = [...remote].sort((a, b) => {
+    const capped = remote.slice(0, 9);
+
+    if (capped.length < 7) return capped;
+
+    return [...capped].sort((a, b) => {
       const aIdx = speakerHistory.indexOf(a.session_id);
       const bIdx = speakerHistory.indexOf(b.session_id);
       if (aIdx === -1 && bIdx === -1) return 0;
@@ -164,7 +179,6 @@ export default function CallScreen() {
       if (bIdx === -1) return -1;
       return aIdx - bIdx;
     });
-    return sorted.slice(0, 9);
   }, [participants, speakerHistory]);
 
   const localParticipant = useMemo(
@@ -355,7 +369,7 @@ export default function CallScreen() {
           <DailyMediaView
             videoTrack={(localParticipant.tracks.video.state === 'playable' ? localParticipant.tracks.video.track : null) || null}
             audioTrack={null}
-            mirror={true}
+            mirror={useFrontCamera}
             style={styles.localVideo}
           />
         </Animated.View>
@@ -395,6 +409,14 @@ export default function CallScreen() {
             activeOpacity={0.8}
           >
             <Ionicons name={videoEnabled ? 'videocam' : 'videocam-off'} size={22} color="#fff" />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.controlButton}
+            onPress={toggleCamera}
+            activeOpacity={0.8}
+          >
+            <Ionicons name="camera-reverse-outline" size={22} color="#fff" />
           </TouchableOpacity>
         </View>
       </View>
