@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, PanResponder, Dimensions } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, PanResponder, Dimensions, Alert } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
@@ -68,7 +68,9 @@ export default function CallScreen() {
       await callObject.join({ url: roomUrl, token });
     } catch (error) {
       console.error('Failed to join call:', error);
-      navigation.goBack();
+      Alert.alert('Unable to Join', 'This call is no longer available.', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
     }
   };
 
@@ -109,7 +111,11 @@ export default function CallScreen() {
     console.error('Daily error:', event.error);
     if (!hasLeftRef.current) {
       hasLeftRef.current = true;
-      navigation.goBack();
+      const msg =
+        event.error?.type === 'no-room'
+          ? 'This call has already ended.'
+          : 'An error occurred during the call.';
+      Alert.alert('Call Ended', msg, [{ text: 'OK', onPress: () => navigation.goBack() }]);
     }
   };
 

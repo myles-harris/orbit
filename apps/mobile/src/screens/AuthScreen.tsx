@@ -11,7 +11,7 @@ import {
   ScrollView,
   Image,
 } from 'react-native';
-const bgGradient = require('../../assets/background-gradient-4.png');
+const bgGradient = require('../../assets/background-gradient-4.jpeg');
 import { ApiClient } from '@orbit/shared';
 import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../context/AuthContext';

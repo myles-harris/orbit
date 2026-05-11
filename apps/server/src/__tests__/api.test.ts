@@ -1,0 +1,1969 @@
+/**
+ * Comprehensive backend API test suite.
+ * Covers all HTTP endpoints across auth, me, users, groups, calls, and svc routers.
+ *
+ * External services are mocked so no real Twilio / Daily.co / push calls are made.
+ */
+
+// ─── Mocks (hoisted before imports) ─────────────────────────────────────────
+
+jest.mock('../services/dailyVideo', () => ({
+  buildRoomName: (groupId: string, date: Date) =>
+    `test-${groupId}-${date.getTime()}`,
+  dailyVideo: {
+    createRoom: jest.fn().mockResolvedValue('https://test.daily.co/test-room'),
+    roomExists: jest.fn().mockResolvedValue(true),
+    createMeetingToken: jest.fn().mockResolvedValue('test_meeting_token'),
+    deleteRoom: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+jest.mock('../services/notifications', () => ({
+  notifications: {
+    sendPushTokens: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
+  },
+}));
+
+jest.mock('../services/twilioVerify', () => ({
+  twilioVerify: {
+    requestOtp: jest.fn().mockResolvedValue(undefined),
+    verifyOtp: jest.fn().mockResolvedValue(true),
+  },
+}));
+
+jest.mock('../services/scheduler', () => ({
+  scheduler: {
+    generateCallsForGroup: jest.fn().mockResolvedValue(undefined),
+    generateScheduledCalls: jest.fn().mockResolvedValue(undefined),
+    activateDueCalls: jest.fn().mockResolvedValue(undefined),
+    closeExpiredCalls: jest.fn().mockResolvedValue(undefined),
+  },
+}));
+
+// ─── Imports ─────────────────────────────────────────────────────────────────
+
+import request from 'supertest';
+import jwt from 'jsonwebtoken';
+import { PrismaClient } from '@prisma/client';
+import { app } from '../app.js';
+import {
+  createTestUser,
+  createTestUserWithToken,
+  createAccessToken,
+  createRefreshToken,
+} from './helpers/auth.js';
+
+const prisma = new PrismaClient();
+const JWT_SECRET = process.env.JWT_SECRET || 'dev';
+
+// ─── Shared helpers ───────────────────────────────────────────────────────────
+
+async function createGroup(
+  token: string,
+  opts: { name?: string; cadence?: 'daily' | 'weekly'; duration?: number; weeklyFrequency?: number } = {}
+) {
+  const body: Record<string, unknown> = {
+    name: opts.name ?? 'Test Group',
+    cadence: opts.cadence ?? 'daily',
+    call_duration_minutes: opts.duration ?? 5,
+  };
+  if (opts.cadence === 'weekly') {
+    body.weekly_frequency = opts.weeklyFrequency ?? 2;
+  }
+  const res = await request(app)
+    .post('/groups')
+    .set('Authorization', `Bearer ${token}`)
+    .send(body);
+  return res.body as {
+    id: string;
+    name: string;
+    owner_id: string;
+    cadence: string;
+    call_duration_minutes: number;
+    member_count: number;
+  };
+}
+
+async function createActiveCall(groupId: string) {
+  const startedAt = new Date();
+  const roomName = `test-room-${groupId}`;
+  return prisma.callSession.create({
+    data: {
+      group_id: groupId,
+      status: 'active',
+      call_type: 'spontaneous',
+      started_at: startedAt,
+      ends_at: null,
+      room_name: roomName,
+      room_url: `https://test.daily.co/${roomName}`,
+    },
+  });
+}
+
+async function createScheduledCallRecord(groupId: string, scheduledAt: Date, durationMinutes = 5) {
+  const roomName = `scheduled-${groupId}-${scheduledAt.getTime()}`;
+  return prisma.callSession.create({
+    data: {
+      group_id: groupId,
+      status: 'scheduled',
+      call_type: 'scheduled',
+      scheduled_at: scheduledAt,
+      ends_at: new Date(scheduledAt.getTime() + durationMinutes * 60_000),
+      room_name: roomName,
+    },
+  });
+}
+
+// ─── Health ───────────────────────────────────────────────────────────────────
+
+describe('GET /health', () => {
+  it('returns 200 with status ok', async () => {
+    const res = await request(app).get('/health');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ status: 'ok' });
+  });
+});
+
+// ─── Auth ─────────────────────────────────────────────────────────────────────
+
+describe('Auth endpoints', () => {
+  describe('POST /auth/request-otp', () => {
+    it('returns status sent for a valid phone number', async () => {
+      const res = await request(app)
+        .post('/auth/request-otp')
+        .send({ phone: '+15550001111' });
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('sent');
+    });
+
+    it('returns 400 when phone is missing', async () => {
+      const res = await request(app).post('/auth/request-otp').send({});
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('POST /auth/verify-otp — new user', () => {
+    it('returns is_new_user true and a signup_token when phone has no account', async () => {
+      const res = await request(app)
+        .post('/auth/verify-otp')
+        .send({ phone: '+15559990000', code: '123456' });
+      expect(res.status).toBe(200);
+      expect(res.body.is_new_user).toBe(true);
+      expect(res.body.signup_token).toBeDefined();
+    });
+  });
+
+  describe('POST /auth/verify-otp — existing user', () => {
+    it('returns access and refresh tokens for an existing user', async () => {
+      const phone = '+15551234567';
+      await createTestUser({ phone, username: 'existingverify' });
+
+      const res = await request(app)
+        .post('/auth/verify-otp')
+        .send({ phone, code: '123456' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.is_new_user).toBe(false);
+      expect(res.body.access_token).toBeDefined();
+      expect(res.body.refresh_token).toBeDefined();
+      expect(res.body.user.phone).toBe(phone);
+    });
+
+    it('returns 401 when OTP verification fails', async () => {
+      const { twilioVerify } = jest.requireMock('../services/twilioVerify');
+      twilioVerify.verifyOtp.mockResolvedValueOnce(false);
+
+      const res = await request(app)
+        .post('/auth/verify-otp')
+        .send({ phone: '+15559991234', code: 'badcod' });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('invalid_code');
+    });
+
+    it('returns 400 when body is missing fields', async () => {
+      const res = await request(app)
+        .post('/auth/verify-otp')
+        .send({ phone: '+15550000000' });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('POST /auth/complete-signup', () => {
+    it('creates a new user with a valid signup token', async () => {
+      const phone = '+15551000001';
+      const signupToken = jwt.sign({ type: 'signup', phone }, JWT_SECRET, { expiresIn: 600 });
+
+      const res = await request(app)
+        .post('/auth/complete-signup')
+        .send({ signup_token: signupToken, username: 'freshuser' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.user.username).toBe('freshuser');
+      expect(res.body.access_token).toBeDefined();
+      expect(res.body.refresh_token).toBeDefined();
+    });
+
+    it('returns 409 when username is already taken', async () => {
+      await createTestUser({ username: 'taken_name' });
+      const signupToken = jwt.sign({ type: 'signup', phone: '+15552000002' }, JWT_SECRET, { expiresIn: 600 });
+
+      const res = await request(app)
+        .post('/auth/complete-signup')
+        .send({ signup_token: signupToken, username: 'taken_name' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toBe('username_taken');
+    });
+
+    it('returns 401 with an expired signup token', async () => {
+      const signupToken = jwt.sign({ type: 'signup', phone: '+15553000003' }, JWT_SECRET, { expiresIn: -1 });
+
+      const res = await request(app)
+        .post('/auth/complete-signup')
+        .send({ signup_token: signupToken, username: 'expired_user' });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 401 with a non-signup token type', async () => {
+      const badToken = jwt.sign({ type: 'access', phone: '+15550000000' }, JWT_SECRET, { expiresIn: 600 });
+
+      const res = await request(app)
+        .post('/auth/complete-signup')
+        .send({ signup_token: badToken, username: 'wrongtype' });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 400 when username is missing', async () => {
+      const res = await request(app)
+        .post('/auth/complete-signup')
+        .send({ signup_token: 'sometoken' });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('POST /auth/refresh', () => {
+    it('returns new tokens with a valid refresh token', async () => {
+      const user = await createTestUser();
+      const refreshToken = createRefreshToken(user.id);
+
+      const res = await request(app)
+        .post('/auth/refresh')
+        .send({ refresh_token: refreshToken });
+
+      expect(res.status).toBe(200);
+      expect(res.body.access_token).toBeDefined();
+      expect(res.body.refresh_token).toBeDefined();
+    });
+
+    it('returns 401 with an invalid token string', async () => {
+      const res = await request(app)
+        .post('/auth/refresh')
+        .send({ refresh_token: 'not-a-token' });
+      expect(res.status).toBe(401);
+    });
+
+    it('returns 401 when the user no longer exists', async () => {
+      const refreshToken = createRefreshToken('00000000-0000-0000-0000-000000000000');
+
+      const res = await request(app)
+        .post('/auth/refresh')
+        .send({ refresh_token: refreshToken });
+
+      expect(res.status).toBe(401);
+      expect(res.body.error).toBe('user_not_found');
+    });
+
+    it('returns 400 when body is missing the refresh_token field', async () => {
+      const res = await request(app).post('/auth/refresh').send({});
+      expect(res.status).toBe(400);
+    });
+  });
+});
+
+// ─── Me ──────────────────────────────────────────────────────────────────────
+
+describe('Me endpoints', () => {
+  describe('GET /me', () => {
+    it('returns the authenticated user profile', async () => {
+      const { user, token } = await createTestUserWithToken({ username: 'meuser' });
+
+      const res = await request(app)
+        .get('/me')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.id).toBe(user.id);
+      expect(res.body.username).toBe('meuser');
+    });
+
+    it('returns 401 without auth', async () => {
+      const res = await request(app).get('/me');
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('PATCH /me', () => {
+    it('updates the username', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .patch('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ username: 'updated_name' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.username).toBe('updated_name');
+    });
+
+    it('updates the time zone', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .patch('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ time_zone: 'America/New_York' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.time_zone).toBe('America/New_York');
+    });
+
+    it('returns 400 for an empty username', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .patch('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ username: '' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 401 without auth', async () => {
+      const res = await request(app).patch('/me').send({ username: 'x' });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /me/devices/register-push', () => {
+    it('registers a push device token', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post('/me/devices/register-push')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ token: 'device-token-abc', platform: 'ios' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('registered');
+    });
+
+    it('upserts when the same device token is re-registered', async () => {
+      const { token } = await createTestUserWithToken();
+
+      await request(app)
+        .post('/me/devices/register-push')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ token: 'shared-device-token', platform: 'ios' });
+
+      const res = await request(app)
+        .post('/me/devices/register-push')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ token: 'shared-device-token', platform: 'android' });
+
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 400 for an invalid platform', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post('/me/devices/register-push')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ token: 'x', platform: 'windows' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 401 without auth', async () => {
+      const res = await request(app)
+        .post('/me/devices/register-push')
+        .send({ token: 'x', platform: 'ios' });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('DELETE /me/devices/register-push', () => {
+    it('unregisters a device token', async () => {
+      const { user, token } = await createTestUserWithToken();
+
+      await prisma.pushDevice.create({
+        data: { token: 'del-device-token', user_id: user.id, platform: 'ios' },
+      });
+
+      const res = await request(app)
+        .delete('/me/devices/register-push')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ token: 'del-device-token' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('unregistered');
+    });
+
+    it('returns 200 gracefully even when token does not exist', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .delete('/me/devices/register-push')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ token: 'nonexistent-token' });
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('GET /me/invitations', () => {
+    it('returns empty list when no pending invitations', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .get('/me/invitations')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.invitations).toEqual([]);
+    });
+
+    it('returns pending invitations for the user', async () => {
+      const { user: owner, token: ownerToken } = await createTestUserWithToken();
+      const { user: invitee, token: inviteeToken } = await createTestUserWithToken();
+
+      const group = await createGroup(ownerToken);
+
+      // Create a direct invitation
+      await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ username: invitee.username });
+
+      const res = await request(app)
+        .get('/me/invitations')
+        .set('Authorization', `Bearer ${inviteeToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.invitations).toHaveLength(1);
+      expect(res.body.invitations[0].group.id).toBe(group.id);
+    });
+
+    it('returns 401 without auth', async () => {
+      const res = await request(app).get('/me/invitations');
+      expect(res.status).toBe(401);
+    });
+  });
+});
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+describe('Users endpoints', () => {
+  describe('GET /users/search', () => {
+    it('returns matching users by username', async () => {
+      const { token } = await createTestUserWithToken();
+      await createTestUser({ username: 'searchable_alice' });
+      await createTestUser({ username: 'searchable_bob' });
+
+      const res = await request(app)
+        .get('/users/search')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ q: 'searchable' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.users.length).toBeGreaterThanOrEqual(2);
+      expect(res.body.users.every((u: any) => u.username.includes('searchable'))).toBe(true);
+    });
+
+    it('excludes the requesting user from results', async () => {
+      const { user, token } = await createTestUserWithToken({ username: 'self_searcher' });
+
+      const res = await request(app)
+        .get('/users/search')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ q: 'self_searcher' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.users.find((u: any) => u.id === user.id)).toBeUndefined();
+    });
+
+    it('excludes current group members and pending invitees when groupId is provided', async () => {
+      const { user: owner, token: ownerToken } = await createTestUserWithToken();
+      const { user: member } = await createTestUserWithToken({ username: 'already_member_xyz' });
+      const { user: invited } = await createTestUserWithToken({ username: 'already_invited_xyz' });
+
+      // Create group and add member via join
+      const group = await createGroup(ownerToken);
+      const inviteRes = await request(app)
+        .post(`/groups/${group.id}/invite`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+      const code = inviteRes.body.invite_code;
+
+      // Add member directly to DB
+      await prisma.groupMember.create({
+        data: { group_id: group.id, user_id: member.id, role: 'member' },
+      });
+
+      // Invite the other user (pending)
+      await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ username: invited.username });
+
+      const res = await request(app)
+        .get('/users/search')
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .query({ q: 'xyz', groupId: group.id });
+
+      expect(res.status).toBe(200);
+      const ids = res.body.users.map((u: any) => u.id);
+      expect(ids).not.toContain(member.id);
+      expect(ids).not.toContain(invited.id);
+    });
+
+    it('returns 400 when query is less than 2 characters', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .get('/users/search')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ q: 'a' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 401 without auth', async () => {
+      const res = await request(app)
+        .get('/users/search')
+        .query({ q: 'test' });
+      expect(res.status).toBe(401);
+    });
+  });
+});
+
+// ─── Groups ───────────────────────────────────────────────────────────────────
+
+describe('Groups endpoints', () => {
+  describe('POST /groups', () => {
+    it('creates a daily group and returns 201', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post('/groups')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Morning Crew', cadence: 'daily', call_duration_minutes: 5 });
+
+      expect(res.status).toBe(201);
+      expect(res.body.name).toBe('Morning Crew');
+      expect(res.body.cadence).toBe('daily');
+      expect(res.body.member_count).toBe(1);
+    });
+
+    it('creates a weekly group with frequency', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post('/groups')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Book Club', cadence: 'weekly', weekly_frequency: 2, call_duration_minutes: 30 });
+
+      expect(res.status).toBe(201);
+      expect(res.body.weekly_frequency).toBe(2);
+    });
+
+    it('returns 400 when required fields are missing', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post('/groups')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Incomplete' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 401 without auth', async () => {
+      const res = await request(app)
+        .post('/groups')
+        .send({ name: 'X', cadence: 'daily', call_duration_minutes: 5 });
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('GET /groups', () => {
+    it('returns empty list for a new user', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .get('/groups')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.groups).toEqual([]);
+    });
+
+    it('returns groups the user belongs to', async () => {
+      const { token } = await createTestUserWithToken();
+      await createGroup(token, { name: 'My Group' });
+
+      const res = await request(app)
+        .get('/groups')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.groups).toHaveLength(1);
+      expect(res.body.groups[0].name).toBe('My Group');
+    });
+
+    it('does not return groups the user has not joined', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+
+      await createGroup(ownerToken, { name: 'Private Group' });
+
+      const res = await request(app)
+        .get('/groups')
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.groups).toHaveLength(0);
+    });
+  });
+
+  describe('GET /groups/:id', () => {
+    it('returns group details with members', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token, { name: 'Detail Group' });
+
+      const res = await request(app)
+        .get(`/groups/${group.id}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe('Detail Group');
+      expect(res.body.members).toHaveLength(1);
+      expect(res.body.member_count).toBe(1);
+    });
+
+    it('returns 404 for a non-existent group', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .get('/groups/00000000-0000-0000-0000-000000000000')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('PATCH /groups/:id', () => {
+    it('updates group name', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token, { name: 'Old Name' });
+
+      const res = await request(app)
+        .patch(`/groups/${group.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'New Name' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe('New Name');
+    });
+  });
+
+  describe('PUT /groups/:id', () => {
+    it('allows a member to update the group name', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token, { name: 'Old Name' });
+
+      const res = await request(app)
+        .put(`/groups/${group.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Updated Name' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.name).toBe('Updated Name');
+    });
+
+    it('allows the owner to update cadence and duration', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token, { cadence: 'daily', duration: 5 });
+
+      const res = await request(app)
+        .put(`/groups/${group.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ cadence: 'weekly', weekly_frequency: 3, call_duration_minutes: 15 });
+
+      expect(res.status).toBe(200);
+      expect(res.body.cadence).toBe('weekly');
+    });
+
+    it('returns 403 when a non-member tries to update', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .put(`/groups/${group.id}`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .send({ name: 'Hacked' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 403 when a non-owner tries to change owner-only fields', async () => {
+      const { user: owner, token: ownerToken } = await createTestUserWithToken();
+      const { user: member, token: memberToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      // Add member to group
+      await prisma.groupMember.create({
+        data: { group_id: group.id, user_id: member.id, role: 'member' },
+      });
+
+      const res = await request(app)
+        .put(`/groups/${group.id}`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ call_duration_minutes: 60 });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 404 for a non-existent group', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .put('/groups/00000000-0000-0000-0000-000000000000')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Ghost' });
+
+      expect(res.status).toBe(403); // not a member, so 403 fires first
+    });
+  });
+
+  describe('DELETE /groups/:id', () => {
+    it('allows the owner to delete the group', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(204);
+    });
+
+    it('returns 403 when a non-owner tries to delete', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 404 for a non-existent group', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .delete('/groups/00000000-0000-0000-0000-000000000000')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('PUT /groups/:id/mute', () => {
+    it('mutes notifications for a member', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .put(`/groups/${group.id}/mute`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ muted: true });
+
+      expect(res.status).toBe(200);
+      expect(res.body.is_muted).toBe(true);
+    });
+
+    it('unmutes notifications', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      await request(app)
+        .put(`/groups/${group.id}/mute`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ muted: true });
+
+      const res = await request(app)
+        .put(`/groups/${group.id}/mute`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ muted: false });
+
+      expect(res.status).toBe(200);
+      expect(res.body.is_muted).toBe(false);
+    });
+
+    it('returns 400 when muted is not a boolean', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .put(`/groups/${group.id}/mute`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ muted: 'yes' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .put(`/groups/${group.id}/mute`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .send({ muted: true });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('POST /groups/:id/invite (invite code)', () => {
+    it('creates an invite code for the group owner', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/invite`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.invite_code).toBeDefined();
+      expect(res.body.expires_at).toBeDefined();
+      expect(res.body.invite_link).toMatch(/take5:\/\/invite\//);
+    });
+
+    it('returns 403 when a non-owner tries to create an invite', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: member, token: memberToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await prisma.groupMember.create({
+        data: { group_id: group.id, user_id: member.id, role: 'member' },
+      });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/invite`)
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 404 for a non-existent group', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post('/groups/00000000-0000-0000-0000-000000000000/invite')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /groups/:id/join', () => {
+    it('allows a user to join via a valid invite code', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: joinerToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const inviteRes = await request(app)
+        .post(`/groups/${group.id}/invite`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+      const code = inviteRes.body.invite_code;
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/join`)
+        .set('Authorization', `Bearer ${joinerToken}`)
+        .send({ invite_code: code });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('joined');
+    });
+
+    it('returns already_member if user is already in the group', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const inviteRes = await request(app)
+        .post(`/groups/${group.id}/invite`)
+        .set('Authorization', `Bearer ${token}`);
+      const code = inviteRes.body.invite_code;
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/join`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ invite_code: code });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('already_member');
+    });
+
+    it('returns 400 when no invite code is provided', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: joinerToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/join`)
+        .set('Authorization', `Bearer ${joinerToken}`)
+        .send({});
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 for an invalid invite code', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: joinerToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/join`)
+        .set('Authorization', `Bearer ${joinerToken}`)
+        .send({ invite_code: 'INVALID0' });
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /groups/:id/leave', () => {
+    it('allows a member to leave a group', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: member, token: memberToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await prisma.groupMember.create({
+        data: { group_id: group.id, user_id: member.id, role: 'member' },
+      });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/leave`)
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('left');
+    });
+
+    it('prevents the owner from leaving', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/leave`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/owner/i);
+    });
+
+    it('returns 404 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/leave`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('DELETE /groups/:id/members/:memberId', () => {
+    it('allows the owner to remove a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: member } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await prisma.groupMember.create({
+        data: { group_id: group.id, user_id: member.id, role: 'member' },
+      });
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}/members/${member.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('returns 403 when a non-owner tries to remove a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: member, token: memberToken } = await createTestUserWithToken();
+      const { user: target } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await prisma.groupMember.createMany({
+        data: [
+          { group_id: group.id, user_id: member.id, role: 'member' },
+          { group_id: group.id, user_id: target.id, role: 'member' },
+        ],
+      });
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}/members/${target.id}`)
+        .set('Authorization', `Bearer ${memberToken}`);
+
+      expect(res.status).toBe(403);
+    });
+
+    it('prevents owner from removing themselves', async () => {
+      const { user: owner, token: ownerToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}/members/${owner.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 when member is not in the group', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: stranger } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}/members/${stranger.id}`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /groups/:id/transfer-ownership', () => {
+    it('transfers ownership to a group member', async () => {
+      const { user: owner, token: ownerToken } = await createTestUserWithToken();
+      const { user: member } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await prisma.groupMember.create({
+        data: { group_id: group.id, user_id: member.id, role: 'member' },
+      });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/transfer-ownership`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ new_owner_id: member.id });
+
+      expect(res.status).toBe(200);
+      expect(res.body.group.owner_id).toBe(member.id);
+    });
+
+    it('returns 403 when a non-owner tries to transfer', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: member, token: memberToken } = await createTestUserWithToken();
+      const { user: target } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await prisma.groupMember.createMany({
+        data: [
+          { group_id: group.id, user_id: member.id, role: 'member' },
+          { group_id: group.id, user_id: target.id, role: 'member' },
+        ],
+      });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/transfer-ownership`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ new_owner_id: target.id });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 400 when transferring to self', async () => {
+      const { user: owner, token: ownerToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/transfer-ownership`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ new_owner_id: owner.id });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when new owner is not a group member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: stranger } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/transfer-ownership`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ new_owner_id: stranger.id });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when new_owner_id is missing', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/transfer-ownership`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('GET /groups/invites/:code/info', () => {
+    it('returns group info for a valid invite code', async () => {
+      const { token } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(token, { name: 'Invite Info Group' });
+
+      const inviteRes = await request(app)
+        .post(`/groups/${group.id}/invite`)
+        .set('Authorization', `Bearer ${token}`);
+      const code = inviteRes.body.invite_code;
+
+      const res = await request(app)
+        .get(`/groups/invites/${code}/info`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.group_id).toBe(group.id);
+      expect(res.body.group_name).toBe('Invite Info Group');
+      expect(res.body.code).toBe(code);
+    });
+
+    it('returns 404 for an unknown invite code', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .get('/groups/invites/ZZZZZZZZ/info')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('POST /groups/:id/invite-user', () => {
+    it('sends a direct invitation to a user by username', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: invitee } = await createTestUserWithToken({ username: 'invite_target' });
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ username: invitee.username });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+      expect(res.body.invited_user.id).toBe(invitee.id);
+    });
+
+    it('returns 400 when username is missing', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 when invited username does not exist', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ username: 'ghost_user_zzz' });
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 400 when user is already a member', async () => {
+      const { user: owner, token: ownerToken } = await createTestUserWithToken();
+      const { user: member } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await prisma.groupMember.create({
+        data: { group_id: group.id, user_id: member.id, role: 'member' },
+      });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ username: member.username });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('User is already a member of this group');
+    });
+
+    it('returns 400 when user already has a pending invitation', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: invitee } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ username: invitee.username });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ username: invitee.username });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('User already has a pending invitation');
+    });
+
+    it('returns 403 when a non-owner tries to invite', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { user: member, token: memberToken } = await createTestUserWithToken();
+      const { user: target } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      await prisma.groupMember.create({
+        data: { group_id: group.id, user_id: member.id, role: 'member' },
+      });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${memberToken}`)
+        .send({ username: target.username });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('POST /groups/invites/:id/respond', () => {
+    async function setupInvite() {
+      const { user: owner, token: ownerToken } = await createTestUserWithToken();
+      const { user: invitee, token: inviteeToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const inviteRes = await request(app)
+        .post(`/groups/${group.id}/invite-user`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .send({ username: invitee.username });
+
+      return { owner, ownerToken, invitee, inviteeToken, group, inviteId: inviteRes.body.invite_id };
+    }
+
+    it('accepts an invitation and adds the user to the group', async () => {
+      const { inviteeToken, group, inviteId } = await setupInvite();
+
+      const res = await request(app)
+        .post(`/groups/invites/${inviteId}/respond`)
+        .set('Authorization', `Bearer ${inviteeToken}`)
+        .send({ action: 'accept' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('accepted');
+      expect(res.body.group.id).toBe(group.id);
+
+      // Confirm membership
+      const groupRes = await request(app)
+        .get('/groups')
+        .set('Authorization', `Bearer ${inviteeToken}`);
+      expect(groupRes.body.groups.some((g: any) => g.id === group.id)).toBe(true);
+    });
+
+    it('declines an invitation', async () => {
+      const { inviteeToken, inviteId } = await setupInvite();
+
+      const res = await request(app)
+        .post(`/groups/invites/${inviteId}/respond`)
+        .set('Authorization', `Bearer ${inviteeToken}`)
+        .send({ action: 'decline' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('declined');
+    });
+
+    it('dismisses an invitation', async () => {
+      const { inviteeToken, inviteId } = await setupInvite();
+
+      const res = await request(app)
+        .post(`/groups/invites/${inviteId}/respond`)
+        .set('Authorization', `Bearer ${inviteeToken}`)
+        .send({ action: 'dismiss' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.action).toBe('dismissed');
+    });
+
+    it('returns 400 for an invalid action', async () => {
+      const { inviteeToken, inviteId } = await setupInvite();
+
+      const res = await request(app)
+        .post(`/groups/invites/${inviteId}/respond`)
+        .set('Authorization', `Bearer ${inviteeToken}`)
+        .send({ action: 'ignore' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 403 when a different user tries to respond', async () => {
+      const { inviteId } = await setupInvite();
+      const { token: strangerToken } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post(`/groups/invites/${inviteId}/respond`)
+        .set('Authorization', `Bearer ${strangerToken}`)
+        .send({ action: 'accept' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('returns 400 when responding to an already-responded invitation', async () => {
+      const { inviteeToken, inviteId } = await setupInvite();
+
+      await request(app)
+        .post(`/groups/invites/${inviteId}/respond`)
+        .set('Authorization', `Bearer ${inviteeToken}`)
+        .send({ action: 'decline' });
+
+      const res = await request(app)
+        .post(`/groups/invites/${inviteId}/respond`)
+        .set('Authorization', `Bearer ${inviteeToken}`)
+        .send({ action: 'accept' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/already been responded/i);
+    });
+  });
+});
+
+// ─── Calls ────────────────────────────────────────────────────────────────────
+
+describe('Calls endpoints', () => {
+  describe('POST /groups/:id/call-now', () => {
+    it('starts a spontaneous call for a group member', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/call-now`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('active');
+      expect(res.body.call_type).toBe('spontaneous');
+      expect(res.body.room_name).toBeDefined();
+    });
+
+    it('returns 400 when a call is already active for the group', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      await request(app)
+        .post(`/groups/${group.id}/call-now`)
+        .set('Authorization', `Bearer ${token}`);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/call-now`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/already active/i);
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/call-now`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('GET /groups/:id/calls/current', () => {
+    it('returns null when no call is active', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/calls/current`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.current).toBeNull();
+    });
+
+    it('returns the active call with participants', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      await createActiveCall(group.id);
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/calls/current`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.current).not.toBeNull();
+      expect(res.body.current.status).toBe('active');
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/calls/current`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('GET /groups/:id/calls/history', () => {
+    it('returns an empty list when no calls have ended', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/calls/history`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.calls).toEqual([]);
+    });
+
+    it('returns ended calls in the history', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const startedAt = new Date(Date.now() - 600_000);
+      await prisma.callSession.create({
+        data: {
+          group_id: group.id,
+          status: 'ended',
+          call_type: 'spontaneous',
+          started_at: startedAt,
+          ended_at: new Date(),
+          room_name: `hist-room-${group.id}`,
+        },
+      });
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/calls/history`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.calls).toHaveLength(1);
+      expect(res.body.calls[0].status).toBe('ended');
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/calls/history`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('POST /groups/:id/calls/:callId/join-token', () => {
+    it('returns a meeting token for an active call', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/join-token`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.token).toBeDefined();
+      expect(res.body.room_name).toBe(call.room_name);
+    });
+
+    it('returns 404 when call does not exist', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/00000000-0000-0000-0000-000000000000/join-token`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 400 when call is not active', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const endedCall = await prisma.callSession.create({
+        data: {
+          group_id: group.id,
+          status: 'ended',
+          call_type: 'spontaneous',
+          started_at: new Date(Date.now() - 60_000),
+          ended_at: new Date(),
+          room_name: `ended-${group.id}`,
+        },
+      });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/${endedCall.id}/join-token`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('Call is not active');
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+      const call = await createActiveCall(group.id);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/join-token`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('POST /groups/:id/calls/:callId/leave', () => {
+    it('records a participant leaving a call', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      // Record join first
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
+      });
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/leave`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+    });
+
+    it('closes a spontaneous call when the last participant leaves', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
+      });
+
+      await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/leave`)
+        .set('Authorization', `Bearer ${token}`);
+
+      const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+      expect(updated?.status).toBe('ended');
+    });
+
+    it('returns 200 even when user has no participant record', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/leave`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  describe('POST /groups/:id/calls/:callId/end', () => {
+    it('ends an active call', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/end`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+      expect(updated?.status).toBe('ended');
+    });
+
+    it('is idempotent when the call is already ended', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/end`)
+        .set('Authorization', `Bearer ${token}`);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/end`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+      const call = await createActiveCall(group.id);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/end`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('GET /groups/:id/scheduled', () => {
+    it('returns an empty list when no scheduled calls exist', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/scheduled`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.calls).toEqual([]);
+    });
+
+    it('returns scheduled calls for the group', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const scheduledAt = new Date(Date.now() + 3_600_000);
+
+      await createScheduledCallRecord(group.id, scheduledAt);
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/scheduled`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.calls).toHaveLength(1);
+      expect(res.body.calls[0].status).toBe('scheduled');
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .get(`/groups/${group.id}/scheduled`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('POST /groups/:id/scheduled', () => {
+    it('creates a scheduled call for a future time', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const scheduledAt = new Date(Date.now() + 3_600_000).toISOString();
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/scheduled`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ scheduled_at: scheduledAt });
+
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('scheduled');
+      expect(res.body.call_type).toBe('scheduled');
+      expect(res.body.scheduled_at).toBeDefined();
+    });
+
+    it('returns 400 when scheduled_at is missing', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/scheduled`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when scheduled_at is not a valid date', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/scheduled`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ scheduled_at: 'not-a-date' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/scheduled`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .send({ scheduled_at: new Date(Date.now() + 3_600_000).toISOString() });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('PATCH /groups/:groupId/scheduled/:callId', () => {
+    it('updates the scheduled time of a pending call', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const scheduledAt = new Date(Date.now() + 3_600_000);
+      const call = await createScheduledCallRecord(group.id, scheduledAt);
+      const newTime = new Date(Date.now() + 7_200_000).toISOString();
+
+      const res = await request(app)
+        .patch(`/groups/${group.id}/scheduled/${call.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ scheduled_at: newTime });
+
+      expect(res.status).toBe(200);
+      expect(res.body.scheduled_at).toBe(newTime);
+    });
+
+    it('returns 400 when scheduled_at is missing', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createScheduledCallRecord(group.id, new Date(Date.now() + 3_600_000));
+
+      const res = await request(app)
+        .patch(`/groups/${group.id}/scheduled/${call.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({});
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 400 when trying to modify an active call', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      // Force call_type to scheduled for this test
+      const scheduled = await prisma.callSession.create({
+        data: {
+          group_id: group.id,
+          status: 'active', // active, not scheduled
+          call_type: 'scheduled',
+          scheduled_at: new Date(),
+          ends_at: new Date(Date.now() + 300_000),
+          room_name: `active-sched-${group.id}`,
+        },
+      });
+
+      const res = await request(app)
+        .patch(`/groups/${group.id}/scheduled/${scheduled.id}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ scheduled_at: new Date(Date.now() + 3_600_000).toISOString() });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/status "scheduled"/);
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+      const call = await createScheduledCallRecord(group.id, new Date(Date.now() + 3_600_000));
+
+      const res = await request(app)
+        .patch(`/groups/${group.id}/scheduled/${call.id}`)
+        .set('Authorization', `Bearer ${otherToken}`)
+        .send({ scheduled_at: new Date(Date.now() + 7_200_000).toISOString() });
+
+      expect(res.status).toBe(403);
+    });
+  });
+
+  describe('DELETE /groups/:groupId/scheduled/:callId', () => {
+    it('deletes a scheduled call', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createScheduledCallRecord(group.id, new Date(Date.now() + 3_600_000));
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}/scheduled/${call.id}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
+
+      const found = await prisma.callSession.findUnique({ where: { id: call.id } });
+      expect(found).toBeNull();
+    });
+
+    it('returns 400 when trying to delete an active scheduled call', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const activeScheduled = await prisma.callSession.create({
+        data: {
+          group_id: group.id,
+          status: 'active',
+          call_type: 'scheduled',
+          scheduled_at: new Date(),
+          ends_at: new Date(Date.now() + 300_000),
+          room_name: `active-del-${group.id}`,
+        },
+      });
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}/scheduled/${activeScheduled.id}`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(400);
+    });
+
+    it('returns 404 when call does not exist', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}/scheduled/00000000-0000-0000-0000-000000000000`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(404);
+    });
+
+    it('returns 403 when user is not a member', async () => {
+      const { token: ownerToken } = await createTestUserWithToken();
+      const { token: otherToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+      const call = await createScheduledCallRecord(group.id, new Date(Date.now() + 3_600_000));
+
+      const res = await request(app)
+        .delete(`/groups/${group.id}/scheduled/${call.id}`)
+        .set('Authorization', `Bearer ${otherToken}`);
+
+      expect(res.status).toBe(403);
+    });
+  });
+});
+
+// ─── Svc ──────────────────────────────────────────────────────────────────────
+
+describe('Svc endpoints', () => {
+  describe('POST /svc/schedule/rollover', () => {
+    it('returns ok', async () => {
+      const res = await request(app).post('/svc/schedule/rollover');
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('ok');
+    });
+  });
+
+  describe('POST /svc/schedule/trigger', () => {
+    it('returns triggered', async () => {
+      const res = await request(app).post('/svc/schedule/trigger');
+      expect(res.status).toBe(200);
+      expect(res.body.status).toBe('triggered');
+    });
+  });
+
+  describe('POST /svc/calls/:id/close', () => {
+    it('returns the call id and closed status', async () => {
+      const fakeId = 'test-call-id-123';
+      const res = await request(app).post(`/svc/calls/${fakeId}/close`);
+      expect(res.status).toBe(200);
+      expect(res.body.id).toBe(fakeId);
+      expect(res.body.status).toBe('closed');
+    });
+  });
+
+  describe('GET /svc/groups/:groupId/upcoming', () => {
+    it('returns upcoming scheduled calls for a group', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const scheduledAt = new Date(Date.now() + 3_600_000);
+      await createScheduledCallRecord(group.id, scheduledAt);
+
+      const res = await request(app).get(`/svc/groups/${group.id}/upcoming`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.group_id).toBe(group.id);
+      expect(res.body.upcoming_count).toBe(1);
+      expect(res.body.calls).toHaveLength(1);
+    });
+
+    it('returns 0 upcoming calls when none are scheduled', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app).get(`/svc/groups/${group.id}/upcoming`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.upcoming_count).toBe(0);
+      expect(res.body.calls).toEqual([]);
+    });
+
+    it('does not return past scheduled calls as upcoming', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      // Past call
+      await createScheduledCallRecord(group.id, new Date(Date.now() - 3_600_000));
+
+      const res = await request(app).get(`/svc/groups/${group.id}/upcoming`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.upcoming_count).toBe(0);
+    });
+
+    it('returns 404 for a non-existent group', async () => {
+      const res = await request(app).get('/svc/groups/00000000-0000-0000-0000-000000000000/upcoming');
+      expect(res.status).toBe(404);
+    });
+  });
+});
+
+afterAll(async () => {
+  await prisma.$disconnect();
+});
