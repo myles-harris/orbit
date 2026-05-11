@@ -1,69 +1,31 @@
 diff --git a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
-index 532276a..6ed4162 100644
+index 532276a..16a25f3 100644
 --- a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
 +++ b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
-@@ -14,6 +14,7 @@ @interface VideoCaptureController ()
- @property(nonatomic, assign) int width;
- @property(nonatomic, assign) int height;
- @property(nonatomic, assign) int frameRate;
-+@property(nonatomic, assign) BOOL stabilizationObserverAdded;
- 
- @end
- 
-@@ -77,6 +78,19 @@ - (void)startCapture {
- 
-     RCTLog(@"[VideoCaptureController] Capture will start");
- 
-+    // Register once to apply stabilization fix after every session start/restart,
-+    // including camera switches. AVCaptureSessionDidStartRunningNotification fires
-+    // after the session is fully running and connections are established, which is
-+    // more reliable than the startCapture completion handler (which can fire before
-+    // AVFoundation has committed the new device's connections).
-+    if (!self.stabilizationObserverAdded) {
-+        self.stabilizationObserverAdded = YES;
-+        [[NSNotificationCenter defaultCenter] addObserver:self
-+                                                 selector:@selector(captureSessionDidStartRunning:)
-+                                                     name:AVCaptureSessionDidStartRunningNotification
-+                                                   object:nil];
-+    }
-+
-     // Starting the capture happens on another thread. Wait for it.
-     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
- 
-@@ -110,6 +124,10 @@ - (void)stopCapture {
-         RCTLog(@"[VideoCaptureController] Capture stopped");
-         weakSelf.running = NO;
-         weakSelf.device = nil;
-+        [[NSNotificationCenter defaultCenter] removeObserver:weakSelf
-+                                                        name:AVCaptureSessionDidStartRunningNotification
-+                                                      object:nil];
-+        weakSelf.stabilizationObserverAdded = NO;
- 
-         dispatch_semaphore_signal(semaphore);
-     }];
-@@ -117,6 +135,25 @@ - (void)stopCapture {
-     dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
- }
- 
-+- (void)captureSessionDidStartRunning:(NSNotification *)notification {
-+    AVCaptureSession *session = self.capturer.captureSession;
-+    for (AVCaptureConnection *conn in session.connections) {
-+        // Force software-only stabilization to prevent OIS oscillation on back camera.
-+        // AVCaptureVideoStabilizationModeAuto can select cinematic modes that conflict
-+        // with hardware OIS. Front camera has no OIS so isVideoStabilizationSupported
-+        // is false there — this is a safe no-op for front camera.
-+        if (conn.isVideoStabilizationSupported) {
-+            conn.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeStandard;
-+        }
-+        // Explicitly set mirroring instead of relying on automaticallyAdjustsVideoMirroring,
-+        // which applies asynchronously and causes a brief inverted frame on camera switch.
-+        if (conn.isVideoMirroringSupported) {
-+            conn.automaticallyAdjustsVideoMirroring = NO;
-+            conn.videoMirrored = self.usingFrontCamera;
-+        }
-+    }
-+}
-+
- - (void)applyConstraints:(NSDictionary *)constraints error:(NSError **)outError {
-     // Clear device to prepare for starting camera with new constraints.
-     self.device = nil;
+@@ -90,6 +90,26 @@ - (void)startCapture {
+                             } else {
+                                 RCTLog(@"[VideoCaptureController] Capture started");
+                                 weakSelf.running = YES;
++                                // Defer the stabilization fix to the main queue after a short delay.
++                                // AVFoundation can reset connection properties asynchronously after
++                                // commitConfiguration (e.g. on camera switches), so applying the fix
++                                // inline in this handler races with that work. 300ms is enough for
++                                // all post-start session configuration to complete.
++                                // AVCaptureVideoStabilizationModeAuto can select cinematic modes that
++                                // conflict with hardware OIS on the back camera, causing oscillation.
++                                // isVideoStabilizationSupported is false on the front camera so this
++                                // is a safe no-op when on front camera.
++                                dispatch_after(
++                                    dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)),
++                                    dispatch_get_main_queue(),
++                                    ^{
++                                        AVCaptureSession *session = weakSelf.capturer.captureSession;
++                                        for (AVCaptureConnection *conn in session.connections) {
++                                            if (conn.isVideoStabilizationSupported) {
++                                                conn.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeStandard;
++                                            }
++                                        }
++                                    });
+                             }
+                             dispatch_semaphore_signal(semaphore);
+                         }];
