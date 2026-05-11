@@ -16,7 +16,8 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Orbit needs camera access for video calls",
         "NSMicrophoneUsageDescription": "Orbit needs microphone access for video calls",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["voip"]
       }
     },
     "android": {
@@ -30,7 +31,8 @@
     "plugins": [
       "expo-notifications",
       "@daily-co/config-plugin-rn-daily-js",
-      "expo-font"
+      "expo-font",
+      "./withPip"
     ],
     "extra": {
       "eas": {
