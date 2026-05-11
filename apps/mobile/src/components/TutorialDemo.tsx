@@ -88,11 +88,11 @@ export default function TutorialDemo({ kind, onTap }: Props) {
       <View style={{
         flexDirection: 'row', alignItems: 'center', gap: 4,
         paddingVertical: 4, paddingHorizontal: 11, borderRadius: 999,
-        backgroundColor: active ? colors.text : colors.bg,
+        backgroundColor: active ? colors.text : colors.background,
       }}>
         <Text style={{
           fontFamily: 'Roboto_700Bold', fontSize: 12,
-          color: active ? colors.bg : colors.textSecondary,
+          color: active ? colors.background : colors.textSecondary,
         }}>{label}</Text>
         {badge && (
           <View style={{
@@ -237,7 +237,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
   if (kind === 'create') {
     return (
       <View style={{
-        backgroundColor: colors.bg, borderRadius: 14, overflow: 'hidden', height: 200,
+        backgroundColor: colors.background, borderRadius: 14, overflow: 'hidden', height: 200,
       }}>
         <FilterRow activeTab="All" />
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4 }}>
@@ -280,7 +280,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
       <View>
         <View style={cardStyle}>
           <Text style={labelStyle}>Group Name</Text>
-          <View style={{ backgroundColor: colors.bg, borderRadius: 8, padding: 7 }}>
+          <View style={{ backgroundColor: colors.background, borderRadius: 8, padding: 7 }}>
             <Text style={{ fontSize: 12, fontFamily: 'Roboto_400Regular', color: colors.text }}>
               Saturday Crew
             </Text>
@@ -288,7 +288,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
         </View>
         <View style={cardStyle}>
           <Text style={labelStyle}>Call Frequency</Text>
-          <View style={{ flexDirection: 'row', backgroundColor: colors.bg, borderRadius: 8, padding: 2 }}>
+          <View style={{ flexDirection: 'row', backgroundColor: colors.background, borderRadius: 8, padding: 2 }}>
             {['Daily', 'Weekly'].map((opt, i) => (
               <View key={opt} style={{
                 flex: 1, paddingVertical: 6, borderRadius: 7, alignItems: 'center',
@@ -305,7 +305,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
         <View style={cardStyle}>
           <Text style={labelStyle}>Call Duration</Text>
           <View style={{
-            flexDirection: 'row', backgroundColor: colors.bg, borderRadius: 8,
+            flexDirection: 'row', backgroundColor: colors.background, borderRadius: 8,
             padding: 7, alignItems: 'center', justifyContent: 'space-between',
           }}>
             <Text style={{ fontSize: 18, fontFamily: 'Roboto_400Regular', color: colors.textSecondary }}>−</Text>
@@ -335,7 +335,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
     const left  = [cards[0], cards[2]];
     const right = [cards[1], cards[3]];
     return (
-      <View style={{ backgroundColor: colors.bg, borderRadius: 14, overflow: 'hidden' }}>
+      <View style={{ backgroundColor: colors.background, borderRadius: 14, overflow: 'hidden' }}>
         <FilterRow activeTab="All" />
         <View style={{ flexDirection: 'row', gap: 6, padding: 8 }}>
           <View style={{ flex: 1, gap: 6 }}>
