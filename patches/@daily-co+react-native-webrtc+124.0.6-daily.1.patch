@@ -1,31 +1,40 @@
 diff --git a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
-index 532276a..16a25f3 100644
+index 532276a..bc472e4 100644
 --- a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
 +++ b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
-@@ -90,6 +90,26 @@ - (void)startCapture {
+@@ -90,6 +90,35 @@ - (void)startCapture {
                              } else {
                                  RCTLog(@"[VideoCaptureController] Capture started");
                                  weakSelf.running = YES;
-+                                // Defer the stabilization fix to the main queue after a short delay.
-+                                // AVFoundation can reset connection properties asynchronously after
-+                                // commitConfiguration (e.g. on camera switches), so applying the fix
-+                                // inline in this handler races with that work. 300ms is enough for
-+                                // all post-start session configuration to complete.
-+                                // AVCaptureVideoStabilizationModeAuto can select cinematic modes that
-+                                // conflict with hardware OIS on the back camera, causing oscillation.
-+                                // isVideoStabilizationSupported is false on the front camera so this
-+                                // is a safe no-op when on front camera.
-+                                dispatch_after(
-+                                    dispatch_time(DISPATCH_TIME_NOW, (int64_t)(300 * NSEC_PER_MSEC)),
-+                                    dispatch_get_main_queue(),
-+                                    ^{
-+                                        AVCaptureSession *session = weakSelf.capturer.captureSession;
-+                                        for (AVCaptureConnection *conn in session.connections) {
-+                                            if (conn.isVideoStabilizationSupported) {
-+                                                conn.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeStandard;
-+                                            }
++                                // AVFoundation creates/recreates connections asynchronously after
++                                // commitConfiguration during camera switches. Poll on the main queue
++                                // every 200ms until a connection with stabilization support is found,
++                                // then force Standard mode. AVCaptureVideoStabilizationModeAuto can
++                                // select cinematic modes that conflict with hardware OIS on the back
++                                // camera, causing oscillation. isVideoStabilizationSupported is false
++                                // on the front camera so this is a safe no-op there.
++                                // Max 10 attempts (2 seconds total) to avoid spinning indefinitely.
++                                __block int attempts = 0;
++                                __block __weak void (^weakRetryBlock)(void);
++                                void (^retryBlock)(void) = ^{
++                                    if (!weakSelf || !weakSelf.running || attempts >= 10) return;
++                                    attempts++;
++                                    AVCaptureSession *session = weakSelf.capturer.captureSession;
++                                    BOOL applied = NO;
++                                    for (AVCaptureConnection *conn in session.connections) {
++                                        if (conn.isVideoStabilizationSupported) {
++                                            conn.preferredVideoStabilizationMode = AVCaptureVideoStabilizationModeStandard;
++                                            applied = YES;
 +                                        }
-+                                    });
++                                    }
++                                    if (!applied && weakRetryBlock) {
++                                        dispatch_after(
++                                            dispatch_time(DISPATCH_TIME_NOW, 200 * NSEC_PER_MSEC),
++                                            dispatch_get_main_queue(), weakRetryBlock);
++                                    }
++                                };
++                                weakRetryBlock = retryBlock;
++                                dispatch_async(dispatch_get_main_queue(), retryBlock);
                              }
                              dispatch_semaphore_signal(semaphore);
                          }];
