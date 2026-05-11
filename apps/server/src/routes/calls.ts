@@ -105,7 +105,9 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
         {
           type: 'call_started',
           callId: call.id,
-          groupId: groupId
+          groupId: groupId,
+          callType: 'spontaneous',
+          groupName: group.name,
         }
       );
     } else {
@@ -396,6 +398,22 @@ callsRouter.post('/:id/calls/:callId/leave', requireJwt, async (req, res) => {
         }
 
         console.log(`[leave-call] Spontaneous call ${callId} closed - all participants left`);
+
+        // Notify all group members to dismiss Live Activities / ongoing notifications
+        const groupMembers = await prisma.groupMember.findMany({
+          where: { group_id: call.group_id },
+          include: { user: { include: { devices: true } } }
+        });
+        const allTokens = groupMembers.flatMap((m: any) =>
+          m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
+        );
+        if (allTokens.length > 0) {
+          await notifications.sendSilentPushTokens(allTokens, {
+            type: 'call_ended',
+            callId,
+            groupId: call.group_id,
+          });
+        }
       }
     }
 
@@ -443,6 +461,24 @@ callsRouter.post('/:id/calls/:callId/end', requireJwt, async (req, res) => {
       where: { id: callId },
       data: { status: 'ended', ended_at: new Date() }
     });
+
+    // Notify all group members to dismiss Live Activities / ongoing notifications
+    const groupWithDevices = await prisma.group.findUnique({
+      where: { id: groupId },
+      include: { members: { include: { user: { include: { devices: true } } } } }
+    });
+    if (groupWithDevices) {
+      const allTokens = groupWithDevices.members.flatMap((m: any) =>
+        m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
+      );
+      if (allTokens.length > 0) {
+        await notifications.sendSilentPushTokens(allTokens, {
+          type: 'call_ended',
+          callId,
+          groupId,
+        });
+      }
+    }
 
     console.log(`[end-call] User ${userId} ended call ${callId} for group ${groupId}`);
     res.json({ success: true });
