@@ -126,6 +126,28 @@ export const dailyVideo = {
   },
 
   /**
+   * Check whether a Daily.co room currently exists
+   */
+  async roomExists(roomName: string): Promise<boolean> {
+    if (!DAILY_API_KEY) {
+      // Stub mode: rooms are never actually created
+      return false;
+    }
+
+    try {
+      const response = await fetch(`https://api.daily.co/v1/rooms/${roomName}`, {
+        headers: {
+          'Authorization': `Bearer ${DAILY_API_KEY}`,
+        },
+      });
+      return response.ok;
+    } catch (error) {
+      console.error(`[daily] Failed to check room existence for ${roomName}:`, error);
+      return false;
+    }
+  },
+
+  /**
    * Delete a Daily.co room
    */
   async deleteRoom(roomName: string): Promise<void> {

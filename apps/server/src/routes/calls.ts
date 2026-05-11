@@ -302,6 +302,18 @@ callsRouter.post('/:id/calls/:callId/join-token', requireJwt, async (req, res) =
       return res.status(500).json({ error: 'Call room name not found' });
     }
 
+    // Verify the room still exists on Daily.co (it may have been deleted if the call ended)
+    const exists = await dailyVideo.roomExists(call.room_name);
+    if (!exists) {
+      // Auto-end the stale call record so the UI reflects the correct state
+      await prisma.callSession.update({
+        where: { id: callId },
+        data: { status: 'ended', ended_at: new Date() }
+      });
+      console.warn(`[join-token] Room ${call.room_name} no longer exists — auto-ended call ${callId}`);
+      return res.status(410).json({ error: 'Call has already ended' });
+    }
+
     // Record participant joining
     await prisma.callParticipant.create({
       data: {
