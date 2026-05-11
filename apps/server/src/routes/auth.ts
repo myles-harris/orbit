@@ -12,8 +12,13 @@ authRouter.post('/request-otp', async (req, res) => {
   const parsed = requestOtpSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   const { phone } = parsed.data;
-  await twilioVerify.requestOtp(phone);
-  res.json({ status: 'sent' });
+  try {
+    await twilioVerify.requestOtp(phone);
+    res.json({ status: 'sent' });
+  } catch (error) {
+    console.error('[request-otp] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
 });
 
 const verifyOtpSchema = z.object({ phone: z.string(), code: z.string() });
@@ -21,19 +26,24 @@ authRouter.post('/verify-otp', async (req, res) => {
   const parsed = verifyOtpSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   const { phone, code } = parsed.data;
-  const verified = await twilioVerify.verifyOtp(phone, code);
-  if (!verified) return res.status(401).json({ error: 'invalid_code' });
+  try {
+    const verified = await twilioVerify.verifyOtp(phone, code);
+    if (!verified) return res.status(401).json({ error: 'invalid_code' });
 
-  const existing = await prisma.user.findUnique({ where: { phone } });
+    const existing = await prisma.user.findUnique({ where: { phone } });
 
-  if (!existing) {
-    // New user — issue a short-lived signup token; account created after username is chosen
-    const signup_token = jwt.sign({ type: 'signup', phone }, process.env.JWT_SECRET || 'dev', { expiresIn: 600 });
-    return res.json({ is_new_user: true, signup_token });
+    if (!existing) {
+      // New user — issue a short-lived signup token; account created after username is chosen
+      const signup_token = jwt.sign({ type: 'signup', phone }, process.env.JWT_SECRET || 'dev', { expiresIn: 600 });
+      return res.json({ is_new_user: true, signup_token });
+    }
+
+    const tokens = issueAccessAndRefreshTokens({ userId: existing.id });
+    res.json({ user: { id: existing.id, phone: existing.phone, username: existing.username, time_zone: existing.time_zone, created_at: existing.created_at }, is_new_user: false, ...tokens });
+  } catch (error) {
+    console.error('[verify-otp] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
   }
-
-  const tokens = issueAccessAndRefreshTokens({ userId: existing.id });
-  res.json({ user: { id: existing.id, phone: existing.phone, username: existing.username, time_zone: existing.time_zone, created_at: existing.created_at }, is_new_user: false, ...tokens });
 });
 
 const completeSignupSchema = z.object({ signup_token: z.string(), username: z.string().min(1) });
@@ -51,12 +61,17 @@ authRouter.post('/complete-signup', async (req, res) => {
     return res.status(401).json({ error: 'invalid_token' });
   }
 
-  const existing = await prisma.user.findUnique({ where: { username } });
-  if (existing) return res.status(409).json({ error: 'username_taken' });
+  try {
+    const existing = await prisma.user.findUnique({ where: { username } });
+    if (existing) return res.status(409).json({ error: 'username_taken' });
 
-  const user = await prisma.user.create({ data: { phone, username, time_zone: 'UTC' } });
-  const tokens = issueAccessAndRefreshTokens({ userId: user.id });
-  res.json({ user: { id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at }, ...tokens });
+    const user = await prisma.user.create({ data: { phone, username, time_zone: 'UTC' } });
+    const tokens = issueAccessAndRefreshTokens({ userId: user.id });
+    res.json({ user: { id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at }, ...tokens });
+  } catch (error) {
+    console.error('[complete-signup] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
 });
 
 const refreshSchema = z.object({ refresh_token: z.string() });

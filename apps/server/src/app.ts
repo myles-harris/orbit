@@ -23,3 +23,9 @@ app.use('/users', usersRouter);
 app.use('/groups', groupsRouter);
 app.use('/svc', svcRouter);
 app.use('/groups', callsRouter); // calls endpoints nested under /groups/:id
+
+app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('[unhandled-error]', err);
+  if (res.headersSent) return;
+  res.status(500).json({ error: 'internal_server_error' });
+});
