@@ -73,6 +73,8 @@ export default function CallScreen() {
         if (callObjectRef.current && preBackgroundVideoEnabled.current) {
           callObjectRef.current.setLocalVideo(false);
           callObjectRef.current.setLocalVideo(true);
+          videoEnabledRef.current = true;
+          setVideoEnabled(true);
           setLocalVideoKey(k => k + 1);
         }
       }
@@ -214,10 +216,16 @@ export default function CallScreen() {
     }
   };
 
+  const cameraFlippingRef = useRef(false);
   const toggleCamera = async () => {
-    if (callObjectRef.current) {
+    if (!callObjectRef.current || cameraFlippingRef.current) return;
+    cameraFlippingRef.current = true;
+    try {
       await callObjectRef.current.cycleCamera();
       setUseFrontCamera(prev => !prev);
+      setLocalVideoKey(k => k + 1);
+    } finally {
+      cameraFlippingRef.current = false;
     }
   };
 

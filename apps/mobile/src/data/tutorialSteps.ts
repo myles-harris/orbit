@@ -4,6 +4,7 @@ export interface TutorialStep {
   icon: string;              // Ionicons name
   title: string;
   body: string;
+  demo: string;              // TutorialDemo kind
 }
 
 export const TUTORIAL_STEPS: TutorialStep[] = [
@@ -13,6 +14,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'planet-outline',
     title: 'Welcome to Orbit',
     body: 'Orbit keeps your group in sync with scheduled video calls that happen automatically — no planning required.',
+    demo: 'welcome',
   },
   {
     id: 'create',
@@ -20,6 +22,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'add-circle-outline',
     title: 'Form a group',
     body: 'Tap the + button on the home screen to create a group. Give it a name and you\'re ready to set a schedule.',
+    demo: 'create',
   },
   {
     id: 'configure',
@@ -27,6 +30,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'time-outline',
     title: 'Set a schedule',
     body: 'Choose how often you want to meet, how long each call should be, and the time window when Orbit can fire a call.',
+    demo: 'configure',
   },
   {
     id: 'home',
@@ -34,6 +38,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'grid-outline',
     title: 'Your groups',
     body: 'The home screen shows all your groups as cards. Use the filter tabs to view by Daily, Weekly, or pending Invited groups.',
+    demo: 'home',
   },
   {
     id: 'invite',
@@ -41,6 +46,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'person-add-outline',
     title: 'Add people',
     body: 'Open any group and tap + Invite to add members. They\'ll receive an invitation they can accept or decline.',
+    demo: 'invite',
   },
   {
     id: 'invited',
@@ -48,6 +54,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'mail-outline',
     title: 'Accept invitations',
     body: 'When someone invites you to a group, it appears under the Invited filter on the home screen. Tap to accept or decline.',
+    demo: 'invited',
   },
   {
     id: 'random',
@@ -55,6 +62,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'notifications-outline',
     title: 'Scheduled calls',
     body: 'At a random time within your configured window, Orbit fires a call. Tap the push notification to drop into your group.',
+    demo: 'random',
   },
   {
     id: 'spontaneous',
@@ -62,6 +70,7 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'videocam-outline',
     title: 'Start a call anytime',
     body: 'Don\'t want to wait? Open any group and tap Start Call Now to kick off an immediate call for all members.',
+    demo: 'spontaneous',
   },
   {
     id: 'owner',
@@ -69,5 +78,6 @@ export const TUTORIAL_STEPS: TutorialStep[] = [
     icon: 'shield-checkmark-outline',
     title: 'Owner controls',
     body: 'Only the group owner can edit the schedule, rename the group, remove members, or transfer ownership.',
+    demo: 'owner',
   },
 ];

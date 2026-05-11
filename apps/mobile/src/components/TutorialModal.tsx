@@ -8,12 +8,14 @@ import {
   PanResponder,
   StyleSheet,
   SafeAreaView,
+  ScrollView,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTutorial } from '../context/TutorialContext';
 import { useTheme } from '../context/ThemeContext';
 import { spacing, radius } from '../theme';
 import { TUTORIAL_STEPS } from '../data/tutorialSteps';
+import TutorialDemo from './TutorialDemo';
 
 const TOTAL_STEPS = TUTORIAL_STEPS.length;
 const LAST_STEP = TOTAL_STEPS - 1;
@@ -21,7 +23,7 @@ const LAST_STEP = TOTAL_STEPS - 1;
 export default function TutorialModal() {
   const { isVisible, isFirstRun, dismissTutorial, completeTutorial } = useTutorial();
   const { theme: { colors, shadow } } = useTheme();
-  const styles = useMemo(() => makeStyles(colors, shadow), [colors]);
+  const styles = useMemo(() => makeStyles(colors, shadow), [colors, shadow]);
 
   const [currentStep, setCurrentStep] = useState(0);
   const anim = useRef(new Animated.Value(1)).current;
@@ -42,11 +44,8 @@ export default function TutorialModal() {
   };
 
   const advance = () => {
-    if (currentStep < LAST_STEP) {
-      stepTo(currentStep + 1);
-    } else {
-      completeTutorial();
-    }
+    if (currentStep < LAST_STEP) stepTo(currentStep + 1);
+    else completeTutorial();
   };
 
   const back = () => {
@@ -58,9 +57,9 @@ export default function TutorialModal() {
       onMoveShouldSetPanResponder: (_, gs) =>
         gs.dy > 10 && Math.abs(gs.dy) > Math.abs(gs.dx),
       onPanResponderRelease: (_, gs) => {
-        if (gs.dy > 60) dismissTutorial();
+        if (gs.dy > 80) dismissTutorial();
       },
-    })
+    }),
   ).current;
 
   const step = TUTORIAL_STEPS[currentStep];
@@ -76,51 +75,72 @@ export default function TutorialModal() {
       ? `${String(step.stepNumber).padStart(2, '0')} / 08`
       : 'intro';
 
-  const rightCtaLabel = currentStep === 0
-    ? "Let's go"
-    : isLast
-      ? isFirstRun ? 'Get started' : 'Done'
-      : 'Next';
+  const rightCtaLabel =
+    currentStep === 0
+      ? "Let's go"
+      : isLast
+        ? isFirstRun ? 'Get started' : 'Done'
+        : 'Next';
 
   return (
     <Modal
       visible={isVisible}
-      transparent
-      animationType="fade"
+      transparent={false}
+      animationType="slide"
       statusBarTranslucent
       onRequestClose={dismissTutorial}
     >
-      <View style={styles.overlay} {...panResponder.panHandlers}>
-        <SafeAreaView style={styles.safeArea} pointerEvents="box-none">
-          <View style={styles.sheet}>
-            {/* Drag handle */}
-            <View style={styles.dragHandle} />
+      <View style={styles.root}>
+        <SafeAreaView style={styles.safeArea}>
 
-            {/* Top row: step counter + skip/close */}
+          {/* ── Grabber + header ────────────────────────────────────── */}
+          <View style={styles.header} {...panResponder.panHandlers}>
+            <View style={styles.dragHandle} />
             <View style={styles.topRow}>
               <Text style={styles.stepCounter}>{stepLabel}</Text>
               {isFirstRun ? (
-                <TouchableOpacity onPress={completeTutorial} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <TouchableOpacity
+                  onPress={completeTutorial}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
                   <Text style={styles.skipText}>Skip</Text>
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity onPress={dismissTutorial} hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}>
+                <TouchableOpacity
+                  onPress={dismissTutorial}
+                  hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                >
                   <Ionicons name="close" size={20} color={colors.textTertiary} />
                 </TouchableOpacity>
               )}
             </View>
+          </View>
 
-            {/* Animated step content */}
-            <Animated.View style={[styles.contentArea, animStyle]}>
-              {/* Illustration */}
-              <View style={styles.illustration}>
-                <Ionicons name={step.icon as any} size={48} color={colors.primary} />
+          {/* ── Scrollable content ──────────────────────────────────── */}
+          <ScrollView
+            style={styles.scroll}
+            contentContainerStyle={styles.scrollContent}
+            showsVerticalScrollIndicator={false}
+            bounces={false}
+          >
+            <Animated.View key={step.id} style={[styles.contentArea, animStyle]}>
+              {/* Icon */}
+              <View style={styles.iconWrap}>
+                <Ionicons name={step.icon as any} size={28} color={colors.primary} />
               </View>
 
               <Text style={styles.title}>{step.title}</Text>
               <Text style={styles.body}>{step.body}</Text>
-            </Animated.View>
 
+              {/* Demo zone */}
+              <View style={styles.demoZone}>
+                <TutorialDemo kind={step.demo} onTap={advance} />
+              </View>
+            </Animated.View>
+          </ScrollView>
+
+          {/* ── Footer: dots + buttons ──────────────────────────────── */}
+          <View style={styles.footer}>
             {/* Dot indicators */}
             <View style={styles.dots}>
               {TUTORIAL_STEPS.map((_, i) => (
@@ -136,23 +156,29 @@ export default function TutorialModal() {
 
             {/* Navigation buttons */}
             <View style={styles.buttonRow}>
-              {currentStep > 0 ? (
-                <TouchableOpacity onPress={back} style={styles.backButton} activeOpacity={0.7}>
-                  <Text style={styles.backButtonText}>← Back</Text>
-                </TouchableOpacity>
-              ) : (
-                <View style={styles.backButton} />
-              )}
+              <TouchableOpacity
+                onPress={back}
+                style={styles.backButton}
+                activeOpacity={currentStep === 0 ? 1 : 0.7}
+              >
+                <Text style={[styles.backButtonText, currentStep === 0 && styles.backButtonDisabled]}>
+                  ← Back
+                </Text>
+              </TouchableOpacity>
 
               <TouchableOpacity
                 onPress={advance}
                 style={[styles.nextButton, isLast && styles.nextButtonCta]}
                 activeOpacity={0.8}
               >
+                {isLast && isFirstRun && (
+                  <Ionicons name="arrow-forward" size={16} color="#fff" style={{ marginRight: 6 }} />
+                )}
                 <Text style={styles.nextButtonText}>{rightCtaLabel}</Text>
               </TouchableOpacity>
             </View>
           </View>
+
         </SafeAreaView>
       </View>
     </Modal>
@@ -161,37 +187,30 @@ export default function TutorialModal() {
 
 function makeStyles(colors: any, shadow: any) {
   return StyleSheet.create({
-    overlay: {
+    root: {
       flex: 1,
-      backgroundColor: 'rgba(0,0,0,0.7)',
-      justifyContent: 'flex-end',
+      backgroundColor: colors.bg,
     },
     safeArea: {
-      justifyContent: 'flex-end',
+      flex: 1,
     },
-    sheet: {
-      backgroundColor: colors.surface,
-      borderTopLeftRadius: radius.xxl,
-      borderTopRightRadius: radius.xxl,
+    header: {
+      paddingTop: spacing.sm,
       paddingHorizontal: spacing.xxl,
-      paddingBottom: spacing.xxxl,
-      borderTopWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.border,
+      paddingBottom: spacing.sm,
     },
     dragHandle: {
       width: 36,
       height: 4,
       borderRadius: 2,
-      backgroundColor: colors.border,
+      backgroundColor: 'rgba(230,221,200,0.2)',
       alignSelf: 'center',
-      marginTop: spacing.md,
-      marginBottom: spacing.lg,
+      marginBottom: spacing.md,
     },
     topRow: {
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
-      marginBottom: spacing.xl,
     },
     stepCounter: {
       fontFamily: 'RobotoMono_500Medium',
@@ -205,19 +224,26 @@ function makeStyles(colors: any, shadow: any) {
       fontSize: 13,
       color: colors.textSecondary,
     },
-    contentArea: {
-      minHeight: 220,
+    scroll: {
+      flex: 1,
     },
-    illustration: {
-      width: 80,
-      height: 80,
-      borderRadius: radius.xl,
+    scrollContent: {
+      paddingHorizontal: spacing.xxl,
+      paddingBottom: spacing.lg,
+    },
+    contentArea: {
+      paddingTop: spacing.lg,
+    },
+    iconWrap: {
+      width: 52,
+      height: 52,
+      borderRadius: radius.lg,
       backgroundColor: colors.primaryLighter,
-      justifyContent: 'center',
-      alignItems: 'center',
-      marginBottom: spacing.xl,
       borderWidth: 1,
       borderColor: colors.primaryLight,
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginBottom: spacing.lg,
     },
     title: {
       fontFamily: 'Roboto_700Bold',
@@ -229,16 +255,26 @@ function makeStyles(colors: any, shadow: any) {
     },
     body: {
       fontFamily: 'Roboto_400Regular',
-      fontSize: 15,
-      lineHeight: 22,
+      fontSize: 14,
+      lineHeight: 21,
       color: colors.textSecondary,
+      marginBottom: spacing.xl,
+    },
+    demoZone: {
+      width: '100%',
+    },
+    footer: {
+      paddingHorizontal: spacing.xxl,
+      paddingBottom: spacing.lg,
+      paddingTop: spacing.md,
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderTopColor: colors.borderLight,
     },
     dots: {
       flexDirection: 'row',
       justifyContent: 'center',
       alignItems: 'center',
-      marginTop: spacing.xxl,
-      marginBottom: spacing.lg,
+      marginBottom: spacing.md,
       gap: 6,
     },
     dot: {
@@ -256,12 +292,11 @@ function makeStyles(colors: any, shadow: any) {
     buttonRow: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'space-between',
       gap: spacing.md,
     },
     backButton: {
       paddingVertical: spacing.md,
-      paddingHorizontal: spacing.md,
+      paddingHorizontal: spacing.sm,
       minWidth: 72,
     },
     backButtonText: {
@@ -269,12 +304,17 @@ function makeStyles(colors: any, shadow: any) {
       fontSize: 14,
       color: colors.textSecondary,
     },
+    backButtonDisabled: {
+      color: 'rgba(230,221,200,0.2)',
+    },
     nextButton: {
       flex: 1,
+      flexDirection: 'row',
       backgroundColor: colors.primary,
       borderRadius: radius.full,
       paddingVertical: spacing.md + 2,
       alignItems: 'center',
+      justifyContent: 'center',
       ...shadow.md,
     },
     nextButtonCta: {
