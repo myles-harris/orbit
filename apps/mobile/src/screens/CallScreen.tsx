@@ -272,15 +272,24 @@ export default function CallScreen() {
 
   // Build a WebRTC stream URL from the pip speaker's tracks. RTCPIPView (unlike
   // DailyMediaView) takes a streamURL string, so we create an RTCMediaStream.
+  // Derive stable track references so the effect only re-runs when the actual
+  // MediaStreamTrack objects change — not on every participant-updated event
+  // (which fires on audio level changes, etc. and would constantly churn the
+  // stream URL and prevent iOS from ever stabilising the PiP session).
+  // Fall back to local video when there are no remote participants (e.g. alone
+  // in the call). Local audio is excluded to avoid hearing yourself.
+  const pipVideoTrack = pipSpeaker
+    ? (pipSpeaker.tracks.video.state === 'playable' ? pipSpeaker.tracks.video.track : null)
+    : (localParticipant?.tracks.video.track ?? null);
+  const pipAudioTrack = pipSpeaker?.tracks.audio.state === 'playable' ? pipSpeaker.tracks.audio.track : null;
+
   const [pipStreamURL, setPipStreamURL] = useState<string | null>(null);
   useEffect(() => {
-    const video = pipSpeaker?.tracks.video.state === 'playable' ? pipSpeaker.tracks.video.track : null;
-    const audio = pipSpeaker?.tracks.audio.state === 'playable' ? pipSpeaker.tracks.audio.track : null;
-    const tracks = [video, audio].filter(Boolean) as any[];
+    const tracks = [pipVideoTrack, pipAudioTrack].filter(Boolean) as any[];
     const stream = tracks.length > 0 ? new RTCMediaStream(tracks) : null;
     setPipStreamURL(stream?.toURL() ?? null);
     return () => { (stream as any)?.release?.(); };
-  }, [pipSpeaker]);
+  }, [pipVideoTrack, pipAudioTrack]);
 
   // ─── PiP drag ────────────────────────────────────────────────────────────────
 
@@ -477,7 +486,7 @@ export default function CallScreen() {
         >
           <DailyMediaView
             key={`local-video-${localVideoKey}`}
-            videoTrack={(localParticipant.tracks.video.state === 'playable' ? localParticipant.tracks.video.track : null) || null}
+            videoTrack={localParticipant.tracks.video.track ?? null}
             audioTrack={null}
             mirror={useFrontCamera}
             style={styles.localVideo}
