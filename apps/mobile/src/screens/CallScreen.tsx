@@ -221,9 +221,38 @@ export default function CallScreen() {
     if (!callObjectRef.current || cameraFlippingRef.current) return;
     cameraFlippingRef.current = true;
     try {
-      await callObjectRef.current.cycleCamera();
-      setUseFrontCamera(prev => !prev);
+      // Stop the current track explicitly so AVFoundation fully releases the
+      // hardware before we reacquire it on the new camera.
+      const local = callObjectRef.current.participants().local;
+      const currentTrack = (local?.tracks?.video as any)?.track as MediaStreamTrack | undefined;
+      if (currentTrack) currentTrack.stop();
+
+      const nextFront = !useFrontCamera;
+
+      // Prefer an explicit deviceId over facingMode — facingMode is a hint and
+      // RN-WebRTC can return the same cached device without fully reinitializing
+      // it, which leaves the autofocus hardware in a bad state.
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(d => d.kind === 'videoinput');
+      const target = videoDevices.find(d =>
+        nextFront
+          ? /front|user|face/i.test(d.label)
+          : /back|rear|environment/i.test(d.label)
+      );
+
+      if (target?.deviceId) {
+        await callObjectRef.current.setCamera(target.deviceId);
+      } else {
+        await callObjectRef.current.cycleCamera();
+      }
+
+      setUseFrontCamera(nextFront);
       setLocalVideoKey(k => k + 1);
+
+      // Hold the lock for 600ms after the switch so the native OIS stabilization
+      // patch has time to find AVCaptureConnections and apply Standard mode
+      // before another toggle can start.
+      await new Promise(resolve => setTimeout(resolve, 600));
     } finally {
       cameraFlippingRef.current = false;
     }
