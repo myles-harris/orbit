@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, PanResponder, Dimensions, Alert, AppState, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing, PanResponder, Dimensions, Alert, AppState, Platform } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
@@ -25,6 +25,7 @@ export default function CallScreen() {
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [useFrontCamera, setUseFrontCamera] = useState(true);
   const [localVideoKey, setLocalVideoKey] = useState(0);
+  const [isChangingCamera, setIsChangingCamera] = useState(false);
   const videoEnabledRef = useRef(true);
   const preBackgroundVideoEnabled = useRef(true);
   const appStateRef = useRef(AppState.currentState);
@@ -146,8 +147,22 @@ export default function CallScreen() {
   // Fires when any track (including local video) transitions to playable. This
   // catches the rejoin case where joined-meeting fires before the local video
   // track is ready — we refresh participant state as soon as the track is live.
-  const handleTrackStarted = () => {
+  // Also triggers the deferred DailyMediaView remount after a camera switch,
+  // ensuring the new key is set only once the new track is actually available.
+  const handleTrackStarted = (event: DailyEventObject<'track-started'>) => {
     if (callObjectRef.current) setParticipants(callObjectRef.current.participants());
+    console.log('[TrackStarted] local=', event.participant?.local, 'kind=', event.track?.kind, 'pending=', pendingCameraRemountRef.current);
+    if (
+      pendingCameraRemountRef.current &&
+      event.participant?.local &&
+      event.track?.kind === 'video'
+    ) {
+      pendingCameraRemountRef.current = false;
+      // Notify toggleCamera that the new track is ready; it handles the state
+      // updates and starts phase 2 of the flip so everything stays in sync.
+      cameraTrackReadyResolveRef.current?.();
+      cameraTrackReadyResolveRef.current = null;
+    }
   };
 
   const handleParticipantLeft = (event: DailyEventObject<'participant-left'>) => {
@@ -216,22 +231,21 @@ export default function CallScreen() {
     }
   };
 
+  const flipAnim = useRef(new Animated.Value(0)).current;
   const cameraFlippingRef = useRef(false);
+  const pendingCameraRemountRef = useRef(false);
+  const cameraTrackReadyResolveRef = useRef<(() => void) | null>(null);
+  const toggleCameraRef = useRef<() => void>(() => {});
+  // Tracks mirror state as a ref so it's always in sync with localVideoKey at reveal time,
+  // regardless of React batching. Updated synchronously before every DailyMediaView remount.
+  const localVideoMirrorRef = useRef(true);
+
   const toggleCamera = async () => {
     if (!callObjectRef.current || cameraFlippingRef.current) return;
     cameraFlippingRef.current = true;
     try {
-      // Stop the current track explicitly so AVFoundation fully releases the
-      // hardware before we reacquire it on the new camera.
-      const local = callObjectRef.current.participants().local;
-      const currentTrack = (local?.tracks?.video as any)?.track as MediaStreamTrack | undefined;
-      if (currentTrack) currentTrack.stop();
-
       const nextFront = !useFrontCamera;
 
-      // Prefer an explicit deviceId over facingMode — facingMode is a hint and
-      // RN-WebRTC can return the same cached device without fully reinitializing
-      // it, which leaves the autofocus hardware in a bad state.
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter(d => d.kind === 'videoinput');
       const target = videoDevices.find(d =>
@@ -240,23 +254,74 @@ export default function CallScreen() {
           : /back|rear|environment/i.test(d.label)
       );
 
+      // Phase 1: current camera view (untouched) rotates to the vanishing point.
+      // setCamera is NOT called yet — Daily.co would swap the track immediately,
+      // showing the new camera during the animation. We wait until edge-on.
+      await new Promise<void>(resolve => {
+        Animated.timing(flipAnim, {
+          toValue: 1,
+          duration: 200,
+          easing: Easing.in(Easing.ease),
+          useNativeDriver: false,
+        }).start(() => resolve());
+      });
+
+      // Card is edge-on and invisible — now start the camera switch.
+      // Set up the ready promise BEFORE calling setCamera so a fast track-started
+      // doesn't slip past the listener.
+      const trackReadyPromise = new Promise<void>(resolve => {
+        cameraTrackReadyResolveRef.current = resolve;
+      });
+      pendingCameraRemountRef.current = true;
+
+      setIsChangingCamera(true);
+      setUseFrontCamera(nextFront);
+
+      let switchPromise: Promise<unknown>;
       if (target?.deviceId) {
-        await callObjectRef.current.setCamera(target.deviceId);
+        console.log('[CameraSwitch] using setCamera', target.deviceId);
+        switchPromise = callObjectRef.current.setCamera(target.deviceId);
       } else {
-        await callObjectRef.current.cycleCamera();
+        console.log('[CameraSwitch] FALLBACK cycleCamera — no device label matched');
+        switchPromise = callObjectRef.current.cycleCamera();
       }
 
-      setUseFrontCamera(nextFront);
+      await switchPromise;
+      await Promise.race([
+        trackReadyPromise,
+        new Promise<void>(resolve => setTimeout(resolve, 300)),
+      ]);
+      cameraTrackReadyResolveRef.current = null;
+      if (pendingCameraRemountRef.current) {
+        pendingCameraRemountRef.current = false;
+      }
+
+      // Phase 2: reveal new camera from the opposite side.
+      // Update mirror ref synchronously before the remount so the new DailyMediaView
+      // instance always gets the correct value, regardless of React batching.
+      localVideoMirrorRef.current = nextFront;
+      setIsChangingCamera(false);
       setLocalVideoKey(k => k + 1);
 
-      // Hold the lock for 600ms after the switch so the native OIS stabilization
-      // patch has time to find AVCaptureConnections and apply Standard mode
-      // before another toggle can start.
-      await new Promise(resolve => setTimeout(resolve, 600));
+      flipAnim.setValue(-1);
+      Animated.timing(flipAnim, {
+        toValue: 0,
+        duration: 200,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: false,
+      }).start();
+
+    } catch (e) {
+      pendingCameraRemountRef.current = false;
+      cameraTrackReadyResolveRef.current = null;
+      setIsChangingCamera(false);
+      flipAnim.setValue(0);
+      throw e;
     } finally {
       cameraFlippingRef.current = false;
     }
   };
+  toggleCameraRef.current = toggleCamera;
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60).toString().padStart(2, '0');
@@ -355,6 +420,10 @@ export default function CallScreen() {
           useNativeDriver: false,
           bounciness: 4,
         }).start();
+        // Treat small movements as a tap → flip camera
+        if (Math.abs(gesture.dx) < 5 && Math.abs(gesture.dy) < 5) {
+          toggleCameraRef.current();
+        }
       },
     })
   ).current;
@@ -508,18 +577,35 @@ export default function CallScreen() {
       )}
 
       {/* Local PiP (draggable) */}
-      {localParticipant && (
+      {localParticipant && videoEnabled && (
         <Animated.View
-          style={[styles.localVideoContainer, { left: pipPosition.x, top: pipPosition.y }]}
+          style={[styles.localPipWrapper, { left: pipPosition.x, top: pipPosition.y }]}
           {...pipPanResponder.panHandlers}
         >
-          <DailyMediaView
-            key={`local-video-${localVideoKey}`}
-            videoTrack={localParticipant.tracks.video.track ?? null}
-            audioTrack={null}
-            mirror={useFrontCamera}
-            style={styles.localVideo}
-          />
+          <Animated.View
+            style={{
+              flex: 1,
+              transform: [
+                { perspective: 800 },
+                {
+                  rotateY: flipAnim.interpolate({
+                    inputRange: [-1, 0, 1],
+                    outputRange: ['-90deg', '0deg', '90deg'],
+                  }),
+                },
+              ],
+            }}
+          >
+            <View style={styles.localVideoContainer}>
+              <DailyMediaView
+                key={`local-video-${localVideoKey}`}
+                videoTrack={isChangingCamera ? null : (localParticipant.tracks.video.track ?? null)}
+                audioTrack={null}
+                mirror={localVideoMirrorRef.current}
+                style={styles.localVideo}
+              />
+            </View>
+          </Animated.View>
         </Animated.View>
       )}
 
@@ -559,13 +645,6 @@ export default function CallScreen() {
             <Ionicons name={videoEnabled ? 'videocam' : 'videocam-off'} size={22} color="#fff" />
           </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.controlButton}
-            onPress={toggleCamera}
-            activeOpacity={0.8}
-          >
-            <Ionicons name="camera-reverse-outline" size={22} color="#fff" />
-          </TouchableOpacity>
         </View>
       </View>
     </View>
@@ -642,15 +721,21 @@ const styles = StyleSheet.create({
   },
 
   // ─── Local PiP ──────────────────────────────────────────────────────────────
-  localVideoContainer: {
+  // Outer: absolute position + drag target (no visual styling, no transform)
+  localPipWrapper: {
     position: 'absolute',
     width: 110,
     height: 150,
+    zIndex: 10,
+  },
+  // Inner: visual shell — kept on a separate layer from the 3D transform so
+  // overflow clipping and borderRadius don't interact with the rotation matrix
+  localVideoContainer: {
+    flex: 1,
     borderRadius: 16,
     overflow: 'hidden',
     borderWidth: 2,
     borderColor: 'rgba(255,255,255,0.3)',
-    zIndex: 10,
   },
   localVideo: {
     flex: 1,
