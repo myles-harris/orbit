@@ -277,7 +277,7 @@ export default function CallScreen() {
       setIsChangingCamera(true);
       setUseFrontCamera(nextFront);
 
-      let switchPromise: Promise<void>;
+      let switchPromise: Promise<unknown>;
       if (target?.deviceId) {
         console.log('[CameraSwitch] using setCamera', target.deviceId);
         switchPromise = callObjectRef.current.setCamera(target.deviceId);
