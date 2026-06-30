@@ -174,36 +174,35 @@ export const scheduler = {
     const now = new Date();
 
     try {
-      // Find all scheduled calls that are due and haven't expired yet
       const dueCalls = await prisma.callSession.findMany({
         where: {
           status: 'scheduled',
-          scheduled_at: {
-            lte: now
-          },
-          ends_at: {
-            gt: now
-          }
+          scheduled_at: { lte: now },
+          ends_at: { gt: now },
         },
-        include: {
-          group: {
-            include: {
-              members: {
-                include: {
-                  user: {
-                    include: {
-                      devices: true
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
       });
 
       for (const call of dueCalls) {
-        await this.activateCall(call.id, call.group);
+        // Atomically claim this call — only one worker instance can win.
+        const claimed = await prisma.callSession.updateMany({
+          where: { id: call.id, status: 'scheduled' },
+          data: { status: 'activating' },
+        });
+
+        if (claimed.count === 0) {
+          console.log(`[scheduler] Call ${call.id} already claimed by another worker, skipping`);
+          continue;
+        }
+
+        try {
+          await this.activateCall(call.id);
+        } catch (err) {
+          await prisma.callSession.update({
+            where: { id: call.id },
+            data: { status: 'scheduled' },
+          });
+          throw err;
+        }
       }
 
       if (dueCalls.length > 0) {
@@ -211,13 +210,14 @@ export const scheduler = {
       }
     } catch (error) {
       console.error('[scheduler] Error activating due calls:', error);
+      throw error;
     }
   },
 
   /**
    * Activate a specific call session
    */
-  async activateCall(callId: string, group: any) {
+  async activateCall(callId: string) {
     try {
       const call = await prisma.callSession.findUnique({
         where: { id: callId }
@@ -225,6 +225,20 @@ export const scheduler = {
 
       if (!call || !call.room_name) {
         console.error(`[scheduler] Call ${callId} not found or missing room name`);
+        return;
+      }
+
+      const group = await prisma.group.findUnique({
+        where: { id: call.group_id },
+        include: {
+          members: {
+            include: { user: { include: { devices: true } } },
+          },
+        },
+      });
+
+      if (!group) {
+        console.error(`[scheduler] Group ${call.group_id} not found for call ${callId}`);
         return;
       }
 
@@ -240,26 +254,20 @@ export const scheduler = {
         where: {
           group_id: group.id,
           status: 'active',
-          call_type: 'spontaneous'
+          call_type: 'spontaneous',
         }
       });
 
       if (activeSpontaneousCall) {
-        // Close the spontaneous call
         await prisma.callSession.update({
           where: { id: activeSpontaneousCall.id },
-          data: {
-            status: 'ended',
-            ended_at: new Date()
-          }
+          data: { status: 'ended', ended_at: new Date() },
         });
 
-        // Delete the Daily.co room
         if (activeSpontaneousCall.room_name) {
           await dailyVideo.deleteRoom(activeSpontaneousCall.room_name);
         }
 
-        // Notify members to dismiss Live Activities / ongoing notifications for the spontaneous call
         const spontaneousTokens = group.members.flatMap((m: any) =>
           m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
         );
@@ -280,11 +288,7 @@ export const scheduler = {
       // Update call status to active
       await prisma.callSession.update({
         where: { id: callId },
-        data: {
-          status: 'active',
-          started_at: new Date(),
-          room_url: roomUrl
-        }
+        data: { status: 'active', started_at: new Date(), room_url: roomUrl },
       });
 
       // Send push notifications to all non-muted group members
@@ -293,7 +297,7 @@ export const scheduler = {
         .flatMap((member: any) =>
           member.user.devices.map((device: any) => ({
             token: device.token,
-            platform: device.platform
+            platform: device.platform,
           }))
         );
 
@@ -316,6 +320,7 @@ export const scheduler = {
       console.log(`[scheduler] Activated scheduled call ${callId} for group ${group.name}`);
     } catch (error) {
       console.error(`[scheduler] Error activating call ${callId}:`, error);
+      throw error;
     }
   },
 
