@@ -38,6 +38,7 @@ enum Role {
 
 enum CallStatus {
   scheduled
+  activating
   active
   ended
 }
