@@ -10,6 +10,7 @@ public class CallLiveActivityModule: Module {
     /// Start a Live Activity for an incoming/active call.
     /// Returns the activity ID string, or null if Live Activities are unavailable.
     AsyncFunction("startActivityAsync") { (callId: String, groupId: String, state: [String: Any]) -> String? in
+      guard #available(iOS 16.2, *) else { return nil }
       guard ActivityAuthorizationInfo().areActivitiesEnabled else {
         return nil
       }
@@ -31,6 +32,7 @@ public class CallLiveActivityModule: Module {
 
     /// End the Live Activity identified by activityId.
     AsyncFunction("endActivityAsync") { (activityId: String) in
+      guard #available(iOS 16.2, *) else { return }
       for activity in Activity<CallActivityAttributes>.activities where activity.id == activityId {
         await activity.end(nil, dismissalPolicy: .immediate)
       }
