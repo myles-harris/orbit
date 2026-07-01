@@ -360,6 +360,51 @@ export const scheduler = {
   },
 
   /**
+   * Mark disconnected participants as left and close empty spontaneous calls.
+   * A participant is considered stale when their last heartbeat (or join time,
+   * if no heartbeat was ever received) is older than 90 seconds.
+   */
+  async pruneStaleParticipants() {
+    const cutoff = new Date(Date.now() - 30 * 1000);
+
+    try {
+      const stale = await prisma.callParticipant.findMany({
+        where: {
+          left_at: null,
+          OR: [
+            { last_seen_at: { lt: cutoff } },
+            { last_seen_at: null, joined_at: { lt: cutoff } },
+          ],
+          call: { status: 'active' },
+        },
+        include: { call: true },
+      });
+
+      for (const participant of stale) {
+        await prisma.callParticipant.update({
+          where: { id: participant.id },
+          data: { left_at: new Date() },
+        });
+
+        console.log(`[scheduler] Pruned stale participant ${participant.user_id} from call ${participant.call_id}`);
+
+        if (participant.call.call_type === 'spontaneous') {
+          const remaining = await prisma.callParticipant.count({
+            where: { call_id: participant.call_id, left_at: null },
+          });
+
+          if (remaining === 0) {
+            await this.closeCall(participant.call_id);
+            console.log(`[scheduler] Closed empty spontaneous call ${participant.call_id}`);
+          }
+        }
+      }
+    } catch (error) {
+      console.error('[scheduler] Error pruning stale participants:', error);
+    }
+  },
+
+  /**
    * Close a specific call session
    */
   async closeCall(callId: string) {
@@ -373,9 +418,14 @@ export const scheduler = {
         return;
       }
 
-      // Delete the Daily.co room — this kicks all participants out immediately
+      // Best-effort room deletion — don't let a Daily.co failure prevent the
+      // call from being marked ended in the DB.
       if (call.room_name) {
-        await dailyVideo.deleteRoom(call.room_name);
+        try {
+          await dailyVideo.deleteRoom(call.room_name);
+        } catch (roomErr) {
+          console.error(`[scheduler] Failed to delete Daily.co room for call ${callId} (continuing):`, roomErr);
+        }
       }
 
       // Update call status to ended

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
+import { scheduler } from '../services/scheduler.js';
 
 export const meRouter = Router();
 
@@ -56,6 +57,47 @@ meRouter.delete('/devices/register-push', requireJwt, async (req, res) => {
     res.json({ status: 'unregistered' });
   } catch (error) {
     console.error('[DELETE /me/devices/register-push] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+/**
+ * Called on app startup to immediately vacate any calls the user was in
+ * during a previous session that ended without an explicit leave (e.g. force-quit).
+ */
+meRouter.post('/calls/leave', requireJwt, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+
+    const activeParticipations = await prisma.callParticipant.findMany({
+      where: { user_id: userId, left_at: null },
+      include: { call: true },
+    });
+
+    console.log(`[POST /me/calls/leave] user=${userId} found ${activeParticipations.length} open participation(s)`);
+
+    for (const participant of activeParticipations) {
+      await prisma.callParticipant.update({
+        where: { id: participant.id },
+        data: { left_at: new Date() },
+      });
+
+      console.log(`[POST /me/calls/leave] marked participant ${participant.id} as left (call=${participant.call_id}, type=${participant.call.call_type}, status=${participant.call.status})`);
+
+      if (participant.call.status === 'active' && participant.call.call_type === 'spontaneous') {
+        const remaining = await prisma.callParticipant.count({
+          where: { call_id: participant.call_id, left_at: null },
+        });
+        console.log(`[POST /me/calls/leave] call ${participant.call_id} has ${remaining} remaining participant(s)`);
+        if (remaining === 0) {
+          await scheduler.closeCall(participant.call_id);
+        }
+      }
+    }
+
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[POST /me/calls/leave] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });

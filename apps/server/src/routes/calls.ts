@@ -489,6 +489,30 @@ callsRouter.post('/:id/calls/:callId/end', requireJwt, async (req, res) => {
 });
 
 /**
+ * Heartbeat from a participant to confirm they are still in the call.
+ * Sent every 30s by the mobile client. The scheduler prunes participants
+ * whose last heartbeat is older than 90s and closes empty spontaneous calls.
+ */
+callsRouter.post('/:id/calls/:callId/heartbeat', requireJwt, async (req, res) => {
+  const callId = req.params.callId;
+  const userId = (req as any).userId as string;
+
+  const participant = await prisma.callParticipant.findFirst({
+    where: { call_id: callId, user_id: userId, left_at: null },
+    orderBy: { joined_at: 'desc' },
+  });
+
+  if (participant) {
+    await prisma.callParticipant.update({
+      where: { id: participant.id },
+      data: { last_seen_at: new Date() },
+    });
+  }
+
+  res.json({ ok: true });
+});
+
+/**
  * DEV: Get all scheduled calls for a group
  * Useful for testing and debugging
  */
