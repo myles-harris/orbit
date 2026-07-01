@@ -13,6 +13,8 @@ export async function processJob(job: Job) {
       return scheduler.activateDueCalls();
     case 'close-expired-calls':
       return scheduler.closeExpiredCalls();
+    case 'prune-stale-participants':
+      return scheduler.pruneStaleParticipants();
     default:
       throw new Error(`[scheduler-worker] Unknown job: ${job.name}`);
   }

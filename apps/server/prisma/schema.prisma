@@ -107,11 +107,12 @@ model CallSession {
 }
 
 model CallParticipant {
-  id        String    @id @default(uuid())
-  call_id   String
-  user_id   String
-  joined_at DateTime  @default(now()) @db.Timestamptz(6)
-  left_at   DateTime? @db.Timestamptz(6)
+  id           String    @id @default(uuid())
+  call_id      String
+  user_id      String
+  joined_at    DateTime  @default(now()) @db.Timestamptz(6)
+  left_at      DateTime? @db.Timestamptz(6)
+  last_seen_at DateTime? @db.Timestamptz(6)
 
   // Relations
   call CallSession @relation(fields: [call_id], references: [id], onDelete: Cascade)

@@ -27,7 +27,6 @@ export default function CallScreen() {
   const [localVideoKey, setLocalVideoKey] = useState(0);
   const [isChangingCamera, setIsChangingCamera] = useState(false);
   const videoEnabledRef = useRef(true);
-  const preBackgroundVideoEnabled = useRef(true);
   const appStateRef = useRef(AppState.currentState);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(
     endsAt ? Math.max(0, Math.round((new Date(endsAt).getTime() - Date.now()) / 1000)) : null
@@ -52,36 +51,50 @@ export default function CallScreen() {
   }, [videoEnabled]);
 
   // Handle app state transitions during an active call:
-  // • active → background: disable local video (camera is suspended by the OS
-  //   anyway; being explicit signals Daily.co to send a placeholder frame
-  //   rather than a frozen one). On Android, trigger system PiP.
-  // • background/inactive → active: re-enable local video and force the
-  //   DailyMediaView to remount so it re-attaches the fresh (unfrozen) track.
-  //   This also fixes the screenshot-freeze case on iOS.
+  // • active → background: leave local video/audio running. iOS's call PiP
+  //   (RTCPIPView with startAutomatically) and Android's PiP activity both
+  //   keep the camera and mic capturing while backgrounded, so other
+  //   participants should keep seeing and hearing this participant. On
+  //   Android, also trigger system PiP explicitly.
+  // • background/inactive → active: if video is on, force the
+  //   DailyMediaView to remount so it re-attaches a fresh track. This fixes
+  //   the local preview occasionally showing a stale/frozen frame after
+  //   returning to the foreground (the outgoing track itself never stopped).
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (appStateRef.current === 'active' && nextState === 'background') {
-        if (callObjectRef.current) {
-          preBackgroundVideoEnabled.current = videoEnabledRef.current;
-          callObjectRef.current.setLocalVideo(false);
-          videoEnabledRef.current = false;
-          setVideoEnabled(false);
-        }
+        console.log('[PiP] app backgrounded');
         if (Platform.OS === 'android') {
           PipModule.enterPipMode();
         }
       } else if (appStateRef.current !== 'active' && nextState === 'active') {
-        if (callObjectRef.current && preBackgroundVideoEnabled.current) {
+        if (callObjectRef.current && videoEnabledRef.current) {
           callObjectRef.current.setLocalVideo(false);
           callObjectRef.current.setLocalVideo(true);
-          videoEnabledRef.current = true;
-          setVideoEnabled(true);
           setLocalVideoKey(k => k + 1);
+        } else if (!videoEnabledRef.current && pipStreamRef.current) {
+          // Video was intentionally off before backgrounding — clear the PiP
+          // stream now that we're back in the foreground.
+          (pipStreamRef.current as any)?.release?.();
+          pipStreamRef.current = null;
+          setPipStreamURL(null);
         }
       }
       appStateRef.current = nextState;
     });
     return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    const interval = setInterval(async () => {
+      try {
+        const client = await createAuthenticatedApiClient();
+        await client.post(`/groups/${groupId}/calls/${callId}/heartbeat`, {});
+      } catch {
+        // non-fatal — server prunes stale participants after 90s of no heartbeat
+      }
+    }, 10_000);
+    return () => clearInterval(interval);
   }, []);
 
   useEffect(() => {
@@ -377,13 +390,64 @@ export default function CallScreen() {
     : (localParticipant?.tracks.video.track ?? null);
   const pipAudioTrack = pipSpeaker?.tracks.audio.state === 'playable' ? pipSpeaker.tracks.audio.track : null;
 
+  // Solo-in-call PiP is fed by the local camera track, which iOS can briefly
+  // drop (state flips away from 'playable', or the track ref goes null) right
+  // as the app resigns active — before call-PiP capture continuation kicks
+  // in. If we tore the stream down immediately, AVKit would kill the PiP
+  // window the instant it lost its content source. Instead, hold onto the
+  // last good stream and only clear it if no track recovers within a beat.
+  const pipStreamRef = useRef<RTCMediaStream | null>(null);
+  const pipClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [pipStreamURL, setPipStreamURL] = useState<string | null>(null);
   useEffect(() => {
     const tracks = [pipVideoTrack, pipAudioTrack].filter(Boolean) as any[];
-    const stream = tracks.length > 0 ? new RTCMediaStream(tracks) : null;
-    setPipStreamURL(stream?.toURL() ?? null);
-    return () => { (stream as any)?.release?.(); };
+    console.log(
+      '[PiP] tracks effect — speaker:', !!pipSpeaker,
+      'video:', !!pipVideoTrack, 'audio:', !!pipAudioTrack,
+      'hadStream:', !!pipStreamRef.current
+    );
+
+    if (pipClearTimerRef.current) {
+      clearTimeout(pipClearTimerRef.current);
+      pipClearTimerRef.current = null;
+    }
+
+    if (tracks.length > 0) {
+      const stream = new RTCMediaStream(tracks);
+      const previous = pipStreamRef.current;
+      pipStreamRef.current = stream;
+      const url = stream.toURL();
+      console.log('[PiP] setting stream URL:', url);
+      setPipStreamURL(url);
+      (previous as any)?.release?.();
+    } else if (pipStreamRef.current) {
+      if (appStateRef.current === 'active') {
+        // Foregrounded and tracks gone — user toggled video off. Clear after
+        // a brief beat in case of a transient track hiccup during a camera
+        // switch or rejoin.
+        console.log('[PiP] no tracks (foreground) — starting clear timer');
+        pipClearTimerRef.current = setTimeout(() => {
+          console.log('[PiP] clear timer fired — clearing stream URL');
+          (pipStreamRef.current as any)?.release?.();
+          pipStreamRef.current = null;
+          setPipStreamURL(null);
+          pipClearTimerRef.current = null;
+        }, 1500);
+      } else {
+        // Backgrounded — camera is suspended while iOS establishes the PiP
+        // session. Hold the stream alive so RTCPIPView stays mounted and
+        // AVKit can complete the PiP start-up animation.
+        console.log('[PiP] no tracks (background) — holding stream for PiP');
+      }
+    }
   }, [pipVideoTrack, pipAudioTrack]);
+
+  useEffect(() => {
+    return () => {
+      if (pipClearTimerRef.current) clearTimeout(pipClearTimerRef.current);
+      (pipStreamRef.current as any)?.release?.();
+    };
+  }, []);
 
   // ─── PiP drag ────────────────────────────────────────────────────────────────
 

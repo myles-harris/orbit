@@ -89,6 +89,7 @@ export const dailyVideo = {
     try {
       const properties: any = {
         room_name: roomName,
+        user_id: userId,
         user_name: userId,
         enable_screenshare: true,
         start_video_off: false,

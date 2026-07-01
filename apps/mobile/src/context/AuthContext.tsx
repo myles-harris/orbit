@@ -1,7 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import { setSessionExpiredHandler, API_URL } from '../utils/apiClient';
+import { setSessionExpiredHandler, API_URL, createAuthenticatedApiClient } from '../utils/apiClient';
 import { ApiClient } from '@orbit/shared';
 
 interface AuthContextType {
@@ -25,7 +25,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const checkAuth = async () => {
     try {
       const token = await SecureStore.getItemAsync('access_token');
-      setIsAuthenticated(!!token);
+      const isAuth = !!token;
+      setIsAuthenticated(isAuth);
+      if (isAuth) {
+        // Fire-and-forget: vacate any calls left open when the app was killed
+        createAuthenticatedApiClient()
+          .then(client => client.post('/me/calls/leave', {}))
+          .catch(() => {});
+      }
     } catch (error) {
       console.error('Failed to check auth:', error);
       setIsAuthenticated(false);

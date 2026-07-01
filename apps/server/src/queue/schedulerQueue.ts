@@ -14,7 +14,8 @@ export const schedulerQueue = new Queue('scheduler', {
 export type SchedulerJobName =
   | 'generate-scheduled-calls'
   | 'activate-due-calls'
-  | 'close-expired-calls';
+  | 'close-expired-calls'
+  | 'prune-stale-participants';
 
 export async function registerSchedulerJobs() {
   await schedulerQueue.upsertJobScheduler(
@@ -33,6 +34,12 @@ export async function registerSchedulerJobs() {
     'close-expired-calls',
     { every: 60 * 1000 },
     { name: 'close-expired-calls' }
+  );
+
+  await schedulerQueue.upsertJobScheduler(
+    'prune-stale-participants',
+    { every: 30 * 1000 },
+    { name: 'prune-stale-participants' }
   );
 
   console.log('[scheduler-queue] Repeatable jobs registered');
