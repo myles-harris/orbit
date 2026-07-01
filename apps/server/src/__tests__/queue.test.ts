@@ -14,6 +14,7 @@ jest.mock('../services/scheduler', () => ({
     generateScheduledCalls: jest.fn().mockResolvedValue(undefined),
     activateDueCalls: jest.fn().mockResolvedValue(undefined),
     closeExpiredCalls: jest.fn().mockResolvedValue(undefined),
+    pruneStaleParticipants: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -28,23 +29,24 @@ describe('registerSchedulerJobs', () => {
     mockUpsertJobScheduler.mockClear();
   });
 
-  it('registers all three repeatable jobs', async () => {
+  it('registers all four repeatable jobs', async () => {
     await registerSchedulerJobs();
 
-    expect(mockUpsertJobScheduler).toHaveBeenCalledTimes(3);
+    expect(mockUpsertJobScheduler).toHaveBeenCalledTimes(4);
     const jobNames = mockUpsertJobScheduler.mock.calls.map(
       ([name]: [string]) => name
     );
     expect(jobNames).toContain('generate-scheduled-calls');
     expect(jobNames).toContain('activate-due-calls');
     expect(jobNames).toContain('close-expired-calls');
+    expect(jobNames).toContain('prune-stale-participants');
   });
 
-  it('calling twice calls upsertJobScheduler 6 times total (idempotent by design in Redis)', async () => {
+  it('calling twice calls upsertJobScheduler 8 times total (idempotent by design in Redis)', async () => {
     await registerSchedulerJobs();
     await registerSchedulerJobs();
 
-    expect(mockUpsertJobScheduler).toHaveBeenCalledTimes(6);
+    expect(mockUpsertJobScheduler).toHaveBeenCalledTimes(8);
   });
 
   it('registers activate-due-calls with a 1-minute interval', async () => {
@@ -65,6 +67,16 @@ describe('registerSchedulerJobs', () => {
     );
     expect(generateCall).toBeDefined();
     expect(generateCall[1]).toEqual({ every: 60 * 60 * 1000 });
+  });
+
+  it('registers prune-stale-participants with a 30-second interval', async () => {
+    await registerSchedulerJobs();
+
+    const pruneCall = mockUpsertJobScheduler.mock.calls.find(
+      ([name]: [string]) => name === 'prune-stale-participants'
+    );
+    expect(pruneCall).toBeDefined();
+    expect(pruneCall[1]).toEqual({ every: 30 * 1000 });
   });
 });
 
@@ -88,6 +100,11 @@ describe('processJob', () => {
   it('calls scheduler.closeExpiredCalls for close-expired-calls', async () => {
     await processJob({ name: 'close-expired-calls' } as any);
     expect(scheduler.closeExpiredCalls).toHaveBeenCalledTimes(1);
+  });
+
+  it('calls scheduler.pruneStaleParticipants for prune-stale-participants', async () => {
+    await processJob({ name: 'prune-stale-participants' } as any);
+    expect(scheduler.pruneStaleParticipants).toHaveBeenCalledTimes(1);
   });
 
   it('throws on an unknown job name', async () => {
