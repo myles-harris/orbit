@@ -75,7 +75,7 @@ export default function CallScreen() {
         } else if (!videoEnabledRef.current && pipStreamRef.current) {
           // Video was intentionally off before backgrounding — clear the PiP
           // stream now that we're back in the foreground.
-          (pipStreamRef.current as any)?.release?.();
+          (pipStreamRef.current as any)?.release?.(false);
           pipStreamRef.current = null;
           setPipStreamURL(null);
         }
@@ -419,7 +419,7 @@ export default function CallScreen() {
       const url = stream.toURL();
       console.log('[PiP] setting stream URL:', url);
       setPipStreamURL(url);
-      (previous as any)?.release?.();
+      (previous as any)?.release?.(false);
     } else if (pipStreamRef.current) {
       if (appStateRef.current === 'active') {
         // Foregrounded and tracks gone — user toggled video off. Clear after
@@ -428,7 +428,7 @@ export default function CallScreen() {
         console.log('[PiP] no tracks (foreground) — starting clear timer');
         pipClearTimerRef.current = setTimeout(() => {
           console.log('[PiP] clear timer fired — clearing stream URL');
-          (pipStreamRef.current as any)?.release?.();
+          (pipStreamRef.current as any)?.release?.(false);
           pipStreamRef.current = null;
           setPipStreamURL(null);
           pipClearTimerRef.current = null;
@@ -445,7 +445,7 @@ export default function CallScreen() {
   useEffect(() => {
     return () => {
       if (pipClearTimerRef.current) clearTimeout(pipClearTimerRef.current);
-      (pipStreamRef.current as any)?.release?.();
+      (pipStreamRef.current as any)?.release?.(false);
     };
   }, []);
 
