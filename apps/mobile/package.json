@@ -11,6 +11,7 @@
     "prebuild:shared": "cd ../../packages/shared && npm run build"
   },
   "dependencies": {
+    "@bacons/apple-targets": "^3.0.7",
     "@daily-co/config-plugin-rn-daily-js": "^0.0.11",
     "@daily-co/react-native-daily-js": "^0.83.0",
     "@daily-co/react-native-webrtc": "^124.0.6-daily.1",
@@ -49,6 +50,7 @@
   },
   "devDependencies": {
     "@expo/ngrok": "^4.1.3",
+    "@expo/prebuild-config": "^54.0.8",
     "@react-native-community/cli": "latest",
     "@types/react": "~19.1.10",
     "typescript": "~5.9.2"
