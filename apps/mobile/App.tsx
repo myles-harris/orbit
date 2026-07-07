@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
-import { CallLiveActivity } from './modules/CallLiveActivity';
+import { CallLiveActivity } from './modules/call-live-activity';
+import CallNotification from './modules/call-notification';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import * as Notifications from 'expo-notifications';
@@ -48,7 +49,6 @@ function AppContent() {
 
   // Track active call presence state
   const liveActivityIdRef = useRef<string | null>(null);
-  const ongoingNotifIdRef = useRef<string | null>(null);
 
   // ─── Android notification channel ──────────────────────────────────────────
   useEffect(() => {
@@ -65,6 +65,13 @@ function AppContent() {
   useEffect(() => {
     if (isAuthenticated) {
       setupPushNotifications();
+    }
+  }, [isAuthenticated]);
+
+  // Sweep any stale Live Activities left over from a previous session/crash
+  useEffect(() => {
+    if (isAuthenticated && Platform.OS === 'ios' && CallLiveActivity) {
+      CallLiveActivity.endAllActivitiesAsync().catch(() => {});
     }
   }, [isAuthenticated]);
 
@@ -90,34 +97,12 @@ function AppContent() {
     callType: 'spontaneous' | 'scheduled',
     endsAt?: string,
   ) => {
-    // Android: post a non-dismissable local ongoing notification
-    if (Platform.OS === 'android') {
-      // Dismiss any previous ongoing notification first
-      if (ongoingNotifIdRef.current) {
-        await Notifications.dismissNotificationAsync(ongoingNotifIdRef.current).catch(() => {});
-        ongoingNotifIdRef.current = null;
-      }
-      const endsAtDate = endsAt ? new Date(endsAt) : null;
-      const bodyText = endsAtDate
-        ? `Active Call • Ends ${endsAtDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
-        : 'Active Call • Tap to join';
-      try {
-        const id = await Notifications.scheduleNotificationAsync({
-          content: {
-            title: `${groupName} is calling!`,
-            body: bodyText,
-            data: { callId, groupId, type: 'call_started' },
-            sticky: true,
-            autoDismiss: false,
-            // channelId is valid at runtime but missing from this SDK's TS types
-            ...({ channelId: 'call-ongoing' } as any),
-          },
-          trigger: null,
-        });
-        ongoingNotifIdRef.current = id;
-      } catch (e) {
-        console.error('[presence] Failed to post ongoing notification:', e);
-      }
+    // Android: post a non-dismissable local ongoing notification with live chronometer
+    if (Platform.OS === 'android' && CallNotification) {
+      CallNotification.postOngoingCall(
+        groupName, callId, groupId,
+        endsAt ? new Date(endsAt).getTime() : null,
+      );
     }
 
     // iOS: start a Live Activity (requires native module + Xcode setup)
@@ -141,13 +126,12 @@ function AppContent() {
   }, []);
 
   const endCallPresence = useCallback(async () => {
-    if (Platform.OS === 'android' && ongoingNotifIdRef.current) {
-      await Notifications.dismissNotificationAsync(ongoingNotifIdRef.current).catch(() => {});
-      ongoingNotifIdRef.current = null;
+    if (Platform.OS === 'android' && CallNotification) {
+      CallNotification.cancelOngoingCall();
     }
 
-    if (Platform.OS === 'ios' && liveActivityIdRef.current && CallLiveActivity) {
-      await CallLiveActivity.endActivityAsync(liveActivityIdRef.current).catch(() => {});
+    if (Platform.OS === 'ios' && CallLiveActivity) {
+      await CallLiveActivity.endAllActivitiesAsync().catch(() => {});
       liveActivityIdRef.current = null;
     }
   }, []);
