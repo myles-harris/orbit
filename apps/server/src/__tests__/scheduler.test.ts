@@ -120,7 +120,8 @@ describe('scheduler.generateCallsForGroup', () => {
     });
     expect(calls).toHaveLength(3);
 
-    const days = calls.map((c) => c.scheduled_at!.toISOString().slice(0, 10));
+    const ptFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' });
+    const days = calls.map((c) => ptFmt.format(c.scheduled_at!));
     const uniqueDays = new Set(days);
     expect(uniqueDays.size).toBe(3);
   });
