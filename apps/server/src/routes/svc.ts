@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../db/prisma.js';
 import { scheduler } from '../services/scheduler.js';
+import { dailyVideo } from '../services/dailyVideo.js';
 
 export const svcRouter = Router();
 
@@ -82,6 +83,18 @@ svcRouter.post('/daily/webhook', async (req, res) => {
       });
 
       if (remaining === 0) {
+        const presence = call.room_name
+          ? await dailyVideo.getRoomPresenceCount(call.room_name)
+          : null;
+
+        if (presence !== null && presence > 0) {
+          console.warn(
+            `[daily-webhook] Call ${call.id} empty in DB but Daily reports ` +
+            `${presence} connected — skipping close`
+          );
+          return;
+        }
+
         await scheduler.closeCall(call.id);
         console.log(`[daily-webhook] Closed empty spontaneous call ${call.id}`);
       }

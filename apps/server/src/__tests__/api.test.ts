@@ -1559,6 +1559,23 @@ describe('Calls endpoints', () => {
 
       expect(res.status).toBe(403);
     });
+
+    it('seeds last_seen_at on the created participant row (A2 regression guard)', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/join-token`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      const participant = await prisma.callParticipant.findFirst({
+        where: { call_id: call.id, user_id: user.id },
+      });
+      expect(participant).not.toBeNull();
+      expect(participant!.last_seen_at).not.toBeNull();
+    });
   });
 
   describe('POST /groups/:id/calls/:callId/leave', () => {
