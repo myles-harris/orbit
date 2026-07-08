@@ -2,9 +2,6 @@ import WidgetKit
 import SwiftUI
 import ActivityKit
 
-// NOTE: CallActivityAttributes.swift from the parent ios/ directory must also be
-// added to this extension target in Xcode (or use a shared Swift package).
-
 @main
 struct CallLiveActivityExtensionBundle: WidgetBundle {
   var body: some Widget {
@@ -15,7 +12,6 @@ struct CallLiveActivityExtensionBundle: WidgetBundle {
 struct CallLiveActivityWidget: Widget {
   var body: some WidgetConfiguration {
     ActivityConfiguration(for: CallActivityAttributes.self) { context in
-      // Lock screen / StandBy banner
       LockScreenCallView(state: context.state)
         .activityBackgroundTint(Color.black.opacity(0.75))
         .activitySystemActionForegroundColor(.white)
@@ -28,8 +24,9 @@ struct CallLiveActivityWidget: Widget {
             .lineLimit(1)
         }
         DynamicIslandExpandedRegion(.trailing) {
-          if context.state.callType == "scheduled", let endsAt = context.state.endsAt {
-            Text(timerInterval: Date.now...endsAt, countsDown: true)
+          if context.state.callType == "scheduled", let ms = context.state.endsAtMs {
+            let endsAt = Date(timeIntervalSince1970: ms / 1000)
+            Text(timerInterval: Date.now...max(endsAt, Date.now), countsDown: true)
               .font(.subheadline.monospacedDigit())
               .foregroundColor(.green)
               .frame(width: 64, alignment: .trailing)
@@ -44,8 +41,9 @@ struct CallLiveActivityWidget: Widget {
         Image(systemName: "phone.fill")
           .foregroundColor(.green)
       } compactTrailing: {
-        if context.state.callType == "scheduled", let endsAt = context.state.endsAt {
-          Text(timerInterval: Date.now...endsAt, countsDown: true)
+        if context.state.callType == "scheduled", let ms = context.state.endsAtMs {
+          let endsAt = Date(timeIntervalSince1970: ms / 1000)
+          Text(timerInterval: Date.now...max(endsAt, Date.now), countsDown: true)
             .font(.caption2.monospacedDigit())
             .foregroundColor(.green)
             .frame(width: 52)
@@ -60,8 +58,6 @@ struct CallLiveActivityWidget: Widget {
     }
   }
 }
-
-// MARK: - Lock screen view
 
 struct LockScreenCallView: View {
   let state: CallActivityAttributes.CallState
@@ -78,12 +74,13 @@ struct LockScreenCallView: View {
           .foregroundColor(.white)
           .lineLimit(1)
 
-        if state.callType == "scheduled", let endsAt = state.endsAt {
+        if state.callType == "scheduled", let ms = state.endsAtMs {
+          let endsAt = Date(timeIntervalSince1970: ms / 1000)
           HStack(spacing: 4) {
             Text("Ends in")
               .font(.subheadline)
               .foregroundColor(.white.opacity(0.7))
-            Text(timerInterval: Date.now...endsAt, countsDown: true)
+            Text(timerInterval: Date.now...max(endsAt, Date.now), countsDown: true)
               .font(.subheadline.monospacedDigit())
               .foregroundColor(.green)
           }

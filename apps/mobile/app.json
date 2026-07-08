@@ -34,7 +34,8 @@
       "expo-notifications",
       "@daily-co/config-plugin-rn-daily-js",
       "expo-font",
-      "./withPip"
+      "./withPip",
+      ["@bacons/apple-targets", { "appleTeamId": "4B85QC9P6S" }]
     ],
     "extra": {
       "eas": {
