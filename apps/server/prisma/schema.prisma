@@ -90,6 +90,7 @@ model CallSession {
   status       CallStatus
   call_type    CallType   @default(spontaneous)
   scheduled_at DateTime?  @db.Timestamptz(6)
+  claimed_at   DateTime?  @db.Timestamptz(6)
   started_at   DateTime?  @db.Timestamptz(6)
   ends_at      DateTime?  @db.Timestamptz(6)
   ended_at     DateTime?  @db.Timestamptz(6)

@@ -1,6 +1,10 @@
 import { PrismaClient, Cadence, CallStatus } from '@prisma/client';
 import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
+import { calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc } from '../util/scheduleTime.js';
+
+/** A participant is stale after this long with no heartbeat (client beats every 10s). */
+const HEARTBEAT_STALE_MS = 90 * 1000;
 
 const prisma = new PrismaClient();
 
@@ -34,107 +38,62 @@ export const scheduler = {
   },
 
   /**
-   * Generate scheduled calls for a specific group
+   * Generate scheduled calls for a specific group.
+   * All times fall within [6:00 AM, 10:00 PM) America/Los_Angeles, DST-correct.
    */
   async generateCallsForGroup(groupId: string, cadence: Cadence, weeklyFrequency: number | null) {
-    const now = new Date();
-    const tomorrow = new Date(now);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-    tomorrow.setHours(0, 0, 0, 0);
-
-    const endOfPeriod = new Date(tomorrow);
+    const todayPT = calendarDateInTz(new Date());
+    const tomorrowPT = addDays(todayPT, 1);
 
     if (cadence === 'daily') {
-      // For daily cadence, schedule one call for tomorrow
-      endOfPeriod.setDate(endOfPeriod.getDate() + 1);
+      const { start, end } = dayBoundsUtc(tomorrowPT);
 
-      // Check if we already have a scheduled call for tomorrow
       const existingCall = await prisma.callSession.findFirst({
         where: {
           group_id: groupId,
           status: 'scheduled',
-          scheduled_at: {
-            gte: tomorrow,
-            lt: endOfPeriod
-          }
-        }
+          scheduled_at: { gte: start, lt: end },
+        },
       });
 
       if (!existingCall) {
-        const randomTime = this.getRandomTime(tomorrow, endOfPeriod);
+        const randomTime = randomTimeInWindow(tomorrowPT);
         await this.createScheduledCall(groupId, randomTime);
         console.log(`[scheduler] Scheduled daily call for group ${groupId} at ${randomTime.toISOString()}`);
       }
     } else if (cadence === 'weekly') {
-      // For weekly cadence, schedule N calls for the next 7 days
-      endOfPeriod.setDate(endOfPeriod.getDate() + 7);
+      const weekStart = dayBoundsUtc(tomorrowPT).start;
+      const weekEnd = dayBoundsUtc(addDays(tomorrowPT, 7)).start;
 
       const frequency = weeklyFrequency || 1;
 
-      // Check how many calls are already scheduled for the next week
       const existingCalls = await prisma.callSession.count({
         where: {
           group_id: groupId,
           status: 'scheduled',
-          scheduled_at: {
-            gte: tomorrow,
-            lt: endOfPeriod
-          }
-        }
+          scheduled_at: { gte: weekStart, lt: weekEnd },
+        },
       });
 
       const callsToCreate = frequency - existingCalls;
 
       if (callsToCreate > 0) {
-        // Generate random times for the week and select N of them
-        const randomTimes = this.getRandomTimesForWeek(tomorrow, callsToCreate);
+        // Pick distinct PT calendar days (max 1 call/day), random time in window on each.
+        const dayOffsets = Array.from({ length: 7 }, (_, i) => i)
+          .sort(() => Math.random() - 0.5)
+          .slice(0, Math.min(callsToCreate, 7));
 
-        for (const time of randomTimes) {
+        const times = dayOffsets
+          .map(offset => randomTimeInWindow(addDays(tomorrowPT, offset)))
+          .sort((a, b) => a.getTime() - b.getTime());
+
+        for (const time of times) {
           await this.createScheduledCall(groupId, time);
         }
 
-        console.log(`[scheduler] Scheduled ${callsToCreate} weekly calls for group ${groupId}`);
+        console.log(`[scheduler] Scheduled ${times.length} weekly call(s) for group ${groupId}`);
       }
     }
-  },
-
-  /**
-   * Get a random time between start and end dates
-   */
-  getRandomTime(start: Date, end: Date): Date {
-    const startTime = start.getTime();
-    const endTime = end.getTime();
-    const randomTime = startTime + Math.random() * (endTime - startTime);
-    return new Date(randomTime);
-  },
-
-  /**
-   * Get N random times spread across the week
-   * Ensures no two calls are on the same day
-   */
-  getRandomTimesForWeek(startOfWeek: Date, count: number): Date[] {
-    const times: Date[] = [];
-    const usedDays = new Set<number>();
-
-    // Generate array of available days (0-6)
-    const availableDays = Array.from({ length: 7 }, (_, i) => i);
-
-    // Shuffle and select first N days
-    const shuffled = availableDays.sort(() => Math.random() - 0.5);
-    const selectedDays = shuffled.slice(0, Math.min(count, 7));
-
-    for (const dayOffset of selectedDays) {
-      const dayStart = new Date(startOfWeek);
-      dayStart.setDate(dayStart.getDate() + dayOffset);
-      dayStart.setHours(8, 0, 0, 0); // Start at 8 AM
-
-      const dayEnd = new Date(dayStart);
-      dayEnd.setHours(22, 0, 0, 0); // End at 10 PM
-
-      times.push(this.getRandomTime(dayStart, dayEnd));
-    }
-
-    return times.sort((a, b) => a.getTime() - b.getTime());
   },
 
   /**
@@ -174,6 +133,27 @@ export const scheduler = {
     const now = new Date();
 
     try {
+      const RECLAIM_AFTER_MS = 2 * 60 * 1000;
+
+      // Recover calls orphaned in 'activating' by a crash or redeploy mid-activation.
+      const reclaimed = await prisma.callSession.updateMany({
+        where: {
+          status: 'activating',
+          claimed_at: { lt: new Date(Date.now() - RECLAIM_AFTER_MS) },
+          ends_at: { gt: now },
+        },
+        data: { status: 'scheduled', claimed_at: null },
+      });
+      if (reclaimed.count > 0) {
+        console.warn(`[scheduler] Reclaimed ${reclaimed.count} call(s) stuck in 'activating'`);
+      }
+
+      // Mark stuck activating calls whose window has passed as ended.
+      await prisma.callSession.updateMany({
+        where: { status: 'activating', ends_at: { lte: now } },
+        data: { status: 'ended', ended_at: now },
+      });
+
       const dueCalls = await prisma.callSession.findMany({
         where: {
           status: 'scheduled',
@@ -186,7 +166,7 @@ export const scheduler = {
         // Atomically claim this call — only one worker instance can win.
         const claimed = await prisma.callSession.updateMany({
           where: { id: call.id, status: 'scheduled' },
-          data: { status: 'activating' },
+          data: { status: 'activating', claimed_at: now },
         });
 
         if (claimed.count === 0) {
@@ -197,16 +177,17 @@ export const scheduler = {
         try {
           await this.activateCall(call.id);
         } catch (err) {
+          console.error(`[scheduler] Failed to activate call ${call.id}, releasing claim:`, err);
           await prisma.callSession.update({
             where: { id: call.id },
-            data: { status: 'scheduled' },
+            data: { status: 'scheduled', claimed_at: null },
           });
-          throw err;
+          // Do not rethrow — continue activating remaining due calls.
         }
       }
 
       if (dueCalls.length > 0) {
-        console.log(`[scheduler] Activated ${dueCalls.length} calls`);
+        console.log(`[scheduler] Processed ${dueCalls.length} due call(s)`);
       }
     } catch (error) {
       console.error('[scheduler] Error activating due calls:', error);
@@ -288,7 +269,7 @@ export const scheduler = {
       // Update call status to active
       await prisma.callSession.update({
         where: { id: callId },
-        data: { status: 'active', started_at: new Date(), room_url: roomUrl },
+        data: { status: 'active', started_at: new Date(), room_url: roomUrl, claimed_at: null },
       });
 
       // Send push notifications to all non-muted group members
@@ -361,11 +342,11 @@ export const scheduler = {
 
   /**
    * Mark disconnected participants as left and close empty spontaneous calls.
-   * A participant is considered stale when their last heartbeat (or join time,
-   * if no heartbeat was ever received) is older than 90 seconds.
+   * Client beats every 10s; a participant is stale after 90s with no heartbeat
+   * (or 90s after join_at if no heartbeat was ever received).
    */
   async pruneStaleParticipants() {
-    const cutoff = new Date(Date.now() - 30 * 1000);
+    const cutoff = new Date(Date.now() - HEARTBEAT_STALE_MS);
 
     try {
       const stale = await prisma.callParticipant.findMany({
@@ -394,6 +375,18 @@ export const scheduler = {
           });
 
           if (remaining === 0) {
+            const presence = participant.call.room_name
+              ? await dailyVideo.getRoomPresenceCount(participant.call.room_name)
+              : null;
+
+            if (presence !== null && presence > 0) {
+              console.warn(
+                `[scheduler] Call ${participant.call_id} looks empty in DB but Daily reports ` +
+                `${presence} connected participant(s) — skipping close (will re-check next sweep)`
+              );
+              continue;
+            }
+
             await this.closeCall(participant.call_id);
             console.log(`[scheduler] Closed empty spontaneous call ${participant.call_id}`);
           }

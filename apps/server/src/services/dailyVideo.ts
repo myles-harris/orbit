@@ -63,8 +63,22 @@ export const dailyVideo = {
       });
 
       if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Daily API error: ${response.status} ${error}`);
+        const errorText = await response.text();
+
+        // Retry-safe: if the room already exists (e.g. a previous activation attempt
+        // created it before failing), fetch and reuse it instead of failing forever.
+        if (response.status === 400 && errorText.includes('already exists')) {
+          const existing = await fetch(`https://api.daily.co/v1/rooms/${roomName}`, {
+            headers: { 'Authorization': `Bearer ${DAILY_API_KEY}` },
+          });
+          if (existing.ok) {
+            const room = await existing.json();
+            console.log(`[daily] Room ${roomName} already existed — reusing ${room.url}`);
+            return room.url;
+          }
+        }
+
+        throw new Error(`Daily API error: ${response.status} ${errorText}`);
       }
 
       const room = await response.json();
@@ -145,6 +159,27 @@ export const dailyVideo = {
     } catch (error) {
       console.error(`[daily] Failed to check room existence for ${roomName}:`, error);
       return false;
+    }
+  },
+
+  /**
+   * Number of participants currently connected to a room, per Daily's presence API.
+   * Returns null when presence can't be determined (room missing, API error, stub mode)
+   * so callers can distinguish "empty" from "unknown".
+   */
+  async getRoomPresenceCount(roomName: string): Promise<number | null> {
+    if (!DAILY_API_KEY) return null;
+
+    try {
+      const response = await fetch(`https://api.daily.co/v1/rooms/${roomName}/presence`, {
+        headers: { 'Authorization': `Bearer ${DAILY_API_KEY}` },
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+      return typeof data.total_count === 'number' ? data.total_count : null;
+    } catch (error) {
+      console.error(`[daily] Presence check failed for ${roomName}:`, error);
+      return null;
     }
   },
 

@@ -4,7 +4,9 @@ jest.mock('../services/dailyVideo', () => ({
   dailyVideo: {
     createRoom: jest.fn().mockResolvedValue('https://test.daily.co/test-room'),
     roomExists: jest.fn().mockResolvedValue(true),
+    createMeetingToken: jest.fn().mockResolvedValue('test-meeting-token'),
     deleteRoom: jest.fn().mockResolvedValue(undefined),
+    getRoomPresenceCount: jest.fn().mockResolvedValue(null),
   },
 }));
 
@@ -19,6 +21,9 @@ import { PrismaClient } from '@prisma/client';
 import { scheduler } from '../services/scheduler.js';
 import { dailyVideo } from '../services/dailyVideo.js';
 import { notifications } from '../services/notifications.js';
+import {
+  calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, wallTimeToUtc, SCHEDULE_TZ,
+} from '../util/scheduleTime.js';
 
 const prisma = new PrismaClient();
 
@@ -115,12 +120,13 @@ describe('scheduler.generateCallsForGroup', () => {
     });
     expect(calls).toHaveLength(3);
 
-    const days = calls.map((c) => c.scheduled_at!.toISOString().slice(0, 10));
+    const ptFmt = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Los_Angeles' });
+    const days = calls.map((c) => ptFmt.format(c.scheduled_at!));
     const uniqueDays = new Set(days);
     expect(uniqueDays.size).toBe(3);
   });
 
-  it('schedules weekly calls between 8am and 10pm UTC', async () => {
+  it('schedules weekly calls between 6am and 10pm Pacific Time', async () => {
     const user = await createTestUser();
     const group = await createTestGroup(user.id, { cadence: 'weekly', weeklyFrequency: 1 });
 
@@ -130,8 +136,13 @@ describe('scheduler.generateCallsForGroup', () => {
       const [call] = await prisma.callSession.findMany({
         where: { group_id: group.id },
       });
-      const hour = call.scheduled_at!.getHours();
-      expect(hour).toBeGreaterThanOrEqual(8);
+      const dtf = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles',
+        hour: 'numeric',
+        hour12: false,
+      });
+      const hour = Number(dtf.formatToParts(call.scheduled_at!).find(p => p.type === 'hour')!.value) % 24;
+      expect(hour).toBeGreaterThanOrEqual(6);
       expect(hour).toBeLessThan(22);
     }
   });
@@ -192,7 +203,7 @@ describe('scheduler.activateDueCalls', () => {
     expect(afterRun!.status).toBe('activating');
   });
 
-  it('rolls back status to scheduled and rethrows if activateCall fails', async () => {
+  it('releases claim back to scheduled (claimed_at=null) when activateCall fails, does not rethrow', async () => {
     const user = await createTestUser();
     const group = await createTestGroup(user.id);
     const call = await createScheduledCall(group.id);
@@ -201,10 +212,12 @@ describe('scheduler.activateDueCalls', () => {
       new Error('Daily.co API unavailable')
     );
 
-    await expect(scheduler.activateDueCalls()).rejects.toThrow('Daily.co API unavailable');
+    // B3: no longer rethrows — other due calls should still be processed
+    await expect(scheduler.activateDueCalls()).resolves.toBeUndefined();
 
     const afterFailure = await prisma.callSession.findUnique({ where: { id: call.id } });
     expect(afterFailure!.status).toBe('scheduled');
+    expect(afterFailure!.claimed_at).toBeNull();
   });
 
   it('closes an active spontaneous call before activating the scheduled call', async () => {
@@ -303,5 +316,316 @@ describe('scheduler.closeExpiredCalls', () => {
 
     const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
     expect(updated!.status).toBe('active');
+  });
+});
+
+// ─── pruneStaleParticipants ────────────────────────────────────────────────
+
+describe('scheduler.pruneStaleParticipants', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (dailyVideo.getRoomPresenceCount as jest.Mock).mockResolvedValue(null);
+  });
+
+  async function createActiveSpontaneousCall(groupId: string) {
+    return prisma.callSession.create({
+      data: {
+        group_id: groupId,
+        status: 'active',
+        call_type: 'spontaneous',
+        room_name: `spont-${Math.random().toString(36).slice(2, 10)}`,
+      },
+    });
+  }
+
+  async function createParticipant(
+    callId: string,
+    userId: string,
+    opts: { joinedAt?: Date; lastSeenAt?: Date | null } = {},
+  ) {
+    return prisma.callParticipant.create({
+      data: {
+        call_id: callId,
+        user_id: userId,
+        joined_at: opts.joinedAt ?? new Date(),
+        last_seen_at: 'lastSeenAt' in opts ? opts.lastSeenAt : null,
+      },
+    });
+  }
+
+  it('does NOT prune participant whose last_seen_at is 30s ago (below 90s cutoff)', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await createActiveSpontaneousCall(group.id);
+    await createParticipant(call.id, user.id, { lastSeenAt: new Date(Date.now() - 30_000) });
+
+    await scheduler.pruneStaleParticipants();
+
+    const p = await prisma.callParticipant.findFirst({ where: { call_id: call.id } });
+    expect(p!.left_at).toBeNull();
+  });
+
+  it('prunes participant whose last_seen_at is 120s ago', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await createActiveSpontaneousCall(group.id);
+    await createParticipant(call.id, user.id, { lastSeenAt: new Date(Date.now() - 120_000) });
+
+    await scheduler.pruneStaleParticipants();
+
+    const p = await prisma.callParticipant.findFirst({ where: { call_id: call.id } });
+    expect(p!.left_at).not.toBeNull();
+  });
+
+  it('prunes participant with null last_seen_at and joined_at 120s ago (legacy-client path)', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await createActiveSpontaneousCall(group.id);
+    await createParticipant(call.id, user.id, {
+      joinedAt: new Date(Date.now() - 120_000),
+      lastSeenAt: null,
+    });
+
+    await scheduler.pruneStaleParticipants();
+
+    const p = await prisma.callParticipant.findFirst({ where: { call_id: call.id } });
+    expect(p!.left_at).not.toBeNull();
+  });
+
+  it('closes empty spontaneous call when presence returns 0', async () => {
+    (dailyVideo.getRoomPresenceCount as jest.Mock).mockResolvedValue(0);
+
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await createActiveSpontaneousCall(group.id);
+    await createParticipant(call.id, user.id, { lastSeenAt: new Date(Date.now() - 120_000) });
+
+    await scheduler.pruneStaleParticipants();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('ended');
+  });
+
+  it('does NOT close call when presence returns 2 (real participants still connected), but marks participant left', async () => {
+    (dailyVideo.getRoomPresenceCount as jest.Mock).mockResolvedValue(2);
+
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await createActiveSpontaneousCall(group.id);
+    await createParticipant(call.id, user.id, { lastSeenAt: new Date(Date.now() - 120_000) });
+
+    await scheduler.pruneStaleParticipants();
+
+    const updatedCall = await prisma.callSession.findUnique({ where: { id: call.id } });
+    const updatedParticipant = await prisma.callParticipant.findFirst({ where: { call_id: call.id } });
+    expect(updatedCall!.status).toBe('active');
+    expect(updatedParticipant!.left_at).not.toBeNull();
+  });
+
+  it('closes call when presence returns null (fail-open behavior)', async () => {
+    (dailyVideo.getRoomPresenceCount as jest.Mock).mockResolvedValue(null);
+
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await createActiveSpontaneousCall(group.id);
+    await createParticipant(call.id, user.id, { lastSeenAt: new Date(Date.now() - 120_000) });
+
+    await scheduler.pruneStaleParticipants();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('ended');
+  });
+});
+
+// ─── activateDueCalls (reclaim + isolation) ────────────────────────────────
+
+describe('scheduler.activateDueCalls (reclaim + isolation)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('resets a stuck activating call (claimed_at 5min ago, future ends_at) back to scheduled and activates it', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+
+    // Start in 'activating' with claimed_at 5 minutes ago (past the 2-min reclaim threshold)
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'activating',
+        call_type: 'scheduled',
+        scheduled_at: new Date(Date.now() - 60_000),
+        ends_at: new Date(Date.now() + 30 * 60_000),
+        room_name: `test-room-${group.id}`,
+        claimed_at: new Date(Date.now() - 5 * 60_000),
+      },
+    });
+
+    await scheduler.activateDueCalls();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('active');
+    expect(dailyVideo.createRoom).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves a claim alone when claimed_at is only 30s ago (below 2-min reclaim threshold)', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'activating',
+        call_type: 'scheduled',
+        scheduled_at: new Date(Date.now() - 60_000),
+        ends_at: new Date(Date.now() + 30 * 60_000),
+        room_name: `test-room-${group.id}`,
+        claimed_at: new Date(Date.now() - 30_000),
+      },
+    });
+
+    await scheduler.activateDueCalls();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('activating');
+    expect(dailyVideo.createRoom).not.toHaveBeenCalled();
+  });
+
+  it('marks a stuck activating call ended when ends_at has already passed', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'activating',
+        call_type: 'scheduled',
+        scheduled_at: new Date(Date.now() - 90 * 60_000),
+        ends_at: new Date(Date.now() - 60_000), // already expired
+        room_name: `test-room-${group.id}`,
+        claimed_at: new Date(Date.now() - 5 * 60_000),
+      },
+    });
+
+    await scheduler.activateDueCalls();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('ended');
+    expect(updated!.ended_at).not.toBeNull();
+  });
+
+  it('activates the second due call even when activateCall throws for the first', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call1 = await createScheduledCall(group.id);
+    const call2 = await createScheduledCall(group.id);
+
+    (dailyVideo.createRoom as jest.Mock)
+      .mockRejectedValueOnce(new Error('Room creation failed'))
+      .mockResolvedValueOnce('https://test.daily.co/test-room');
+
+    await expect(scheduler.activateDueCalls()).resolves.toBeUndefined();
+
+    const [updated1, updated2] = await Promise.all([
+      prisma.callSession.findUnique({ where: { id: call1.id } }),
+      prisma.callSession.findUnique({ where: { id: call2.id } }),
+    ]);
+
+    const statuses = [updated1!.status, updated2!.status].sort();
+    expect(statuses).toEqual(['active', 'scheduled']);
+
+    const released = [updated1!, updated2!].find(c => c.status === 'scheduled');
+    expect(released!.claimed_at).toBeNull();
+  });
+});
+
+// ─── scheduleTime utilities + generateCallsForGroup ───────────────────────
+
+describe('scheduleTime utilities', () => {
+  function ptHour(d: Date): number {
+    const dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: SCHEDULE_TZ,
+      hour: 'numeric',
+      hour12: false,
+    });
+    return Number(dtf.formatToParts(d).find(p => p.type === 'hour')!.value) % 24;
+  }
+
+  function ptCalendarDay(d: Date): string {
+    return new Intl.DateTimeFormat('en-US', {
+      timeZone: SCHEDULE_TZ,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+    }).format(d);
+  }
+
+  it('randomTimeInWindow: 500 samples for a PDT date all land in [6am, 10pm) PT', () => {
+    const datePDT = { year: 2026, monthIndex: 6, day: 15 }; // July 15, 2026 (PDT, UTC-7)
+    for (let i = 0; i < 500; i++) {
+      const t = randomTimeInWindow(datePDT);
+      const h = ptHour(t);
+      expect(h).toBeGreaterThanOrEqual(6);
+      expect(h).toBeLessThan(22);
+    }
+  });
+
+  it.each([
+    ['PDT (UTC-7)', { year: 2026, monthIndex: 6, day: 15 }],
+    ['PST (UTC-8)', { year: 2026, monthIndex: 0, day: 15 }],
+    ['spring-forward date', { year: 2026, monthIndex: 2, day: 8 }],
+    ['fall-back date', { year: 2026, monthIndex: 10, day: 1 }],
+  ])('randomTimeInWindow on %s: 100 samples all in [6am, 10pm) PT', (_label, d) => {
+    for (let i = 0; i < 100; i++) {
+      const t = randomTimeInWindow(d);
+      const h = ptHour(t);
+      expect(h).toBeGreaterThanOrEqual(6);
+      expect(h).toBeLessThan(22);
+    }
+  });
+
+  it('daily cadence: existing call at 6:30 AM PT tomorrow prevents duplicate (TZ-safe)', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'daily' });
+
+    const tomorrowPT = addDays(calendarDateInTz(new Date()), 1);
+    const existingTime = wallTimeToUtc(tomorrowPT.year, tomorrowPT.monthIndex, tomorrowPT.day, 6 * 60 + 30);
+
+    await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'scheduled',
+        call_type: 'scheduled',
+        scheduled_at: existingTime,
+        ends_at: new Date(existingTime.getTime() + 30 * 60_000),
+        room_name: 'existing-room',
+      },
+    });
+
+    await scheduler.generateCallsForGroup(group.id, 'daily', null);
+
+    const calls = await prisma.callSession.findMany({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('weekly cadence: generated calls are on distinct PT calendar days, all within window', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'weekly', weeklyFrequency: 3 });
+
+    await scheduler.generateCallsForGroup(group.id, 'weekly', 3);
+
+    const calls = await prisma.callSession.findMany({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    expect(calls).toHaveLength(3);
+
+    for (const call of calls) {
+      const h = ptHour(call.scheduled_at!);
+      expect(h).toBeGreaterThanOrEqual(6);
+      expect(h).toBeLessThan(22);
+    }
+
+    const ptDays = calls.map(c => ptCalendarDay(c.scheduled_at!));
+    expect(new Set(ptDays).size).toBe(3);
   });
 });

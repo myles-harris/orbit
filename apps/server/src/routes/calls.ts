@@ -316,12 +316,14 @@ callsRouter.post('/:id/calls/:callId/join-token', requireJwt, async (req, res) =
       return res.status(410).json({ error: 'Call has already ended' });
     }
 
-    // Record participant joining
+    // Record participant joining — seed last_seen_at so the pruner treats the join
+    // itself as a heartbeat and won't prune the row for 90s.
     await prisma.callParticipant.create({
       data: {
         call_id: callId,
         user_id: userId,
-        joined_at: new Date()
+        joined_at: new Date(),
+        last_seen_at: new Date(),
       }
     });
 
@@ -490,7 +492,7 @@ callsRouter.post('/:id/calls/:callId/end', requireJwt, async (req, res) => {
 
 /**
  * Heartbeat from a participant to confirm they are still in the call.
- * Sent every 30s by the mobile client. The scheduler prunes participants
+ * Sent every 10s by the mobile client. The scheduler prunes participants
  * whose last heartbeat is older than 90s and closes empty spontaneous calls.
  */
 callsRouter.post('/:id/calls/:callId/heartbeat', requireJwt, async (req, res) => {
@@ -507,6 +509,8 @@ callsRouter.post('/:id/calls/:callId/heartbeat', requireJwt, async (req, res) =>
       where: { id: participant.id },
       data: { last_seen_at: new Date() },
     });
+  } else {
+    console.warn(`[heartbeat] No open participant row for user ${userId} in call ${callId}`);
   }
 
   res.json({ ok: true });

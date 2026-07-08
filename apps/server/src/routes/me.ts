@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
 import { scheduler } from '../services/scheduler.js';
+import { dailyVideo } from '../services/dailyVideo.js';
 
 export const meRouter = Router();
 
@@ -64,13 +65,22 @@ meRouter.delete('/devices/register-push', requireJwt, async (req, res) => {
 /**
  * Called on app startup to immediately vacate any calls the user was in
  * during a previous session that ended without an explicit leave (e.g. force-quit).
+ *
+ * Only touches rows old enough to belong to a previous session — a 60s grace period
+ * prevents this from vacating a fresh join-token row created after a cold-start tap
+ * on a call notification (where this request can race with the join).
  */
 meRouter.post('/calls/leave', requireJwt, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
 
+    const GRACE_MS = 60 * 1000;
     const activeParticipations = await prisma.callParticipant.findMany({
-      where: { user_id: userId, left_at: null },
+      where: {
+        user_id: userId,
+        left_at: null,
+        joined_at: { lt: new Date(Date.now() - GRACE_MS) },
+      },
       include: { call: true },
     });
 
@@ -90,6 +100,18 @@ meRouter.post('/calls/leave', requireJwt, async (req, res) => {
         });
         console.log(`[POST /me/calls/leave] call ${participant.call_id} has ${remaining} remaining participant(s)`);
         if (remaining === 0) {
+          const presence = participant.call.room_name
+            ? await dailyVideo.getRoomPresenceCount(participant.call.room_name)
+            : null;
+
+          if (presence !== null && presence > 0) {
+            console.warn(
+              `[POST /me/calls/leave] Call ${participant.call_id} empty in DB but Daily reports ` +
+              `${presence} connected — skipping close`
+            );
+            continue;
+          }
+
           await scheduler.closeCall(participant.call_id);
         }
       }

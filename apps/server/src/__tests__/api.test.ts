@@ -15,12 +15,14 @@ jest.mock('../services/dailyVideo', () => ({
     roomExists: jest.fn().mockResolvedValue(true),
     createMeetingToken: jest.fn().mockResolvedValue('test_meeting_token'),
     deleteRoom: jest.fn().mockResolvedValue(undefined),
+    getRoomPresenceCount: jest.fn().mockResolvedValue(0),
   },
 }));
 
 jest.mock('../services/notifications', () => ({
   notifications: {
     sendPushTokens: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
+    sendSilentPushTokens: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -37,6 +39,7 @@ jest.mock('../services/scheduler', () => ({
     generateScheduledCalls: jest.fn().mockResolvedValue(undefined),
     activateDueCalls: jest.fn().mockResolvedValue(undefined),
     closeExpiredCalls: jest.fn().mockResolvedValue(undefined),
+    closeCall: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -459,6 +462,67 @@ describe('Me endpoints', () => {
 
     it('returns 401 without auth', async () => {
       const res = await request(app).get('/me/invitations');
+      expect(res.status).toBe(401);
+    });
+  });
+
+  describe('POST /me/calls/leave', () => {
+    it('marks open participations older than 60s as left', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date(Date.now() - 61_000) },
+      });
+
+      const res = await request(app)
+        .post('/me/calls/leave')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      const updated = await prisma.callParticipant.findFirst({ where: { call_id: call.id, user_id: user.id } });
+      expect(updated?.left_at).not.toBeNull();
+    });
+
+    it('A5: does not touch a participation created within the 60s grace window', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date(Date.now() - 10_000) },
+      });
+
+      const res = await request(app)
+        .post('/me/calls/leave')
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      const unchanged = await prisma.callParticipant.findFirst({ where: { call_id: call.id, user_id: user.id } });
+      expect(unchanged?.left_at).toBeNull();
+    });
+
+    it('presence guard: does not close call when Daily still reports connected participants', async () => {
+      const { dailyVideo: mockDaily } = jest.requireMock('../services/dailyVideo');
+      const { scheduler: mockScheduler } = jest.requireMock('../services/scheduler');
+      mockDaily.getRoomPresenceCount.mockResolvedValueOnce(1);
+      mockScheduler.closeCall.mockClear();
+
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date(Date.now() - 61_000) },
+      });
+
+      await request(app).post('/me/calls/leave').set('Authorization', `Bearer ${token}`);
+
+      const still = await prisma.callSession.findUnique({ where: { id: call.id } });
+      expect(still?.status).toBe('active');
+      expect(mockScheduler.closeCall).not.toHaveBeenCalled();
+    });
+
+    it('returns 401 without auth', async () => {
+      const res = await request(app).post('/me/calls/leave');
       expect(res.status).toBe(401);
     });
   });
@@ -1559,6 +1623,23 @@ describe('Calls endpoints', () => {
 
       expect(res.status).toBe(403);
     });
+
+    it('seeds last_seen_at on the created participant row (A2 regression guard)', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+
+      await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/join-token`)
+        .set('Authorization', `Bearer ${token}`)
+        .expect(200);
+
+      const participant = await prisma.callParticipant.findFirst({
+        where: { call_id: call.id, user_id: user.id },
+      });
+      expect(participant).not.toBeNull();
+      expect(participant!.last_seen_at).not.toBeNull();
+    });
   });
 
   describe('POST /groups/:id/calls/:callId/leave', () => {
@@ -1916,6 +1997,49 @@ describe('Svc endpoints', () => {
       expect(res.status).toBe(200);
       expect(res.body.id).toBe(fakeId);
       expect(res.body.status).toBe('closed');
+    });
+  });
+
+  describe('POST /svc/daily/webhook', () => {
+    it('marks participant as left on participant-left event', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      const participant = await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
+      });
+
+      const res = await request(app)
+        .post('/svc/daily/webhook')
+        .send({ type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } });
+
+      expect(res.status).toBe(200);
+      // Webhook responds immediately and processes async — wait for DB write.
+      await new Promise(r => setTimeout(r, 100));
+      const updated = await prisma.callParticipant.findUnique({ where: { id: participant.id } });
+      expect(updated?.left_at).not.toBeNull();
+    });
+
+    it('presence guard: does not close call when Daily still reports connected participants', async () => {
+      const { dailyVideo: mockDaily } = jest.requireMock('../services/dailyVideo');
+      const { scheduler: mockScheduler } = jest.requireMock('../services/scheduler');
+      mockDaily.getRoomPresenceCount.mockResolvedValueOnce(1);
+      mockScheduler.closeCall.mockClear();
+
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
+      });
+
+      await request(app)
+        .post('/svc/daily/webhook')
+        .send({ type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } });
+
+      const still = await prisma.callSession.findUnique({ where: { id: call.id } });
+      expect(still?.status).toBe('active');
+      expect(mockScheduler.closeCall).not.toHaveBeenCalled();
     });
   });
 

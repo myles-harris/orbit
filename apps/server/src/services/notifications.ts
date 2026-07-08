@@ -1,5 +1,5 @@
 import { config } from 'dotenv';
-config({ override: true });
+config();
 
 import apn from 'apn';
 import twilio from 'twilio';
