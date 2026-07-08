@@ -269,7 +269,7 @@ export const scheduler = {
       // Update call status to active
       await prisma.callSession.update({
         where: { id: callId },
-        data: { status: 'active', started_at: new Date(), room_url: roomUrl },
+        data: { status: 'active', started_at: new Date(), room_url: roomUrl, claimed_at: null },
       });
 
       // Send push notifications to all non-muted group members
