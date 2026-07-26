@@ -40,6 +40,7 @@ jest.mock('../services/scheduler', () => ({
     activateDueCalls: jest.fn().mockResolvedValue(undefined),
     closeExpiredCalls: jest.fn().mockResolvedValue(undefined),
     closeCall: jest.fn().mockResolvedValue(undefined),
+    scheduleInitialCallForGroup: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -49,6 +50,7 @@ import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { PrismaClient } from '@prisma/client';
 import { app } from '../app.js';
+import { scheduler } from '../services/scheduler.js';
 import {
   createTestUser,
   createTestUserWithToken,
@@ -245,6 +247,30 @@ describe('Auth endpoints', () => {
         .send({ signup_token: 'sometoken' });
       expect(res.status).toBe(400);
     });
+
+    it('seeds the provided IANA timezone at account creation (WS-5)', async () => {
+      const phone = '+15554000004';
+      const signupToken = jwt.sign({ type: 'signup', phone }, JWT_SECRET, { expiresIn: 600 });
+
+      const res = await request(app)
+        .post('/auth/complete-signup')
+        .send({ signup_token: signupToken, username: 'tzuser', time_zone: 'America/Chicago' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.user.time_zone).toBe('America/Chicago');
+    });
+
+    it('defaults to UTC when no timezone is provided (WS-5)', async () => {
+      const phone = '+15554000005';
+      const signupToken = jwt.sign({ type: 'signup', phone }, JWT_SECRET, { expiresIn: 600 });
+
+      const res = await request(app)
+        .post('/auth/complete-signup')
+        .send({ signup_token: signupToken, username: 'notzuser' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.user.time_zone).toBe('UTC');
+    });
   });
 
   describe('POST /auth/refresh', () => {
@@ -344,9 +370,109 @@ describe('Me endpoints', () => {
       expect(res.status).toBe(400);
     });
 
+    it('returns 400 for an invalid timezone (WS-5)', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .patch('/me')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ time_zone: 'Not/A/Timezone' });
+
+      expect(res.status).toBe(400);
+    });
+
     it('returns 401 without auth', async () => {
       const res = await request(app).patch('/me').send({ username: 'x' });
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('WS-2: avatar upload / download', () => {
+    // 1x1 PNG in base64 (smallest valid PNG)
+    const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+    it('returns has_avatar: false for a new user', async () => {
+      const { token } = await createTestUserWithToken();
+      const res = await request(app).get('/me').set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body.has_avatar).toBe(false);
+    });
+
+    it('PUT /me/avatar stores the avatar and has_avatar becomes true', async () => {
+      const { user, token } = await createTestUserWithToken();
+
+      const uploadRes = await request(app)
+        .put('/me/avatar')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/png' });
+      expect(uploadRes.status).toBe(200);
+      expect(uploadRes.body.ok).toBe(true);
+
+      const meRes = await request(app).get('/me').set('Authorization', `Bearer ${token}`);
+      expect(meRes.body.has_avatar).toBe(true);
+
+      const avatarRes = await request(app)
+        .get(`/users/${user.id}/avatar`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(avatarRes.status).toBe(200);
+      expect(avatarRes.headers['content-type']).toMatch(/image\/png/);
+      expect(avatarRes.body).toBeTruthy();
+    });
+
+    it('DELETE /me/avatar clears the avatar and has_avatar becomes false', async () => {
+      const { user, token } = await createTestUserWithToken();
+
+      await request(app)
+        .put('/me/avatar')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/png' });
+
+      const deleteRes = await request(app)
+        .delete('/me/avatar')
+        .set('Authorization', `Bearer ${token}`);
+      expect(deleteRes.status).toBe(200);
+      expect(deleteRes.body.ok).toBe(true);
+
+      const meRes = await request(app).get('/me').set('Authorization', `Bearer ${token}`);
+      expect(meRes.body.has_avatar).toBe(false);
+
+      const avatarRes = await request(app)
+        .get(`/users/${user.id}/avatar`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(avatarRes.status).toBe(404);
+    });
+
+    it('PUT /me/avatar rejects an unsupported mime type', async () => {
+      const { token } = await createTestUserWithToken();
+      const res = await request(app)
+        .put('/me/avatar')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/bmp' });
+      expect(res.status).toBe(400);
+    });
+
+    it('PUT /me/avatar rejects a payload exceeding 2 MB', async () => {
+      const { token } = await createTestUserWithToken();
+      const bigData = Buffer.alloc(2.1 * 1024 * 1024).toString('base64');
+      const res = await request(app)
+        .put('/me/avatar')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ data: bigData, mime_type: 'image/jpeg' });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('avatar_too_large');
+    });
+
+    it('GET /users/search includes has_avatar', async () => {
+      const { token } = await createTestUserWithToken({ username: 'searcher_ws2' });
+      const { user: target } = await createTestUserWithToken({ username: 'target_ws2' });
+
+      const res = await request(app)
+        .get('/users/search?q=target_ws2')
+        .set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      const found = res.body.users.find((u: any) => u.id === target.id);
+      expect(found).toBeDefined();
+      expect(found.has_avatar).toBe(false);
     });
   });
 
@@ -593,6 +719,32 @@ describe('Users endpoints', () => {
       expect(invitedResult!.status).toBe('invited');
     });
 
+    it('returns 403 when groupId is provided but caller is not a member (WS-4)', async () => {
+      const { token: outsiderToken } = await createTestUserWithToken();
+      const { token: ownerToken } = await createTestUserWithToken();
+      const group = await createGroup(ownerToken);
+
+      const res = await request(app)
+        .get('/users/search')
+        .set('Authorization', `Bearer ${outsiderToken}`)
+        .query({ q: 'test', groupId: group.id });
+
+      expect(res.status).toBe(403);
+    });
+
+    it('trims leading/trailing whitespace from query (WS-4)', async () => {
+      const { token } = await createTestUserWithToken();
+      await createTestUser({ username: 'trimtest_user' });
+
+      const res = await request(app)
+        .get('/users/search')
+        .set('Authorization', `Bearer ${token}`)
+        .query({ q: '  trimtest  ' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.users.some((u: any) => u.username === 'trimtest_user')).toBe(true);
+    });
+
     it('returns 400 when query is less than 2 characters', async () => {
       const { token } = await createTestUserWithToken();
 
@@ -659,6 +811,48 @@ describe('Groups endpoints', () => {
         .post('/groups')
         .send({ name: 'X', cadence: 'daily', call_duration_minutes: 5 });
       expect(res.status).toBe(401);
+    });
+
+    it('stores and returns a custom call window (WS-7)', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post('/groups')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Late Night Crew', cadence: 'daily', call_duration_minutes: 30, call_window_start: 20, call_window_end: 23 });
+
+      expect(res.status).toBe(201);
+      expect(res.body.call_window_start).toBe(20);
+      expect(res.body.call_window_end).toBe(23);
+    });
+
+    it('defaults call window to 6–22 when not provided (WS-7)', async () => {
+      const { token } = await createTestUserWithToken();
+
+      const res = await request(app)
+        .post('/groups')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'Default Window Group', cadence: 'daily', call_duration_minutes: 30 });
+
+      expect(res.status).toBe(201);
+      expect(res.body.call_window_start).toBe(6);
+      expect(res.body.call_window_end).toBe(22);
+    });
+
+    it('calls scheduleInitialCallForGroup after creation (WS-8)', async () => {
+      const { token } = await createTestUserWithToken();
+      (scheduler.scheduleInitialCallForGroup as jest.Mock).mockClear();
+
+      const res = await request(app)
+        .post('/groups')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ name: 'WS-8 Group', cadence: 'daily', call_duration_minutes: 30 });
+
+      expect(res.status).toBe(201);
+      expect(scheduler.scheduleInitialCallForGroup).toHaveBeenCalledTimes(1);
+      expect(scheduler.scheduleInitialCallForGroup).toHaveBeenCalledWith(
+        res.body.id, 'UTC', 6, 22,
+      );
     });
   });
 
@@ -729,7 +923,7 @@ describe('Groups endpoints', () => {
   });
 
   describe('PATCH /groups/:id', () => {
-    it('updates group name', async () => {
+    it('returns 404 — route removed in WS-9f (no ownership check, use PUT instead)', async () => {
       const { token } = await createTestUserWithToken();
       const group = await createGroup(token, { name: 'Old Name' });
 
@@ -738,8 +932,7 @@ describe('Groups endpoints', () => {
         .set('Authorization', `Bearer ${token}`)
         .send({ name: 'New Name' });
 
-      expect(res.status).toBe(200);
-      expect(res.body.name).toBe('New Name');
+      expect(res.status).toBe(404);
     });
   });
 
@@ -918,7 +1111,7 @@ describe('Groups endpoints', () => {
       expect(res.status).toBe(200);
       expect(res.body.invite_code).toBeDefined();
       expect(res.body.expires_at).toBeDefined();
-      expect(res.body.invite_link).toMatch(/take5:\/\/invite\//);
+      expect(res.body.invite_link).toMatch(/orbit:\/\/invite\//);
     });
 
     it('returns 403 when a non-owner tries to create an invite', async () => {

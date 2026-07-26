@@ -1,6 +1,10 @@
 import request from 'supertest';
+import { PrismaClient } from '@prisma/client';
 import { app } from '../app.js';
 import { createTestUserWithToken } from './helpers/auth.js';
+import { calendarDateInTz, addDays, wallTimeToUtc } from '../util/scheduleTime.js';
+
+const prisma = new PrismaClient();
 
 describe('POST /groups', () => {
   it('creates a group and returns 201', async () => {
@@ -143,5 +147,102 @@ describe('DELETE /groups/:id', () => {
       .set('Authorization', `Bearer ${otherToken}`);
 
     expect(res.status).toBe(403);
+  });
+});
+
+describe('WS-9: PUT /groups/:id settings change (9c)', () => {
+  it('does not cancel a call scheduled for later today when owner updates duration', async () => {
+    const { token } = await createTestUserWithToken();
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Timing Group', cadence: 'daily', call_duration_minutes: 30 });
+
+    const groupId = createRes.body.id;
+
+    // Seed a call for later today in PT
+    const todayPT = calendarDateInTz(new Date());
+    const laterToday = wallTimeToUtc(todayPT.year, todayPT.monthIndex, todayPT.day, 21 * 60); // 9pm PT
+
+    if (laterToday > new Date()) {
+      await prisma.callSession.create({
+        data: {
+          group_id: groupId,
+          status: 'scheduled',
+          call_type: 'scheduled',
+          scheduled_at: laterToday,
+          ends_at: new Date(laterToday.getTime() + 30 * 60_000),
+          room_name: 'today-room',
+        },
+      });
+
+      const putRes = await request(app)
+        .put(`/groups/${groupId}`)
+        .set('Authorization', `Bearer ${token}`)
+        .send({ call_duration_minutes: 45 });
+
+      expect(putRes.status).toBe(200);
+
+      const todayCall = await prisma.callSession.findFirst({
+        where: { group_id: groupId, scheduled_at: laterToday },
+      });
+      expect(todayCall!.status).toBe('scheduled');
+    }
+  });
+
+  it('cancels calls from tomorrow onward when owner updates cadence', async () => {
+    const { token } = await createTestUserWithToken();
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Future Group', cadence: 'daily', call_duration_minutes: 30 });
+
+    const groupId = createRes.body.id;
+
+    // Seed a call for two days from now
+    const todayPT = calendarDateInTz(new Date());
+    const twoDaysOut = addDays(todayPT, 2);
+    const futureTime = wallTimeToUtc(twoDaysOut.year, twoDaysOut.monthIndex, twoDaysOut.day, 9 * 60);
+
+    await prisma.callSession.create({
+      data: {
+        group_id: groupId,
+        status: 'scheduled',
+        call_type: 'scheduled',
+        scheduled_at: futureTime,
+        ends_at: new Date(futureTime.getTime() + 30 * 60_000),
+        room_name: 'future-room',
+      },
+    });
+
+    const putRes = await request(app)
+      .put(`/groups/${groupId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ cadence: 'weekly', weekly_frequency: 1 });
+
+    expect(putRes.status).toBe(200);
+
+    const futureCall = await prisma.callSession.findFirst({
+      where: { group_id: groupId, scheduled_at: futureTime },
+    });
+    expect(futureCall!.status).toBe('ended');
+  });
+
+  it('PATCH /groups/:id is gone (9f)', async () => {
+    const { token } = await createTestUserWithToken();
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Patch Test', cadence: 'daily', call_duration_minutes: 5 });
+
+    const res = await request(app)
+      .patch(`/groups/${createRes.body.id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_duration_minutes: 60 });
+
+    expect(res.status).toBe(404);
   });
 });

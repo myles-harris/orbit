@@ -1,19 +1,19 @@
 /**
  * Scheduling-window helpers.
  *
- * All scheduled calls are generated in a fixed wall-clock window in SCHEDULE_TZ
- * (currently hardcoded to Pacific Time — no per-group timezone support yet).
- * DST is handled correctly via Intl; no external dependencies.
+ * All functions accept an optional timeZone (IANA string) so calls can be
+ * scheduled in the group owner's local timezone rather than a fixed global TZ.
+ * Defaults preserve backward compatibility with the original Pacific-time logic.
  */
 
 export const SCHEDULE_TZ = 'America/Los_Angeles';
 export const WINDOW_START_MINUTES = 6 * 60;  // 6:00 AM
 export const WINDOW_END_MINUTES = 22 * 60;   // 10:00 PM (exclusive)
 
-/** Offset in ms of SCHEDULE_TZ from UTC at the given instant (negative for PT). */
-function tzOffsetMs(atUtc: Date): number {
+/** Offset in ms of `timeZone` from UTC at the given instant. */
+function tzOffsetMs(atUtc: Date, timeZone: string = SCHEDULE_TZ): number {
   const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone: SCHEDULE_TZ,
+    timeZone,
     hour12: false,
     year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', second: '2-digit',
@@ -26,22 +26,25 @@ function tzOffsetMs(atUtc: Date): number {
   return asIfUtc - atUtc.getTime();
 }
 
-/** Convert a wall-clock time in SCHEDULE_TZ to a UTC Date. DST-safe. */
+/** Convert a wall-clock time in `timeZone` to a UTC Date. DST-safe. */
 export function wallTimeToUtc(
   year: number, monthIndex: number, day: number, minutesIntoDay: number,
+  timeZone: string = SCHEDULE_TZ,
 ): Date {
   const guess = new Date(Date.UTC(year, monthIndex, day, 0, minutesIntoDay));
-  const offset1 = tzOffsetMs(guess);
+  const offset1 = tzOffsetMs(guess, timeZone);
   const corrected = new Date(guess.getTime() - offset1);
-  // Offset may differ across a DST boundary — re-derive at the corrected instant.
-  const offset2 = tzOffsetMs(corrected);
+  const offset2 = tzOffsetMs(corrected, timeZone);
   return offset2 === offset1 ? corrected : new Date(guess.getTime() - offset2);
 }
 
-/** Calendar date (y / monthIndex / d) of the given instant, as seen in SCHEDULE_TZ. */
-export function calendarDateInTz(atUtc: Date): { year: number; monthIndex: number; day: number } {
+/** Calendar date (y / monthIndex / d) of the given instant, as seen in `timeZone`. */
+export function calendarDateInTz(
+  atUtc: Date,
+  timeZone: string = SCHEDULE_TZ,
+): { year: number; monthIndex: number; day: number } {
   const dtf = new Intl.DateTimeFormat('en-US', {
-    timeZone: SCHEDULE_TZ,
+    timeZone,
     year: 'numeric', month: '2-digit', day: '2-digit',
   });
   const parts = Object.fromEntries(dtf.formatToParts(atUtc).map(p => [p.type, p.value]));
@@ -56,22 +59,49 @@ export function addDays(
   return { year: t.getUTCFullYear(), monthIndex: t.getUTCMonth(), day: t.getUTCDate() };
 }
 
-/** Random UTC instant within [6:00 AM, 10:00 PM) SCHEDULE_TZ on the given calendar day. */
+/**
+ * Random UTC instant within [windowStartMinutes, windowEndMinutes) in `timeZone`
+ * on the given calendar day. Defaults to the legacy [6 AM, 10 PM) PT window.
+ */
 export function randomTimeInWindow(
   d: { year: number; monthIndex: number; day: number },
+  windowStartMinutes: number = WINDOW_START_MINUTES,
+  windowEndMinutes: number = WINDOW_END_MINUTES,
+  timeZone: string = SCHEDULE_TZ,
 ): Date {
   const minutes =
-    WINDOW_START_MINUTES + Math.floor(Math.random() * (WINDOW_END_MINUTES - WINDOW_START_MINUTES));
-  return wallTimeToUtc(d.year, d.monthIndex, d.day, minutes);
+    windowStartMinutes + Math.floor(Math.random() * (windowEndMinutes - windowStartMinutes));
+  return wallTimeToUtc(d.year, d.monthIndex, d.day, minutes, timeZone);
 }
 
-/** UTC bounds [start, end) of the given calendar day in SCHEDULE_TZ. For dedupe queries. */
+/** UTC bounds [start, end) of the given calendar day in `timeZone`. For dedupe queries. */
 export function dayBoundsUtc(
   d: { year: number; monthIndex: number; day: number },
+  timeZone: string = SCHEDULE_TZ,
 ): { start: Date; end: Date } {
   const next = addDays(d, 1);
   return {
-    start: wallTimeToUtc(d.year, d.monthIndex, d.day, 0),
-    end: wallTimeToUtc(next.year, next.monthIndex, next.day, 0),
+    start: wallTimeToUtc(d.year, d.monthIndex, d.day, 0, timeZone),
+    end: wallTimeToUtc(next.year, next.monthIndex, next.day, 0, timeZone),
   };
+}
+
+/** 'YYYY-MM-DD' key for a calendar date. */
+export function dayKeyForDate(d: { year: number; monthIndex: number; day: number }): string {
+  return `${d.year}-${String(d.monthIndex + 1).padStart(2, '0')}-${String(d.day).padStart(2, '0')}`;
+}
+
+/** 'YYYY-MM-DD' key for a UTC instant as seen in `timeZone`. */
+export function dayKey(atUtc: Date, timeZone: string = SCHEDULE_TZ): string {
+  return dayKeyForDate(calendarDateInTz(atUtc, timeZone));
+}
+
+/** Fisher-Yates uniform shuffle (in-place copy). */
+export function shuffle<T>(a: T[]): T[] {
+  const r = [...a];
+  for (let i = r.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [r[i], r[j]] = [r[j], r[i]];
+  }
+  return r;
 }

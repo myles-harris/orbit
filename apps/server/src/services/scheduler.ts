@@ -1,7 +1,7 @@
 import { PrismaClient, Cadence, CallStatus } from '@prisma/client';
 import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
-import { calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc } from '../util/scheduleTime.js';
+import { SCHEDULE_TZ, calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, dayKeyForDate, dayKey, shuffle, wallTimeToUtc } from '../util/scheduleTime.js';
 
 /** A participant is stale after this long with no heartbeat (client beats every 10s). */
 const HEARTBEAT_STALE_MS = 90 * 1000;
@@ -19,34 +19,53 @@ export const scheduler = {
   async generateScheduledCalls() {
     console.log('[scheduler] Generating scheduled calls...');
 
-    try {
-      // Get all groups
-      const groups = await prisma.group.findMany({
-        include: {
-          members: true
-        }
-      });
+    const groups = await prisma.group.findMany({
+      select: {
+        id: true, cadence: true, weekly_frequency: true,
+        call_window_start: true, call_window_end: true,
+        owner: { select: { time_zone: true } },
+      },
+    });
 
-      for (const group of groups) {
-        await this.generateCallsForGroup(group.id, group.cadence, group.weekly_frequency);
+    let generated = 0;
+    for (const group of groups) {
+      try {
+        await this.generateCallsForGroup(
+          group.id, group.cadence, group.weekly_frequency,
+          group.owner.time_zone,
+          group.call_window_start, group.call_window_end,
+        );
+        generated++;
+      } catch (err) {
+        // 9d: one group's failure must not abort the rest
+        console.error(`[scheduler] generateCallsForGroup failed for group ${group.id}:`, err);
       }
-
-      console.log(`[scheduler] Generated calls for ${groups.length} groups`);
-    } catch (error) {
-      console.error('[scheduler] Error generating scheduled calls:', error);
     }
+
+    console.log(`[scheduler] Generated calls for ${generated}/${groups.length} groups`);
   },
 
   /**
    * Generate scheduled calls for a specific group.
-   * All times fall within [6:00 AM, 10:00 PM) America/Los_Angeles, DST-correct.
+   * Times fall within [windowStartHour, windowEndHour) in the group owner's timeZone.
+   * Defaults preserve the legacy [6 AM, 10 PM) America/Los_Angeles behaviour.
    */
-  async generateCallsForGroup(groupId: string, cadence: Cadence, weeklyFrequency: number | null) {
-    const todayPT = calendarDateInTz(new Date());
-    const tomorrowPT = addDays(todayPT, 1);
+  async generateCallsForGroup(
+    groupId: string,
+    cadence: Cadence,
+    weeklyFrequency: number | null,
+    timeZone: string = SCHEDULE_TZ,
+    windowStartHour: number = 6,
+    windowEndHour: number = 22,
+  ) {
+    const windowStartMinutes = windowStartHour * 60;
+    const windowEndMinutes = windowEndHour * 60;
+
+    const today = calendarDateInTz(new Date(), timeZone);
+    const tomorrow = addDays(today, 1);
 
     if (cadence === 'daily') {
-      const { start, end } = dayBoundsUtc(tomorrowPT);
+      const { start, end } = dayBoundsUtc(tomorrow, timeZone);
 
       const existingCall = await prisma.callSession.findFirst({
         where: {
@@ -57,49 +76,95 @@ export const scheduler = {
       });
 
       if (!existingCall) {
-        const randomTime = randomTimeInWindow(tomorrowPT);
-        await this.createScheduledCall(groupId, randomTime);
+        const randomTime = randomTimeInWindow(tomorrow, windowStartMinutes, windowEndMinutes, timeZone);
+        await this.createScheduledCall(groupId, randomTime, timeZone);
         console.log(`[scheduler] Scheduled daily call for group ${groupId} at ${randomTime.toISOString()}`);
       }
     } else if (cadence === 'weekly') {
-      const weekStart = dayBoundsUtc(tomorrowPT).start;
-      const weekEnd = dayBoundsUtc(addDays(tomorrowPT, 7)).start;
+      const weekStart = dayBoundsUtc(tomorrow, timeZone).start;
+      const weekEnd = dayBoundsUtc(addDays(tomorrow, 7), timeZone).start;
 
-      const frequency = weeklyFrequency || 1;
+      // 9h: use ?? instead of || so weeklyFrequency: 0 doesn't coerce to 1
+      const frequency = weeklyFrequency ?? 1;
 
-      const existingCalls = await prisma.callSession.count({
+      // 9e: fetch existing scheduled days to avoid double-booking the same day
+      const existingInWindow = await prisma.callSession.findMany({
         where: {
           group_id: groupId,
           status: 'scheduled',
           scheduled_at: { gte: weekStart, lt: weekEnd },
         },
+        select: { scheduled_day: true },
       });
 
-      const callsToCreate = frequency - existingCalls;
+      const callsToCreate = frequency - existingInWindow.length;
+      if (callsToCreate <= 0) return;
 
-      if (callsToCreate > 0) {
-        // Pick distinct PT calendar days (max 1 call/day), random time in window on each.
-        const dayOffsets = Array.from({ length: 7 }, (_, i) => i)
-          .sort(() => Math.random() - 0.5)
-          .slice(0, Math.min(callsToCreate, 7));
+      const taken = new Set(existingInWindow.map(c => c.scheduled_day).filter((d): d is string => d !== null));
 
-        const times = dayOffsets
-          .map(offset => randomTimeInWindow(addDays(tomorrowPT, offset)))
-          .sort((a, b) => a.getTime() - b.getTime());
+      // 9g: Fisher-Yates shuffle; filter out days that already have a call
+      const offsets = shuffle(Array.from({ length: 7 }, (_, i) => i))
+        .filter(o => !taken.has(dayKeyForDate(addDays(tomorrow, o))))
+        .slice(0, Math.min(callsToCreate, 7));
 
-        for (const time of times) {
-          await this.createScheduledCall(groupId, time);
-        }
+      const times = offsets
+        .map(offset => randomTimeInWindow(addDays(tomorrow, offset), windowStartMinutes, windowEndMinutes, timeZone))
+        .sort((a, b) => a.getTime() - b.getTime());
 
+      for (const time of times) {
+        await this.createScheduledCall(groupId, time, timeZone);
+      }
+
+      if (times.length > 0) {
         console.log(`[scheduler] Scheduled ${times.length} weekly call(s) for group ${groupId}`);
       }
     }
   },
 
   /**
-   * Create a scheduled call session
+   * Schedule the first call for a newly-created group, targeting today if the call window
+   * hasn't closed yet. Eliminates the 24–48 h dead zone between group creation and the
+   * first daily-rollover run.
+   *
+   * Exits silently when < 30 minutes remain in the window — the daily rollover will
+   * schedule tomorrow instead.
    */
-  async createScheduledCall(groupId: string, scheduledAt: Date) {
+  async scheduleInitialCallForGroup(
+    groupId: string,
+    timeZone: string = SCHEDULE_TZ,
+    windowStartHour: number = 6,
+    windowEndHour: number = 22,
+  ) {
+    const now = new Date();
+    const today = calendarDateInTz(now, timeZone);
+    const todayStartUtc = dayBoundsUtc(today, timeZone).start;
+    const currentMinutesOfDay = Math.floor((now.getTime() - todayStartUtc.getTime()) / 60000);
+
+    const windowStartMinutes = windowStartHour * 60;
+    const windowEndMinutes = windowEndHour * 60;
+    const MIN_WINDOW_REMAINING = 30;
+
+    if (currentMinutesOfDay >= windowEndMinutes - MIN_WINDOW_REMAINING) {
+      console.log(`[scheduler] Window closed for group ${groupId} — initial call deferred to tomorrow's rollover`);
+      return;
+    }
+
+    // Effective start: later of window open or 5 min from now (avoids scheduling in the past)
+    const effectiveStart = Math.max(windowStartMinutes, currentMinutesOfDay + 5);
+    if (effectiveStart >= windowEndMinutes) return;
+
+    const pickedMinutes = effectiveStart + Math.floor(Math.random() * (windowEndMinutes - effectiveStart));
+    const scheduledAt = wallTimeToUtc(today.year, today.monthIndex, today.day, pickedMinutes, timeZone);
+
+    await this.createScheduledCall(groupId, scheduledAt, timeZone);
+    console.log(`[scheduler] Scheduled initial call for group ${groupId} at ${scheduledAt.toISOString()}`);
+  },
+
+  /**
+   * Create a scheduled call session.
+   * Sets scheduled_day (in timeZone) and swallows P2002 so concurrent generation is harmless (9a).
+   */
+  async createScheduledCall(groupId: string, scheduledAt: Date, timeZone: string = SCHEDULE_TZ) {
     const group = await prisma.group.findUnique({
       where: { id: groupId }
     });
@@ -113,17 +178,27 @@ export const scheduler = {
     endsAt.setMinutes(endsAt.getMinutes() + group.call_duration_minutes);
 
     const roomName = buildRoomName(groupId, scheduledAt);
+    const scheduledDay = dayKey(scheduledAt, timeZone);
 
-    await prisma.callSession.create({
-      data: {
-        group_id: groupId,
-        status: 'scheduled',
-        call_type: 'scheduled',
-        scheduled_at: scheduledAt,
-        ends_at: endsAt,
-        room_name: roomName
+    try {
+      await prisma.callSession.create({
+        data: {
+          group_id: groupId,
+          status: 'scheduled',
+          call_type: 'scheduled',
+          scheduled_at: scheduledAt,
+          scheduled_day: scheduledDay,
+          ends_at: endsAt,
+          room_name: roomName,
+        },
+      });
+    } catch (e: any) {
+      if (e.code === 'P2002') {
+        console.log(`[scheduler] Duplicate suppressed for group ${groupId} on ${scheduledDay}`);
+        return;
       }
-    });
+      throw e;
+    }
   },
 
   /**
@@ -313,6 +388,21 @@ export const scheduler = {
     const now = new Date();
 
     try {
+      // 9b: sweep scheduled calls whose window elapsed without ever activating (zombie rows).
+      // These accumulate when the worker is down during activation time; left unchecked they
+      // inflate the weekly dedupe count and never disappear.
+      const swept = await prisma.callSession.updateMany({
+        where: {
+          status: 'scheduled',
+          call_type: 'scheduled',
+          ends_at: { lt: now },
+        },
+        data: { status: 'ended', ended_at: now },
+      });
+      if (swept.count > 0) {
+        console.warn(`[scheduler] Swept ${swept.count} zombie scheduled call(s) that were never activated`);
+      }
+
       // Find all active SCHEDULED calls that ended more than 15 seconds ago.
       // The 15s grace period lets clients leave via their countdown timer before
       // the room is deleted, avoiding the "room was deleted" error.

@@ -10,11 +10,13 @@ datasource db {
 }
 
 model User {
-  id         String   @id @default(uuid())
-  phone      String   @unique
-  username   String   @unique
-  time_zone  String
-  created_at DateTime @default(now()) @db.Timestamptz(6)
+  id               String   @id @default(uuid())
+  phone            String   @unique
+  username         String   @unique
+  time_zone        String
+  avatar           Bytes?
+  avatar_mime_type String?
+  created_at       DateTime @default(now()) @db.Timestamptz(6)
 
   // Relations
   owned_groups      Group[]           @relation("GroupOwner")
@@ -57,6 +59,8 @@ model Group {
   daily_frequency       Int?
   weekly_frequency      Int?
   call_duration_minutes Int           @default(30)
+  call_window_start     Int           @default(6)   // Hour (0–23) in owner's local time
+  call_window_end       Int           @default(22)  // Hour (0–23) exclusive, in owner's local time
   created_at            DateTime      @default(now()) @db.Timestamptz(6)
 
   // Relations
@@ -85,17 +89,18 @@ model GroupMember {
 }
 
 model CallSession {
-  id           String     @id @default(uuid())
-  group_id     String
-  status       CallStatus
-  call_type    CallType   @default(spontaneous)
-  scheduled_at DateTime?  @db.Timestamptz(6)
-  claimed_at   DateTime?  @db.Timestamptz(6)
-  started_at   DateTime?  @db.Timestamptz(6)
-  ends_at      DateTime?  @db.Timestamptz(6)
-  ended_at     DateTime?  @db.Timestamptz(6)
-  room_name    String?
-  room_url     String?
+  id            String     @id @default(uuid())
+  group_id      String
+  status        CallStatus
+  call_type     CallType   @default(spontaneous)
+  scheduled_at  DateTime?  @db.Timestamptz(6)
+  scheduled_day String?    // 'YYYY-MM-DD' in SCHEDULE_TZ; null for spontaneous calls
+  claimed_at    DateTime?  @db.Timestamptz(6)
+  started_at    DateTime?  @db.Timestamptz(6)
+  ends_at       DateTime?  @db.Timestamptz(6)
+  ended_at      DateTime?  @db.Timestamptz(6)
+  room_name     String?
+  room_url      String?
 
   // Relations
   group        Group             @relation(fields: [group_id], references: [id], onDelete: Cascade)
@@ -105,6 +110,7 @@ model CallSession {
   @@index([status])
   @@index([call_type])
   @@index([scheduled_at])
+  @@index([scheduled_day])
 }
 
 model CallParticipant {

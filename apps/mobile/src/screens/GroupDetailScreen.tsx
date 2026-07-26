@@ -17,20 +17,15 @@ import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
 import { getGroupColorIndex, setGroupColorIndex, defaultPaletteIndex, CARD_PALETTES } from '../utils/groupColors';
+import { UserAvatar } from '../components/UserAvatar';
 
 type GroupDetailRouteProp = RouteProp<RootStackParamList, 'GroupDetail'>;
 type GroupDetailNavigationProp = StackNavigationProp<RootStackParamList, 'GroupDetail'>;
 
-function MemberAvatar({ username, isOwner, colors }: { username: string; isOwner: boolean; colors: any }) {
-  const initial = username.trim().charAt(0).toUpperCase();
+function MemberAvatar({ userId, username, hasAvatar, isOwner, colors }: { userId: string; username: string; hasAvatar: boolean; isOwner: boolean; colors: any }) {
   return (
-    <View style={[
-      { width: 40, height: 40, borderRadius: radius.md, justifyContent: 'center', alignItems: 'center', marginRight: spacing.md },
-      { backgroundColor: isOwner ? colors.primary : colors.primaryLight },
-    ]}>
-      <Text style={{ fontSize: 16, fontWeight: '700', color: isOwner ? '#fff' : colors.primary }}>
-        {initial}
-      </Text>
+    <View style={{ marginRight: spacing.md }}>
+      <UserAvatar userId={userId} username={username} hasAvatar={hasAvatar} size={40} colors={colors} isOwner={isOwner} />
     </View>
   );
 }
@@ -253,7 +248,7 @@ export default function GroupDetailScreen() {
                 key={member.user_id}
                 style={[styles.memberRow, isLast && styles.memberRowLast]}
               >
-                <MemberAvatar username={member.username} isOwner={isMemberOwner} colors={colors} />
+                <MemberAvatar userId={member.user_id} username={member.username} hasAvatar={member.has_avatar ?? false} isOwner={isMemberOwner} colors={colors} />
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>{member.username}</Text>
                   {isMemberOwner && (

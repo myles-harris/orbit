@@ -32,6 +32,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         createAuthenticatedApiClient()
           .then(client => client.post('/me/calls/leave', {}))
           .catch(() => {});
+        // Keep the server's time_zone in sync with the device (handles travel/DST changes)
+        createAuthenticatedApiClient()
+          .then(client => client.patch('/me', { time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone }))
+          .catch(() => {});
       }
     } catch (error) {
       console.error('Failed to check auth:', error);

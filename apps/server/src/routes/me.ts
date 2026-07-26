@@ -12,23 +12,61 @@ meRouter.get('/', requireJwt, async (req, res) => {
     const userId = (req as any).userId as string;
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: 'not_found' });
-    res.json({ id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at });
+    res.json({ id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at, has_avatar: user.avatar !== null });
   } catch (error) {
     console.error('[GET /me] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });
 
-const patchSchema = z.object({ username: z.string().min(1).optional(), time_zone: z.string().optional() });
+const patchSchema = z.object({
+  username: z.string().min(1).optional(),
+  time_zone: z.string().refine(tz => {
+    try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; } catch { return false; }
+  }, { message: 'invalid_timezone' }).optional(),
+});
 meRouter.patch('/', requireJwt, async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   try {
     const userId = (req as any).userId as string;
     const user = await prisma.user.update({ where: { id: userId }, data: parsed.data });
-    res.json({ id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at });
+    res.json({ id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at, has_avatar: user.avatar !== null });
   } catch (error) {
     console.error('[PATCH /me] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+const avatarUploadSchema = z.object({
+  data: z.string().min(1),
+  mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']),
+});
+meRouter.put('/avatar', requireJwt, async (req, res) => {
+  const parsed = avatarUploadSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  try {
+    const userId = (req as any).userId as string;
+    const buf = Buffer.from(parsed.data.data, 'base64');
+    if (buf.length > 2 * 1024 * 1024) return res.status(400).json({ error: 'avatar_too_large' });
+    await prisma.user.update({
+      where: { id: userId },
+      data: { avatar: buf, avatar_mime_type: parsed.data.mime_type },
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[PUT /me/avatar] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+meRouter.delete('/avatar', requireJwt, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    await prisma.user.update({ where: { id: userId }, data: { avatar: null, avatar_mime_type: null } });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[DELETE /me/avatar] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });

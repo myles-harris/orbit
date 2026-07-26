@@ -4,15 +4,19 @@ import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
 import { notifications } from '../services/notifications.js';
 import { scheduler } from '../services/scheduler.js';
+import { SCHEDULE_TZ, calendarDateInTz, addDays, dayBoundsUtc } from '../util/scheduleTime.js';
 
 export const groupsRouter = Router();
 
 const createSchema = z.object({
   name: z.string(),
   cadence: z.enum(['daily', 'weekly']),
-  daily_frequency: z.number().int().min(1).max(5).optional(),
+  // WS-6: daily groups are always 1x/day; accept any int from old clients but ignore it
+  daily_frequency: z.number().int().optional(),
   weekly_frequency: z.number().int().min(1).max(6).optional(),
-  call_duration_minutes: z.number().int().min(2).max(120)
+  call_duration_minutes: z.number().int().min(2).max(120),
+  call_window_start: z.number().int().min(0).max(23).optional(),
+  call_window_end: z.number().int().min(1).max(23).optional(),
 });
 
 groupsRouter.post('/', requireJwt, async (req, res) => {
@@ -25,13 +29,31 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
         name: parsed.data.name,
         owner_id: userId,
         cadence: parsed.data.cadence as any,
-        daily_frequency: parsed.data.cadence === 'daily' ? (parsed.data.daily_frequency ?? 5) : null,
+        daily_frequency: parsed.data.cadence === 'daily' ? 1 : null,
         weekly_frequency: parsed.data.cadence === 'weekly' ? (parsed.data.weekly_frequency ?? 1) : null,
         call_duration_minutes: parsed.data.call_duration_minutes,
+        call_window_start: parsed.data.call_window_start ?? 6,
+        call_window_end: parsed.data.call_window_end ?? 22,
         members: { create: { user_id: userId, role: 'owner' } },
       },
-      include: { members: true },
+      include: {
+        members: true,
+        owner: { select: { time_zone: true } },
+      },
     });
+
+    // WS-8: schedule first call for today if the window is still open
+    try {
+      await scheduler.scheduleInitialCallForGroup(
+        group.id,
+        group.owner.time_zone ?? SCHEDULE_TZ,
+        group.call_window_start,
+        group.call_window_end,
+      );
+    } catch (err) {
+      console.error('[POST /groups] scheduleInitialCallForGroup failed (non-fatal):', err);
+    }
+
     res.status(201).json({
       id: group.id,
       name: group.name,
@@ -40,6 +62,8 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
       daily_frequency: group.daily_frequency,
       weekly_frequency: group.weekly_frequency,
       call_duration_minutes: group.call_duration_minutes,
+      call_window_start: group.call_window_start,
+      call_window_end: group.call_window_end,
       member_count: group.members.length,
       members: group.members.map((m: any) => ({ user_id: m.user_id, role: m.role })),
       created_at: group.created_at,
@@ -62,6 +86,8 @@ groupsRouter.get('/', requireJwt, async (req, res) => {
       daily_frequency: m.group.daily_frequency,
       weekly_frequency: m.group.weekly_frequency,
       call_duration_minutes: m.group.call_duration_minutes,
+      call_window_start: m.group.call_window_start,
+      call_window_end: m.group.call_window_end,
       is_muted: m.is_muted,
       member_count: m.group.members.length,
       members: m.group.members.map((mm: any) => ({ user_id: mm.user_id, role: mm.role })),
@@ -80,7 +106,7 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
     const grp = await prisma.group.findUnique({
       where: { id: req.params.id },
       include: {
-        members: { include: { user: { select: { id: true, username: true } } } },
+        members: { include: { user: { select: { id: true, username: true, avatar: true } } } },
         calls: { orderBy: { started_at: 'desc' }, take: 1 },
       },
     });
@@ -94,12 +120,15 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
       daily_frequency: grp.daily_frequency,
       weekly_frequency: grp.weekly_frequency,
       call_duration_minutes: grp.call_duration_minutes,
+      call_window_start: grp.call_window_start,
+      call_window_end: grp.call_window_end,
       is_muted: myMembership?.is_muted ?? false,
       member_count: grp.members.length,
       members: grp.members.map((m: any) => ({
         user_id: m.user_id,
         username: m.user.username,
-        role: m.user_id === grp.owner_id ? 'owner' : 'member'
+        has_avatar: m.user.avatar !== null,
+        role: m.user_id === grp.owner_id ? 'owner' : 'member',
       })),
       last_call: grp.calls[0] ? { id: grp.calls[0].id, ended_at: grp.calls[0].ended_at?.toISOString?.() ?? '' } : null,
       created_at: grp.created_at,
@@ -113,25 +142,16 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
 const patchSchema = z.object({
   name: z.string().optional(),
   cadence: z.enum(['daily', 'weekly']).optional(),
-  daily_frequency: z.number().int().min(1).max(5).optional(),
+  // WS-6: accept any int for backwards compat, but the handler always writes 1
+  daily_frequency: z.number().int().optional(),
   weekly_frequency: z.number().int().min(1).max(6).optional(),
   call_duration_minutes: z.number().int().min(2).max(120).optional(),
+  call_window_start: z.number().int().min(0).max(23).optional(),
+  call_window_end: z.number().int().min(1).max(23).optional(),
 });
 
-groupsRouter.patch('/:id', requireJwt, async (req, res) => {
-  const parsed = patchSchema.safeParse(req.body);
-  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
-  try {
-    const updated = await prisma.group.update({
-      where: { id: req.params.id },
-      data: parsed.data as any,
-    });
-    res.json({ id: updated.id, ...parsed.data });
-  } catch (error) {
-    console.error('[PATCH /groups/:id] Error:', error);
-    res.status(500).json({ error: 'internal_server_error' });
-  }
-});
+// PATCH /:id was removed (9f): it had no membership/ownership check and no schedule regeneration,
+// making it a security hole that any authenticated user could exploit. Mobile clients use PUT.
 
 groupsRouter.put('/:id', requireJwt, async (req, res) => {
   try {
@@ -155,9 +175,10 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       return res.status(403).json({ error: 'You must be a member to edit group settings' });
     }
 
-    // Get the group to check ownership
+    // Get the group (with owner timezone) to check ownership and for schedule regen
     const group = await prisma.group.findUnique({
-      where: { id: groupId }
+      where: { id: groupId },
+      include: { owner: { select: { time_zone: true } } },
     });
 
     if (!group) {
@@ -178,9 +199,11 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
     if (isOwner) {
       if (parsed.data.cadence !== undefined) {
         updateData.cadence = parsed.data.cadence;
+        // WS-6: switching to daily always locks frequency to 1
+        if (parsed.data.cadence === 'daily') updateData.daily_frequency = 1;
       }
       if (parsed.data.daily_frequency !== undefined) {
-        updateData.daily_frequency = parsed.data.daily_frequency;
+        updateData.daily_frequency = 1; // WS-6: daily is always 1x/day
       }
       if (parsed.data.weekly_frequency !== undefined) {
         updateData.weekly_frequency = parsed.data.weekly_frequency;
@@ -188,12 +211,20 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       if (parsed.data.call_duration_minutes !== undefined) {
         updateData.call_duration_minutes = parsed.data.call_duration_minutes;
       }
+      if (parsed.data.call_window_start !== undefined) {
+        updateData.call_window_start = parsed.data.call_window_start;
+      }
+      if (parsed.data.call_window_end !== undefined) {
+        updateData.call_window_end = parsed.data.call_window_end;
+      }
     } else {
       // If non-owner tries to change owner-only fields, reject
       if (parsed.data.cadence !== undefined ||
           parsed.data.daily_frequency !== undefined ||
           parsed.data.weekly_frequency !== undefined ||
-          parsed.data.call_duration_minutes !== undefined) {
+          parsed.data.call_duration_minutes !== undefined ||
+          parsed.data.call_window_start !== undefined ||
+          parsed.data.call_window_end !== undefined) {
         return res.status(403).json({ error: 'Only the group owner can change frequency and duration settings' });
       }
     }
@@ -210,18 +241,24 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       updateData.cadence !== undefined ||
       updateData.daily_frequency !== undefined ||
       updateData.weekly_frequency !== undefined ||
-      updateData.call_duration_minutes !== undefined
+      updateData.call_duration_minutes !== undefined ||
+      updateData.call_window_start !== undefined ||
+      updateData.call_window_end !== undefined
     );
 
     if (schedulingChanged) {
       const now = new Date();
+      const ownerTz = group.owner.time_zone ?? SCHEDULE_TZ;
+      // 9c: cancel from tomorrow onward only — today's call belongs to the old config and
+      // shouldn't be silently deleted mid-day when an owner tweaks duration or cadence.
+      const tomorrowStart = dayBoundsUtc(addDays(calendarDateInTz(now, ownerTz), 1), ownerTz).start;
       const cancelled = await prisma.callSession.updateMany({
         where: {
           group_id: groupId,
           status: 'scheduled',
-          scheduled_at: { gt: now }
+          scheduled_at: { gte: tomorrowStart },
         },
-        data: { status: 'ended', ended_at: now }
+        data: { status: 'ended', ended_at: now },
       });
 
       if (cancelled.count > 0) {
@@ -229,7 +266,11 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       }
 
       // Immediately regenerate with new config
-      await scheduler.generateCallsForGroup(groupId, updated.cadence, updated.weekly_frequency);
+      await scheduler.generateCallsForGroup(
+        groupId, updated.cadence, updated.weekly_frequency,
+        ownerTz,
+        updated.call_window_start, updated.call_window_end,
+      );
       console.log(`[update-group] Regenerated schedule for group ${groupId}`);
     }
 
@@ -238,7 +279,9 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       name: updated.name,
       cadence: updated.cadence,
       weekly_frequency: updated.weekly_frequency,
-      call_duration_minutes: updated.call_duration_minutes
+      call_duration_minutes: updated.call_duration_minutes,
+      call_window_start: updated.call_window_start,
+      call_window_end: updated.call_window_end,
     });
   } catch (error) {
     console.error('[update-group] Error:', error);
@@ -349,7 +392,7 @@ groupsRouter.post('/:id/invite', requireJwt, async (req, res) => {
     res.json({
       invite_code: invite.code,
       expires_at: invite.expires_at.toISOString(),
-      invite_link: `take5://invite/${invite.code}`
+      invite_link: `orbit://invite/${invite.code}`
     });
   } catch (error) {
     console.error('[create-invite] Error:', error);
