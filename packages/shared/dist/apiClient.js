@@ -64,6 +64,9 @@ export class ApiClient {
     async post(path, body) {
         return this.request('POST', path, body);
     }
+    async patch(path, body) {
+        return this.request('PATCH', path, body);
+    }
     async put(path, body) {
         return this.request('PUT', path, body);
     }
