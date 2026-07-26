@@ -4,6 +4,8 @@ import { CallLiveActivity } from './modules/call-live-activity';
 import CallNotification from './modules/call-notification';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as Localization from 'expo-localization';
 import * as Notifications from 'expo-notifications';
 import { Asset } from 'expo-asset';
 import {
@@ -66,6 +68,45 @@ function AppContent() {
     if (isAuthenticated) {
       setupPushNotifications();
     }
+  }, [isAuthenticated]);
+
+  // WS-3: after sign-in, honour a pending invite link the user tapped while signed out
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const takePendingInvite = async () => {
+      try {
+        const code = await AsyncStorage.getItem('orbit.pendingInviteCode');
+        if (!code) return;
+        await AsyncStorage.removeItem('orbit.pendingInviteCode');
+        if (navigationRef.isReady()) {
+          navigationRef.navigate('JoinInvite', { code });
+        }
+      } catch {
+        // non-fatal
+      }
+    };
+    takePendingInvite();
+  }, [isAuthenticated]);
+
+  // WS-5e: seed the user's timezone from the device once per install
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    const seedTimezone = async () => {
+      try {
+        const alreadySeeded = await AsyncStorage.getItem('orbit.tzSeeded');
+        if (alreadySeeded) return;
+        const deviceTz = Localization.getCalendars()[0]?.timeZone;
+        if (!deviceTz) return;
+        const accessToken = await SecureStore.getItemAsync('access_token');
+        if (!accessToken) return;
+        const client = new ApiClient(API_URL, () => accessToken);
+        await client.patch('/me', { time_zone: deviceTz });
+        await AsyncStorage.setItem('orbit.tzSeeded', '1');
+      } catch {
+        // non-fatal — will retry on next launch until it succeeds
+      }
+    };
+    seedTimezone();
   }, [isAuthenticated]);
 
   // Sweep any stale Live Activities left over from a previous session/crash

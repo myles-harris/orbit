@@ -112,6 +112,12 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
   return (
     <NavigationContainer ref={navigationRef} linking={linking}>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
+        {/* JoinInvite is always accessible so orbit://invite/:code works before sign-in */}
+        <Stack.Screen
+          name="JoinInvite"
+          component={JoinInviteScreen}
+          options={{ headerShown: true, title: 'Join Group', ...sharedHeaderOptions }}
+        />
         {!isAuthenticated ? (
           <Stack.Screen name="Auth" component={AuthScreen} />
         ) : (
@@ -146,11 +152,6 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
               name="GroupSettings"
               component={GroupSettingsScreen}
               options={{ headerShown: true, title: 'Group Settings', ...sharedHeaderOptions }}
-            />
-            <Stack.Screen
-              name="JoinInvite"
-              component={JoinInviteScreen}
-              options={{ headerShown: true, title: 'Join Group', ...sharedHeaderOptions }}
             />
           </>
         )}

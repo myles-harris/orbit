@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
+import * as Localization from 'expo-localization';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
@@ -48,9 +49,11 @@ export default function CreateGroupScreen() {
     if (!name.trim()) { Alert.alert('Missing Name', 'Please enter a group name'); return; }
     try {
       const client = await createAuthenticatedApiClient();
+      const deviceTz = Localization.getCalendars()[0]?.timeZone;
       const data: any = {
         name: name.trim(), cadence, call_duration_minutes: duration,
         call_window_start: windowStart, call_window_end: windowEnd,
+        ...(deviceTz ? { time_zone: deviceTz } : {}),
       };
       if (cadence === 'daily') data.daily_frequency = 1;
       else data.weekly_frequency = frequency;

@@ -10,55 +10,72 @@ import {
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { Ionicons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
+import { API_URL } from '../config';
+import { useAuth } from '../context/AuthContext';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 
 type JoinInviteRouteProp = RouteProp<RootStackParamList, 'JoinInvite'>;
 type JoinInviteNavigationProp = StackNavigationProp<RootStackParamList, 'JoinInvite'>;
 
+interface InvitePreview {
+  group_id: string;
+  group_name: string;
+  cadence: string;
+  weekly_frequency: number | null;
+  call_duration_minutes: number;
+  member_count: number;
+  invited_by: string;
+  expires_at: string;
+}
+
 export default function JoinInviteScreen() {
   const route = useRoute<JoinInviteRouteProp>();
   const navigation = useNavigation<JoinInviteNavigationProp>();
   const { code } = route.params;
+  const { isAuthenticated } = useAuth();
   const { theme: { colors, typography, shadow } } = useTheme();
   const styles = useMemo(() => makeStyles(colors, typography, shadow), [colors]);
 
-  const [groupInfo, setGroupInfo] = useState<{ group_id: string; group_name: string; expires_at: string } | null>(null);
+  const [preview, setPreview] = useState<InvitePreview | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [joining, setJoining] = useState(false);
 
   useEffect(() => {
-    const loadInviteInfo = async () => {
+    const loadPreview = async () => {
       try {
-        const client = await createAuthenticatedApiClient();
-        const info = await client.getInviteInfo(code);
-        setGroupInfo(info);
-      } catch (error: any) {
-        if (error.message?.includes('404')) {
-          setLoadError('This invite link is invalid or has already been used.');
-        } else if (error.message?.toLowerCase().includes('expired')) {
-          setLoadError('This invite link has expired.');
-        } else {
-          setLoadError('Could not load invite details.');
+        const resp = await fetch(`${API_URL}/groups/invites/${encodeURIComponent(code)}/preview`);
+        if (resp.status === 404) { setLoadError('This invite link is invalid.'); return; }
+        if (resp.status === 410) {
+          const body = await resp.json();
+          if (body.error === 'invite_expired') setLoadError('This invite link has expired.');
+          else if (body.error === 'invite_revoked') setLoadError('This invite link has been revoked.');
+          else setLoadError('This invite link is no longer valid.');
+          return;
         }
+        if (!resp.ok) { setLoadError('Could not load invite details.'); return; }
+        setPreview(await resp.json());
+      } catch {
+        setLoadError('Could not load invite details.');
       }
     };
-    loadInviteInfo();
+    loadPreview();
   }, [code]);
 
   const joinGroup = async () => {
-    if (!groupInfo) return;
+    if (!preview) return;
     setJoining(true);
     try {
       const client = await createAuthenticatedApiClient();
-      await client.joinGroupWithCode(groupInfo.group_id, code);
-      navigation.replace('GroupDetail', { groupId: groupInfo.group_id });
+      await client.post(`/groups/${preview.group_id}/join`, { invite_code: code });
+      navigation.replace('GroupDetail', { groupId: preview.group_id });
     } catch (error: any) {
       const msg = error.message || '';
       if (msg.includes('already')) {
-        navigation.replace('GroupDetail', { groupId: groupInfo.group_id });
+        navigation.replace('GroupDetail', { groupId: preview.group_id });
       } else if (msg.includes('expired')) {
         Alert.alert('Invite Expired', 'This invite link has expired. Ask the group owner for a new one.');
       } else {
@@ -69,21 +86,25 @@ export default function JoinInviteScreen() {
     }
   };
 
-  if (!groupInfo && !loadError) {
+  const signInToJoin = async () => {
+    // Stash the invite code so AuthScreen can pick it up after sign-in
+    await AsyncStorage.setItem('orbit.pendingInviteCode', code);
+    navigation.navigate('Auth');
+  };
+
+  const goHome = () => {
+    if (navigation.canGoBack()) navigation.goBack();
+    else if (isAuthenticated) navigation.replace('Main');
+    else navigation.navigate('Auth');
+  };
+
+  if (!preview && !loadError) {
     return (
       <View style={styles.center}>
         <ActivityIndicator size="large" color={colors.primary} />
       </View>
     );
   }
-
-  const goHome = () => {
-    if (navigation.canGoBack()) {
-      navigation.goBack();
-    } else {
-      navigation.replace('Main');
-    }
-  };
 
   if (loadError) {
     return (
@@ -97,27 +118,46 @@ export default function JoinInviteScreen() {
     );
   }
 
+  const cadenceLabel = preview!.cadence === 'daily'
+    ? 'Daily calls'
+    : `${preview!.weekly_frequency ?? 1} calls/week`;
+
   return (
     <View style={styles.container}>
       <View style={styles.card}>
         <View style={styles.iconContainer}>
-          <Text style={styles.iconText}>{groupInfo!.group_name.trim().charAt(0).toUpperCase()}</Text>
+          <Text style={styles.iconText}>{preview!.group_name.trim().charAt(0).toUpperCase()}</Text>
         </View>
-        <Text style={styles.groupName}>{groupInfo!.group_name}</Text>
-        <Text style={styles.subText}>You've been invited to join this group on Orbit.</Text>
+        <Text style={styles.groupName}>{preview!.group_name}</Text>
+        <Text style={styles.invitedBy}>Invited by {preview!.invited_by}</Text>
+        <View style={styles.metaRow}>
+          <Text style={styles.metaBadge}>{cadenceLabel}</Text>
+          <Text style={styles.metaBadge}>{preview!.call_duration_minutes} min</Text>
+          <Text style={styles.metaBadge}>{preview!.member_count} members</Text>
+        </View>
 
-        <TouchableOpacity
-          style={[styles.joinButton, joining && styles.joinButtonDisabled]}
-          onPress={joinGroup}
-          disabled={joining}
-          activeOpacity={0.85}
-        >
-          {joining ? (
-            <ActivityIndicator color="#fff" size="small" />
-          ) : (
-            <Text style={styles.joinButtonText}>Join Group</Text>
-          )}
-        </TouchableOpacity>
+        {isAuthenticated ? (
+          <TouchableOpacity
+            style={[styles.joinButton, joining && styles.joinButtonDisabled]}
+            onPress={joinGroup}
+            disabled={joining}
+            activeOpacity={0.85}
+          >
+            {joining ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={styles.joinButtonText}>Join Group</Text>
+            )}
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={styles.joinButton}
+            onPress={signInToJoin}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.joinButtonText}>Sign in to Join</Text>
+          </TouchableOpacity>
+        )}
 
         <TouchableOpacity onPress={goHome} activeOpacity={0.7}>
           <Text style={styles.cancelText}>Not now</Text>
@@ -146,8 +186,10 @@ function makeStyles(colors: any, typography: any, shadow: any) {
       ...shadow.md,
     },
     iconText: { fontSize: 36, fontWeight: '700', color: '#fff' },
-    groupName: { ...typography.h2, textAlign: 'center', marginBottom: spacing.md },
-    subText: { ...typography.body, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.xxl },
+    groupName: { ...typography.h2, textAlign: 'center', marginBottom: spacing.sm },
+    invitedBy: { ...typography.body, color: colors.textSecondary, marginBottom: spacing.lg },
+    metaRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: spacing.sm, marginBottom: spacing.xxl },
+    metaBadge: { ...typography.captionMedium, color: colors.textSecondary, backgroundColor: colors.background, paddingHorizontal: spacing.md, paddingVertical: spacing.xs, borderRadius: radius.full },
     joinButton: {
       backgroundColor: colors.primary,
       borderRadius: radius.full,

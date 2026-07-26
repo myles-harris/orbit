@@ -28,7 +28,7 @@ router.get('/search', async (req, res) => {
 
     const users = await prisma.user.findMany({
       where: whereClause,
-      select: { id: true, username: true, avatar: true },
+      select: { id: true, username: true, avatar: true, avatar_updated_at: true },
       take: 10,
       orderBy: { username: 'asc' }
     });
@@ -66,6 +66,7 @@ router.get('/search', async (req, res) => {
       id: u.id,
       username: u.username,
       has_avatar: u.avatar !== null,
+      avatar_updated_at: u.avatar_updated_at?.toISOString() ?? null,
       status: memberIds.has(u.id) ? 'member' : invitedUserIds.has(u.id) ? 'invited' : null,
     }));
 
@@ -80,11 +81,21 @@ router.get('/:userId/avatar', async (req, res) => {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.params.userId },
-      select: { avatar: true, avatar_mime_type: true },
+      select: { avatar: true, avatar_mime_type: true, avatar_updated_at: true },
     });
     if (!user?.avatar) return res.status(404).end();
+
+    const etag = user.avatar_updated_at
+      ? `"${user.avatar_updated_at.getTime()}"`
+      : undefined;
+
+    if (etag && req.headers['if-none-match'] === etag) {
+      return res.status(304).end();
+    }
+
     res.setHeader('Content-Type', user.avatar_mime_type ?? 'application/octet-stream');
-    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.setHeader('Cache-Control', 'private, max-age=86400');
+    if (etag) res.setHeader('ETag', etag);
     res.end(user.avatar);
   } catch (error) {
     console.error('[GET /users/:userId/avatar] Error:', error);

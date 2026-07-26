@@ -22,8 +22,7 @@ export const scheduler = {
     const groups = await prisma.group.findMany({
       select: {
         id: true, cadence: true, weekly_frequency: true,
-        call_window_start: true, call_window_end: true,
-        owner: { select: { time_zone: true } },
+        time_zone: true, call_window_start: true, call_window_end: true,
       },
     });
 
@@ -32,7 +31,7 @@ export const scheduler = {
       try {
         await this.generateCallsForGroup(
           group.id, group.cadence, group.weekly_frequency,
-          group.owner.time_zone,
+          group.time_zone,
           group.call_window_start, group.call_window_end,
         );
         generated++;

@@ -12,7 +12,8 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
-import { parseApiError } from '@orbit/shared';
+import { parseApiError, formatViewerWindow } from '@orbit/shared';
+import * as Localization from 'expo-localization';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
@@ -40,6 +41,9 @@ export default function GroupDetailScreen() {
   const [group, setGroup] = useState<any>(null);
   const [currentCall, setCurrentCall] = useState<any>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [viewerTz, setViewerTz] = useState<string>(
+    Localization.getCalendars()[0]?.timeZone ?? 'UTC'
+  );
   const [paletteIndex, setPaletteIndex] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -49,6 +53,7 @@ export default function GroupDetailScreen() {
       const client = await createAuthenticatedApiClient();
       const userInfo = await client.get<any>('/me');
       setCurrentUserId(userInfo.id);
+      if (userInfo.time_zone) setViewerTz(userInfo.time_zone);
       const groupData = await client.get<any>(`/groups/${groupId}`);
       setGroup(groupData);
       const callData = await client.get<{ current: any }>(`/groups/${groupId}/calls/current`);
@@ -177,6 +182,13 @@ export default function GroupDetailScreen() {
           <View style={styles.infoBadge}>
             <Text style={styles.infoBadgeText}>{group.call_duration_minutes} min</Text>
           </View>
+          {group.call_window_start != null && group.call_window_end != null && group.time_zone && (
+            <View style={styles.infoBadge}>
+              <Text style={styles.infoBadgeText}>
+                {formatViewerWindow(group.call_window_start, group.call_window_end, group.time_zone, viewerTz)}
+              </Text>
+            </View>
+          )}
           {group.is_muted && (
             <View style={styles.mutedBadge}>
               <Ionicons name="volume-mute" size={12} color={colors.textSecondary} />

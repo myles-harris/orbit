@@ -4,9 +4,13 @@ import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
 import { notifications } from '../services/notifications.js';
 import { scheduler } from '../services/scheduler.js';
-import { SCHEDULE_TZ, calendarDateInTz, addDays, dayBoundsUtc } from '../util/scheduleTime.js';
+import { calendarDateInTz, addDays, dayBoundsUtc } from '../util/scheduleTime.js';
 
 export const groupsRouter = Router();
+
+const validTz = (tz: string) => {
+  try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; } catch { return false; }
+};
 
 const createSchema = z.object({
   name: z.string(),
@@ -17,6 +21,7 @@ const createSchema = z.object({
   call_duration_minutes: z.number().int().min(2).max(120),
   call_window_start: z.number().int().min(0).max(23).optional(),
   call_window_end: z.number().int().min(1).max(23).optional(),
+  time_zone: z.string().refine(validTz, { message: 'invalid_timezone' }).optional(),
 });
 
 groupsRouter.post('/', requireJwt, async (req, res) => {
@@ -24,6 +29,14 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   try {
     const userId = (req as any).userId as string;
+
+    // Resolve group timezone: client-provided > owner's profile tz > UTC
+    let groupTz = parsed.data.time_zone;
+    if (!groupTz) {
+      const owner = await prisma.user.findUnique({ where: { id: userId }, select: { time_zone: true } });
+      groupTz = owner?.time_zone || 'UTC';
+    }
+
     const group = await prisma.group.create({
       data: {
         name: parsed.data.name,
@@ -34,19 +47,17 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
         call_duration_minutes: parsed.data.call_duration_minutes,
         call_window_start: parsed.data.call_window_start ?? 6,
         call_window_end: parsed.data.call_window_end ?? 22,
+        time_zone: groupTz,
         members: { create: { user_id: userId, role: 'owner' } },
       },
-      include: {
-        members: true,
-        owner: { select: { time_zone: true } },
-      },
+      include: { members: true },
     });
 
     // WS-8: schedule first call for today if the window is still open
     try {
       await scheduler.scheduleInitialCallForGroup(
         group.id,
-        group.owner.time_zone ?? SCHEDULE_TZ,
+        group.time_zone,
         group.call_window_start,
         group.call_window_end,
       );
@@ -64,6 +75,7 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
       call_duration_minutes: group.call_duration_minutes,
       call_window_start: group.call_window_start,
       call_window_end: group.call_window_end,
+      time_zone: group.time_zone,
       member_count: group.members.length,
       members: group.members.map((m: any) => ({ user_id: m.user_id, role: m.role })),
       created_at: group.created_at,
@@ -88,6 +100,7 @@ groupsRouter.get('/', requireJwt, async (req, res) => {
       call_duration_minutes: m.group.call_duration_minutes,
       call_window_start: m.group.call_window_start,
       call_window_end: m.group.call_window_end,
+      time_zone: m.group.time_zone,
       is_muted: m.is_muted,
       member_count: m.group.members.length,
       members: m.group.members.map((mm: any) => ({ user_id: mm.user_id, role: mm.role })),
@@ -106,7 +119,7 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
     const grp = await prisma.group.findUnique({
       where: { id: req.params.id },
       include: {
-        members: { include: { user: { select: { id: true, username: true, avatar: true } } } },
+        members: { include: { user: { select: { id: true, username: true, avatar: true, avatar_updated_at: true } } } },
         calls: { orderBy: { started_at: 'desc' }, take: 1 },
       },
     });
@@ -122,12 +135,14 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
       call_duration_minutes: grp.call_duration_minutes,
       call_window_start: grp.call_window_start,
       call_window_end: grp.call_window_end,
+      time_zone: grp.time_zone,
       is_muted: myMembership?.is_muted ?? false,
       member_count: grp.members.length,
       members: grp.members.map((m: any) => ({
         user_id: m.user_id,
         username: m.user.username,
         has_avatar: m.user.avatar !== null,
+        avatar_updated_at: m.user.avatar_updated_at?.toISOString() ?? null,
         role: m.user_id === grp.owner_id ? 'owner' : 'member',
       })),
       last_call: grp.calls[0] ? { id: grp.calls[0].id, ended_at: grp.calls[0].ended_at?.toISOString?.() ?? '' } : null,
@@ -148,6 +163,7 @@ const patchSchema = z.object({
   call_duration_minutes: z.number().int().min(2).max(120).optional(),
   call_window_start: z.number().int().min(0).max(23).optional(),
   call_window_end: z.number().int().min(1).max(23).optional(),
+  time_zone: z.string().refine(validTz, { message: 'invalid_timezone' }).optional(),
 });
 
 // PATCH /:id was removed (9f): it had no membership/ownership check and no schedule regeneration,
@@ -175,11 +191,7 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       return res.status(403).json({ error: 'You must be a member to edit group settings' });
     }
 
-    // Get the group (with owner timezone) to check ownership and for schedule regen
-    const group = await prisma.group.findUnique({
-      where: { id: groupId },
-      include: { owner: { select: { time_zone: true } } },
-    });
+    const group = await prisma.group.findUnique({ where: { id: groupId } });
 
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
@@ -217,6 +229,9 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       if (parsed.data.call_window_end !== undefined) {
         updateData.call_window_end = parsed.data.call_window_end;
       }
+      if (parsed.data.time_zone !== undefined) {
+        updateData.time_zone = parsed.data.time_zone;
+      }
     } else {
       // If non-owner tries to change owner-only fields, reject
       if (parsed.data.cadence !== undefined ||
@@ -224,7 +239,8 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
           parsed.data.weekly_frequency !== undefined ||
           parsed.data.call_duration_minutes !== undefined ||
           parsed.data.call_window_start !== undefined ||
-          parsed.data.call_window_end !== undefined) {
+          parsed.data.call_window_end !== undefined ||
+          parsed.data.time_zone !== undefined) {
         return res.status(403).json({ error: 'Only the group owner can change frequency and duration settings' });
       }
     }
@@ -243,15 +259,16 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       updateData.weekly_frequency !== undefined ||
       updateData.call_duration_minutes !== undefined ||
       updateData.call_window_start !== undefined ||
-      updateData.call_window_end !== undefined
+      updateData.call_window_end !== undefined ||
+      updateData.time_zone !== undefined
     );
 
     if (schedulingChanged) {
       const now = new Date();
-      const ownerTz = group.owner.time_zone ?? SCHEDULE_TZ;
+      const groupTz = updated.time_zone;
       // 9c: cancel from tomorrow onward only — today's call belongs to the old config and
       // shouldn't be silently deleted mid-day when an owner tweaks duration or cadence.
-      const tomorrowStart = dayBoundsUtc(addDays(calendarDateInTz(now, ownerTz), 1), ownerTz).start;
+      const tomorrowStart = dayBoundsUtc(addDays(calendarDateInTz(now, groupTz), 1), groupTz).start;
       const cancelled = await prisma.callSession.updateMany({
         where: {
           group_id: groupId,
@@ -268,7 +285,7 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       // Immediately regenerate with new config
       await scheduler.generateCallsForGroup(
         groupId, updated.cadence, updated.weekly_frequency,
-        ownerTz,
+        groupTz,
         updated.call_window_start, updated.call_window_end,
       );
       console.log(`[update-group] Regenerated schedule for group ${groupId}`);
@@ -282,6 +299,7 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       call_duration_minutes: updated.call_duration_minutes,
       call_window_start: updated.call_window_start,
       call_window_end: updated.call_window_end,
+      time_zone: updated.time_zone,
     });
   } catch (error) {
     console.error('[update-group] Error:', error);
@@ -409,60 +427,40 @@ groupsRouter.post('/:id/join', requireJwt, async (req, res) => {
     const userId = (req as any).userId as string;
     const { invite_code } = req.body;
 
-    // If no invite code, check if group is public (for now, require invite)
     if (!invite_code) {
       return res.status(400).json({ error: 'Invite code required' });
     }
 
-    // Verify invite code
-    const invite = await prisma.invite.findUnique({
-      where: { code: invite_code }
+    const invite = await prisma.invite.findUnique({ where: { code: invite_code } });
+
+    if (!invite) return res.status(404).json({ error: 'Invalid invite code' });
+    if (invite.group_id !== groupId) return res.status(400).json({ error: 'Invite code does not match group' });
+    if (new Date() > invite.expires_at) return res.status(400).json({ error: 'Invite code has expired' });
+    if (invite.revoked_at) return res.status(400).json({ error: 'Invite code has been revoked' });
+    if (invite.max_uses !== null && invite.use_count >= invite.max_uses) {
+      return res.status(400).json({ error: 'Invite code has reached its use limit' });
+    }
+
+    // Check if already a member before consuming a use
+    const existing = await prisma.groupMember.findFirst({ where: { group_id: groupId, user_id: userId } });
+    if (existing) return res.json({ status: 'already_member' });
+
+    // Atomically claim one use — if max_uses is set, only succeed if use_count < max_uses
+    const maxUsesCondition = invite.max_uses !== null
+      ? { use_count: { lt: invite.max_uses } }
+      : {};
+
+    const claimed = await prisma.invite.updateMany({
+      where: { id: invite.id, ...maxUsesCondition },
+      data: { use_count: { increment: 1 }, used_by: userId, used_at: new Date() },
     });
 
-    if (!invite) {
-      return res.status(404).json({ error: 'Invalid invite code' });
+    if (claimed.count === 0) {
+      return res.status(400).json({ error: 'Invite code has reached its use limit' });
     }
 
-    if (invite.group_id !== groupId) {
-      return res.status(400).json({ error: 'Invite code does not match group' });
-    }
-
-    if (new Date() > invite.expires_at) {
-      return res.status(400).json({ error: 'Invite code has expired' });
-    }
-
-    if (invite.used_by && invite.used_by !== userId) {
-      return res.status(400).json({ error: 'Invite code has already been used' });
-    }
-
-    // Check if already a member
-    const existing = await prisma.groupMember.findFirst({
-      where: {
-        group_id: groupId,
-        user_id: userId
-      }
-    });
-
-    if (existing) {
-      return res.json({ status: 'already_member' });
-    }
-
-    // Add user to group
     await prisma.groupMember.create({
-      data: {
-        group_id: groupId,
-        user_id: userId,
-        role: 'member'
-      }
-    });
-
-    // Mark invite as used
-    await prisma.invite.update({
-      where: { id: invite.id },
-      data: {
-        used_by: userId,
-        used_at: new Date()
-      }
+      data: { group_id: groupId, user_id: userId, role: 'member' },
     });
 
     res.json({ status: 'joined' });
@@ -630,6 +628,49 @@ groupsRouter.post('/:id/transfer-ownership', requireJwt, async (req, res) => {
   } catch (error) {
     console.error('[transfer-ownership] Error:', error);
     res.status(500).json({ error: 'Failed to transfer ownership' });
+  }
+});
+
+/**
+ * Unauthenticated preview of a link-share invite.
+ * Returns just enough to render a "join this group?" screen before sign-in.
+ */
+groupsRouter.get('/invites/:code/preview', async (req, res) => {
+  try {
+    const code = req.params.code.toUpperCase();
+    const now = new Date();
+
+    const invite = await prisma.invite.findUnique({
+      where: { code },
+      include: {
+        group: {
+          include: { members: { select: { user_id: true } } },
+        },
+        creator: { select: { username: true } },
+      },
+    });
+
+    if (!invite) return res.status(404).json({ error: 'invalid_code' });
+    if (invite.revoked_at) return res.status(410).json({ error: 'invite_revoked' });
+    if (now > invite.expires_at) return res.status(410).json({ error: 'invite_expired' });
+    if (invite.max_uses !== null && invite.use_count >= invite.max_uses) {
+      return res.status(410).json({ error: 'invite_exhausted' });
+    }
+
+    res.json({
+      group_id: invite.group_id,
+      group_name: invite.group.name,
+      cadence: invite.group.cadence,
+      weekly_frequency: invite.group.weekly_frequency,
+      call_duration_minutes: invite.group.call_duration_minutes,
+      member_count: invite.group.members.length,
+      invited_by: invite.creator.username,
+      code: invite.code,
+      expires_at: invite.expires_at.toISOString(),
+    });
+  } catch (error) {
+    console.error('[invite-preview] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
   }
 });
 

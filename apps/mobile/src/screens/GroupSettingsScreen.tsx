@@ -16,6 +16,8 @@ import {
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
+import * as Localization from 'expo-localization';
+import { formatViewerWindow } from '@orbit/shared';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
@@ -48,6 +50,8 @@ export default function GroupSettingsScreen() {
   const [savedCallDuration, setSavedCallDuration] = useState(15);
   const [savedWindowStart, setSavedWindowStart] = useState(6);
   const [savedWindowEnd, setSavedWindowEnd] = useState(22);
+  const [groupTz, setGroupTz] = useState<string>('UTC');
+  const viewerTz = Localization.getCalendars()[0]?.timeZone ?? 'UTC';
 
   const formatHour = (h: number): string => {
     if (h === 0) return '12 AM';
@@ -85,6 +89,7 @@ export default function GroupSettingsScreen() {
       setGroupName(group.name); setCadence(loadedCadence); setFrequency(loadedFrequency);
       setCallDuration(loadedDuration); setWindowStart(loadedWindowStart); setWindowEnd(loadedWindowEnd);
       setIsMuted(group.is_muted ?? false);
+      setGroupTz(group.time_zone ?? 'UTC');
       setSavedName(group.name); setSavedCadence(loadedCadence);
       setSavedFrequency(loadedFrequency); setSavedCallDuration(loadedDuration);
       setSavedWindowStart(loadedWindowStart); setSavedWindowEnd(loadedWindowEnd);
@@ -279,7 +284,10 @@ export default function GroupSettingsScreen() {
 
             <View style={styles.card}>
               <Text style={styles.fieldLabel}>Call Window</Text>
-              <Text style={styles.helperText}>Calls are scheduled at a random time within this window (your local time).</Text>
+              <Text style={styles.helperText}>
+                Calls are scheduled at a random time within this window, in the group's timezone.
+                {viewerTz !== groupTz ? ` For you: ${formatViewerWindow(windowStart, windowEnd, groupTz, viewerTz)}` : ''}
+              </Text>
               <View style={styles.windowRow}>
                 <View style={styles.windowCol}>
                   <Text style={[styles.fieldLabel, { marginBottom: spacing.sm }]}>Earliest</Text>
