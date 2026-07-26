@@ -161,9 +161,10 @@ describe('WS-9: PUT /groups/:id settings change (9c)', () => {
 
     const groupId = createRes.body.id;
 
-    // Seed a call for later today in PT
-    const todayPT = calendarDateInTz(new Date());
-    const laterToday = wallTimeToUtc(todayPT.year, todayPT.monthIndex, todayPT.day, 21 * 60); // 9pm PT
+    // Seed a call for later today in UTC (test users are created with time_zone: 'UTC',
+    // so the server computes tomorrowStart in UTC — laterToday must be in the same timezone)
+    const todayUTC = calendarDateInTz(new Date(), 'UTC');
+    const laterToday = wallTimeToUtc(todayUTC.year, todayUTC.monthIndex, todayUTC.day, 21 * 60, 'UTC'); // 9pm UTC
 
     if (laterToday > new Date()) {
       await prisma.callSession.create({
