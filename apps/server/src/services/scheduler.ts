@@ -143,16 +143,19 @@ export const scheduler = {
     const windowEndMinutes = windowEndHour * 60;
     const MIN_WINDOW_REMAINING = 30;
 
-    if (currentMinutesOfDay >= windowEndMinutes - MIN_WINDOW_REMAINING) {
+    // Skip the remaining-time guard when windowEndHour >= 24 (end-of-day sentinel).
+    if (windowEndMinutes < 24 * 60 && currentMinutesOfDay >= windowEndMinutes - MIN_WINDOW_REMAINING) {
       console.log(`[scheduler] Window closed for group ${groupId} — initial call deferred to tomorrow's rollover`);
       return;
     }
 
-    // Effective start: later of window open or 5 min from now (avoids scheduling in the past)
+    // Effective start: later of window open or 5 min from now (avoids scheduling in the past).
+    // Cap effectiveEnd at 23:59 so wallTimeToUtc never wraps to the next day.
     const effectiveStart = Math.max(windowStartMinutes, currentMinutesOfDay + 5);
-    if (effectiveStart >= windowEndMinutes) return;
+    const effectiveEnd = Math.min(windowEndMinutes, 24 * 60 - 1);
+    if (effectiveStart >= effectiveEnd) return;
 
-    const pickedMinutes = effectiveStart + Math.floor(Math.random() * (windowEndMinutes - effectiveStart));
+    const pickedMinutes = effectiveStart + Math.floor(Math.random() * (effectiveEnd - effectiveStart));
     const scheduledAt = wallTimeToUtc(today.year, today.monthIndex, today.day, pickedMinutes, timeZone);
 
     await this.createScheduledCall(groupId, scheduledAt, timeZone);
