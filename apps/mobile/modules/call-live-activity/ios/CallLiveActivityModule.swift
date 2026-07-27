@@ -49,7 +49,7 @@ public class CallLiveActivityModule: Module {
         if let endsAt {
           Task {
             do {
-              try await Task.sleep(until: .now + max(endsAt.timeIntervalSinceNow, 0), clock: .continuous)
+              try await Task.sleep(until: .now + .seconds(max(endsAt.timeIntervalSinceNow, 0)), clock: .continuous)
               await activity.end(nil, dismissalPolicy: .after(endsAt))
             } catch { /* task cancelled */ }
           }
