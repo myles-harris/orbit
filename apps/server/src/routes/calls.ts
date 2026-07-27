@@ -34,11 +34,17 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
         members: {
           include: {
             user: {
-              include: { devices: true }
-            }
-          }
-        }
-      }
+              select: {
+                id: true,
+                notify_sound: true,
+                notify_vibrate: true,
+                notify_break_focus: true,
+                devices: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!group) {
@@ -85,34 +91,41 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
       }
     });
 
-    // Send push notifications to all group members except the caller and muted members
-    const tokens = group.members
-      .filter((m: any) => m.user_id !== userId && !m.is_muted)
+    // Send push notifications to all group members except the caller and muted members.
+    const otherMembers = group.members.filter((m: any) => m.user_id !== userId);
+    const callData = {
+      type: 'call_started',
+      callId: call.id,
+      groupId: groupId,
+      callType: 'spontaneous',
+      groupName: group.name,
+    };
+
+    await notifications.sendToBuckets(
+      otherMembers,
+      `${group.name} is calling!`,
+      'Tap to join the call',
+      callData,
+    );
+
+    // iOS 17.2+: start Live Activity on locked/force-quit devices.
+    const ptsTokens = otherMembers
+      .filter((m: any) => !m.is_muted)
       .flatMap((m: any) =>
-        m.user.devices.map((d: any) => ({
-          token: d.token,
-          platform: d.platform as 'ios' | 'android'
-        }))
+        m.user.devices
+          .filter((d: any) => d.platform === 'ios' && d.live_activity_pts_token)
+          .map((d: any) => d.live_activity_pts_token as string)
       );
 
-    console.log(`[call-now] Found ${tokens.length} device tokens for ${group.members.length - 1} other group members (excluding caller)`);
-
-    if (tokens.length > 0) {
-      await notifications.sendPushTokens(
-        tokens,
-        `${group.name} is calling!`,
-        'Tap to join the call',
-        {
-          type: 'call_started',
-          callId: call.id,
-          groupId: groupId
-        }
+    if (ptsTokens.length > 0) {
+      await notifications.startLiveActivities(
+        ptsTokens,
+        { callId: call.id, groupId },
+        { groupName: group.name, callType: 'spontaneous' },
       );
-    } else {
-      console.log(`[call-now] No push tokens registered for group ${groupId}`);
     }
 
-    console.log(`[call-now] User ${userId} started spontaneous call ${call.id} for group ${groupId}`);
+    console.log(`[call-now] User ${userId} started spontaneous call ${call.id} for group ${groupId} (${otherMembers.length} other member(s))`);
 
     res.json({
       id: call.id,
@@ -302,12 +315,26 @@ callsRouter.post('/:id/calls/:callId/join-token', requireJwt, async (req, res) =
       return res.status(500).json({ error: 'Call room name not found' });
     }
 
-    // Record participant joining
+    // Verify the room still exists on Daily.co (it may have been deleted if the call ended)
+    const exists = await dailyVideo.roomExists(call.room_name);
+    if (!exists) {
+      // Auto-end the stale call record so the UI reflects the correct state
+      await prisma.callSession.update({
+        where: { id: callId },
+        data: { status: 'ended', ended_at: new Date() }
+      });
+      console.warn(`[join-token] Room ${call.room_name} no longer exists — auto-ended call ${callId}`);
+      return res.status(410).json({ error: 'Call has already ended' });
+    }
+
+    // Record participant joining — seed last_seen_at so the pruner treats the join
+    // itself as a heartbeat and won't prune the row for 90s.
     await prisma.callParticipant.create({
       data: {
         call_id: callId,
         user_id: userId,
-        joined_at: new Date()
+        joined_at: new Date(),
+        last_seen_at: new Date(),
       }
     });
 
@@ -438,6 +465,32 @@ callsRouter.post('/:id/calls/:callId/end', requireJwt, async (req, res) => {
     console.error('[end-call] Error:', error);
     res.status(500).json({ error: 'Failed to end call' });
   }
+});
+
+/**
+ * Heartbeat from a participant to confirm they are still in the call.
+ * Sent every 10s by the mobile client. The scheduler prunes participants
+ * whose last heartbeat is older than 90s and closes empty spontaneous calls.
+ */
+callsRouter.post('/:id/calls/:callId/heartbeat', requireJwt, async (req, res) => {
+  const callId = req.params.callId;
+  const userId = (req as any).userId as string;
+
+  const participant = await prisma.callParticipant.findFirst({
+    where: { call_id: callId, user_id: userId, left_at: null },
+    orderBy: { joined_at: 'desc' },
+  });
+
+  if (participant) {
+    await prisma.callParticipant.update({
+      where: { id: participant.id },
+      data: { last_seen_at: new Date() },
+    });
+  } else {
+    console.warn(`[heartbeat] No open participant row for user ${userId} in call ${callId}`);
+  }
+
+  res.json({ ok: true });
 });
 
 /**

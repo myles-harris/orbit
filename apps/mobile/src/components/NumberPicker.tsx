@@ -12,9 +12,10 @@ interface NumberPickerProps {
   value: number;
   onChange: (value: number) => void;
   suffix?: string;
+  formatValue?: (v: number) => string;
 }
 
-export default function NumberPicker({ min, max, value, onChange, suffix }: NumberPickerProps) {
+export default function NumberPicker({ min, max, value, onChange, suffix, formatValue }: NumberPickerProps) {
   const { theme: { colors } } = useTheme();
   const scrollRef = useRef<ScrollView>(null);
   const items = Array.from({ length: max - min + 1 }, (_, i) => min + i);
@@ -69,7 +70,7 @@ export default function NumberPicker({ min, max, value, onChange, suffix }: Numb
           return (
             <View key={item} style={styles.item}>
               <Text style={[styles.itemText, isSelected && styles.itemTextSelected]}>
-                {suffix ? `${item} ${suffix}` : item}
+                {formatValue ? formatValue(item) : suffix ? `${item} ${suffix}` : item}
               </Text>
             </View>
           );

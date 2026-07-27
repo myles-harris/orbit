@@ -12,24 +12,21 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
+import { parseApiError, formatViewerWindow } from '@orbit/shared';
+import * as Localization from 'expo-localization';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
 import { getGroupColorIndex, setGroupColorIndex, defaultPaletteIndex, CARD_PALETTES } from '../utils/groupColors';
+import { UserAvatar } from '../components/UserAvatar';
 
 type GroupDetailRouteProp = RouteProp<RootStackParamList, 'GroupDetail'>;
 type GroupDetailNavigationProp = StackNavigationProp<RootStackParamList, 'GroupDetail'>;
 
-function MemberAvatar({ username, isOwner, colors }: { username: string; isOwner: boolean; colors: any }) {
-  const initial = username.trim().charAt(0).toUpperCase();
+function MemberAvatar({ userId, username, hasAvatar, isOwner, colors }: { userId: string; username: string; hasAvatar: boolean; isOwner: boolean; colors: any }) {
   return (
-    <View style={[
-      { width: 40, height: 40, borderRadius: radius.md, justifyContent: 'center', alignItems: 'center', marginRight: spacing.md },
-      { backgroundColor: isOwner ? colors.primary : colors.primaryLight },
-    ]}>
-      <Text style={{ fontSize: 16, fontWeight: '700', color: isOwner ? '#fff' : colors.primary }}>
-        {initial}
-      </Text>
+    <View style={{ marginRight: spacing.md }}>
+      <UserAvatar userId={userId} username={username} hasAvatar={hasAvatar} size={40} colors={colors} isOwner={isOwner} />
     </View>
   );
 }
@@ -44,13 +41,19 @@ export default function GroupDetailScreen() {
   const [group, setGroup] = useState<any>(null);
   const [currentCall, setCurrentCall] = useState<any>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [viewerTz, setViewerTz] = useState<string>(
+    Localization.getCalendars()[0]?.timeZone ?? 'UTC'
+  );
   const [paletteIndex, setPaletteIndex] = useState<number | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadGroupDetails = async () => {
+    setLoadError(null);
     try {
       const client = await createAuthenticatedApiClient();
       const userInfo = await client.get<any>('/me');
       setCurrentUserId(userInfo.id);
+      if (userInfo.time_zone) setViewerTz(userInfo.time_zone);
       const groupData = await client.get<any>(`/groups/${groupId}`);
       setGroup(groupData);
       const callData = await client.get<{ current: any }>(`/groups/${groupId}/calls/current`);
@@ -59,6 +62,7 @@ export default function GroupDetailScreen() {
       setPaletteIndex(saved);
     } catch (error) {
       console.error('Failed to load group:', error);
+      setLoadError('Could not load group details.');
     }
   };
 
@@ -99,7 +103,7 @@ export default function GroupDetailScreen() {
         token: tokenData.token, endsAt: tokenData.ends_at ?? undefined,
       });
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to start call');
+      Alert.alert('Error', parseApiError(error));
     }
   };
 
@@ -113,7 +117,7 @@ export default function GroupDetailScreen() {
         token: tokenData.token, endsAt: tokenData.ends_at ?? undefined,
       });
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to join call');
+      Alert.alert('Error', parseApiError(error));
     }
   };
 
@@ -128,7 +132,7 @@ export default function GroupDetailScreen() {
             await client.delete(`/groups/${groupId}/members/${memberId}`);
             await loadGroupDetails();
           } catch (error: any) {
-            Alert.alert('Error', error.message || 'Failed to remove member');
+            Alert.alert('Error', parseApiError(error));
           }
         },
       },
@@ -139,6 +143,16 @@ export default function GroupDetailScreen() {
   const resolvedPaletteIndex = paletteIndex ?? (group ? defaultPaletteIndex(group.name) : 0);
 
   if (!group) {
+    if (loadError) {
+      return (
+        <View style={styles.loadingContainer}>
+          <Text style={{ color: colors.textSecondary, marginBottom: 16, textAlign: 'center' }}>{loadError}</Text>
+          <TouchableOpacity onPress={loadGroupDetails}>
+            <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 16 }}>Retry</Text>
+          </TouchableOpacity>
+        </View>
+      );
+    }
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color={colors.primary} />
@@ -168,6 +182,13 @@ export default function GroupDetailScreen() {
           <View style={styles.infoBadge}>
             <Text style={styles.infoBadgeText}>{group.call_duration_minutes} min</Text>
           </View>
+          {group.call_window_start != null && group.call_window_end != null && group.time_zone && (
+            <View style={styles.infoBadge}>
+              <Text style={styles.infoBadgeText}>
+                {formatViewerWindow(group.call_window_start, group.call_window_end, group.time_zone, viewerTz)}
+              </Text>
+            </View>
+          )}
           {group.is_muted && (
             <View style={styles.mutedBadge}>
               <Ionicons name="volume-mute" size={12} color={colors.textSecondary} />
@@ -239,7 +260,7 @@ export default function GroupDetailScreen() {
                 key={member.user_id}
                 style={[styles.memberRow, isLast && styles.memberRowLast]}
               >
-                <MemberAvatar username={member.username} isOwner={isMemberOwner} colors={colors} />
+                <MemberAvatar userId={member.user_id} username={member.username} hasAvatar={member.has_avatar ?? false} isOwner={isMemberOwner} colors={colors} />
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>{member.username}</Text>
                   {isMemberOwner && (

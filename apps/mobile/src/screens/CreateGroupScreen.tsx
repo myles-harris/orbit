@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
+import * as Localization from 'expo-localization';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
@@ -27,20 +28,34 @@ export default function CreateGroupScreen() {
 
   const [name, setName] = useState('');
   const [cadence, setCadence] = useState<'daily' | 'weekly'>('daily');
-  const [frequency, setFrequency] = useState(5);
+  const [frequency, setFrequency] = useState(1);
   const [duration, setDuration] = useState(30);
+  const [windowStart, setWindowStart] = useState(6);
+  const [windowEnd, setWindowEnd] = useState(22);
+
+  const formatHour = (h: number): string => {
+    if (h === 0) return '12 AM';
+    if (h < 12) return `${h} AM`;
+    if (h === 12) return '12 PM';
+    return `${h - 12} PM`;
+  };
 
   const handleCadenceChange = (value: 'daily' | 'weekly') => {
     setCadence(value);
-    setFrequency(value === 'daily' ? 5 : 1);
+    setFrequency(1);
   };
 
   const createGroup = async () => {
     if (!name.trim()) { Alert.alert('Missing Name', 'Please enter a group name'); return; }
     try {
       const client = await createAuthenticatedApiClient();
-      const data: any = { name: name.trim(), cadence, call_duration_minutes: duration };
-      if (cadence === 'daily') data.daily_frequency = frequency;
+      const deviceTz = Localization.getCalendars()[0]?.timeZone;
+      const data: any = {
+        name: name.trim(), cadence, call_duration_minutes: duration,
+        call_window_start: windowStart, call_window_end: windowEnd,
+        ...(deviceTz ? { time_zone: deviceTz } : {}),
+      };
+      if (cadence === 'daily') data.daily_frequency = 1;
       else data.weekly_frequency = frequency;
       await client.post('/groups', data);
       navigation.goBack();
@@ -80,10 +95,32 @@ export default function CreateGroupScreen() {
               <Text style={[styles.segmentText, cadence === 'weekly' && styles.segmentTextActive]}>Weekly</Text>
             </TouchableOpacity>
           </View>
-          <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>
-            {cadence === 'daily' ? 'Calls per Day' : 'Calls per Week'}
-          </Text>
-          <NumberPicker min={1} max={cadence === 'daily' ? 5 : 6} value={frequency} onChange={setFrequency} />
+          {cadence === 'daily' ? (
+            <Text style={styles.helperText}>One call per day.</Text>
+          ) : (
+            <>
+              <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Calls per Week</Text>
+              <NumberPicker min={1} max={6} value={frequency} onChange={setFrequency} />
+            </>
+          )}
+        </View>
+
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Call Window</Text>
+          <Text style={styles.helperText}>Calls are scheduled at a random time within this window (your local time).</Text>
+          <View style={styles.windowRow}>
+            <View style={styles.windowCol}>
+              <Text style={[styles.fieldLabel, { marginBottom: spacing.sm }]}>Earliest</Text>
+              <NumberPicker min={0} max={22} value={windowStart} onChange={setWindowStart} formatValue={formatHour} />
+            </View>
+            <View style={styles.windowSep}>
+              <Text style={styles.windowDash}>—</Text>
+            </View>
+            <View style={styles.windowCol}>
+              <Text style={[styles.fieldLabel, { marginBottom: spacing.sm }]}>Latest</Text>
+              <NumberPicker min={1} max={23} value={windowEnd} onChange={setWindowEnd} formatValue={formatHour} />
+            </View>
+          </View>
         </View>
 
         <View style={styles.card}>
@@ -112,6 +149,11 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     segmentActive: { backgroundColor: colors.surface, ...shadow.sm },
     segmentText: { ...typography.captionMedium, color: colors.textSecondary, fontWeight: '600' },
     segmentTextActive: { color: colors.primary },
+    helperText: { ...typography.small, color: colors.textTertiary, marginTop: spacing.sm, marginBottom: spacing.sm },
+    windowRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.sm },
+    windowCol: { flex: 1 },
+    windowSep: { width: 32, alignItems: 'center', paddingTop: 28 },
+    windowDash: { ...typography.body, color: colors.textTertiary },
     createButton: { backgroundColor: colors.primary, borderRadius: radius.full, paddingVertical: spacing.md + 2, alignItems: 'center', marginTop: spacing.lg, ...shadow.lg },
     createButtonText: { ...typography.bodySemibold, color: '#fff' },
   });

@@ -17,6 +17,7 @@ import SettingsScreen from '../screens/SettingsScreen';
 import InviteUserScreen from '../screens/InviteUserScreen';
 import InvitationsScreen from '../screens/InvitationsScreen';
 import GroupSettingsScreen from '../screens/GroupSettingsScreen';
+import JoinInviteScreen from '../screens/JoinInviteScreen';
 
 export type RootStackParamList = {
   Auth: undefined;
@@ -27,6 +28,7 @@ export type RootStackParamList = {
   InviteUser: { groupId: string };
   Invitations: undefined;
   GroupSettings: { groupId: string; isOwner: boolean };
+  JoinInvite: { code: string };
 };
 
 export type MainTabParamList = {
@@ -87,6 +89,15 @@ function MainTabs() {
   );
 }
 
+const linking = {
+  prefixes: ['orbit://'],
+  config: {
+    screens: {
+      JoinInvite: 'invite/:code',
+    },
+  },
+};
+
 export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boolean }) {
   const { theme: { colors, typography } } = useTheme();
 
@@ -99,8 +110,14 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
   };
 
   return (
-    <NavigationContainer ref={navigationRef}>
+    <NavigationContainer ref={navigationRef} linking={linking}>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
+        {/* JoinInvite is always accessible so orbit://invite/:code works before sign-in */}
+        <Stack.Screen
+          name="JoinInvite"
+          component={JoinInviteScreen}
+          options={{ headerShown: true, title: 'Join Group', ...sharedHeaderOptions }}
+        />
         {!isAuthenticated ? (
           <Stack.Screen name="Auth" component={AuthScreen} />
         ) : (

@@ -1,0 +1,279 @@
+diff --git a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
+index 532276a..b0b82dd 100644
+--- a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
++++ b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
+@@ -3,8 +3,11 @@
+ #import "VideoCaptureController.h"
+ 
+ #import <React/RCTLog.h>
++#import <WebRTC/RTCCVPixelBuffer.h>
++#import <WebRTC/RTCVideoFrame.h>
++#import <WebRTC/RTCVideoCapturer.h>
+ 
+-@interface VideoCaptureController ()
++@interface VideoCaptureController () <AVCaptureVideoDataOutputSampleBufferDelegate>
+ 
+ @property(nonatomic, strong) RTCCameraVideoCapturer *capturer;
+ @property(nonatomic, strong) AVCaptureDeviceFormat *selectedFormat;
+@@ -15,6 +18,18 @@ @interface VideoCaptureController ()
+ @property(nonatomic, assign) int height;
+ @property(nonatomic, assign) int frameRate;
+ 
++// MultiCam properties — kept alive between switches so the OIS/AF actuators
++// never have to re-park and re-engage on repeated back-camera activations.
++@property(nonatomic, strong) AVCaptureMultiCamSession *multiCamSession API_AVAILABLE(ios(13.0));
++@property(nonatomic, strong) AVCaptureVideoDataOutput *frontOutput;
++@property(nonatomic, strong) AVCaptureVideoDataOutput *backOutput;
++@property(nonatomic, strong) AVCaptureDevice *frontDevice;
++@property(nonatomic, strong) AVCaptureDevice *backDevice;
++@property(nonatomic, strong) AVCaptureDeviceFormat *frontFormat;
++@property(nonatomic, strong) AVCaptureDeviceFormat *backFormat;
++@property(nonatomic, strong) dispatch_queue_t captureQueue;
++@property(nonatomic, assign) BOOL multiCamRunning;
++
+ @end
+ 
+ @implementation VideoCaptureController
+@@ -32,9 +47,35 @@ - (instancetype)initWithCapturer:(RTCCameraVideoCapturer *)capturer andConstrain
+ 
+ - (void)dealloc {
+     self.device = NULL;
++    if (self.multiCamRunning) {
++        if (@available(iOS 13.0, *)) {
++            [self.multiCamSession stopRunning];
++        }
++        self.multiCamSession = nil;
++        self.multiCamRunning = NO;
++    }
+ }
+ 
+ - (void)startCapture {
++    // --- MultiCam fast-path ---
++    // If the multicam session is already running, switching cameras is instant:
++    // just flip usingFrontCamera. The sample buffer delegate filters by active camera,
++    // so the OIS/AF actuator on the back camera never parks between switches.
++    if (@available(iOS 13.0, *)) {
++        if (self.multiCamRunning) {
++            self.selectedFormat = self.usingFrontCamera ? self.frontFormat : self.backFormat;
++            self.running = YES;
++            RCTLog(@"[MultiCam] Camera switched to %@", self.usingFrontCamera ? @"front" : @"back");
++            return;
++        }
++        if ([AVCaptureMultiCamSession isMultiCamSupported]) {
++            [self startMultiCamSession];
++            if (self.multiCamRunning) return;
++            // startMultiCamSession logs the failure reason; fall through to single-cam
++        }
++    }
++
++    // --- Existing single-cam path (fallback when multicam is unavailable) ---
+     if (self.deviceId) {
+         self.device = [AVCaptureDevice deviceWithUniqueID:self.deviceId];
+     }
+@@ -47,7 +88,6 @@ - (void)startCapture {
+ 
+     if (!self.device) {
+         RCTLogWarn(@"[VideoCaptureController] No capture devices found!");
+-
+         return;
+     }
+ 
+@@ -56,7 +96,6 @@ - (void)startCapture {
+                                                withTargetHeight:self.height];
+     if (!format) {
+         RCTLogWarn(@"[VideoCaptureController] No valid formats for device %@", self.device);
+-
+         return;
+     }
+ 
+@@ -77,7 +116,6 @@ - (void)startCapture {
+ 
+     RCTLog(@"[VideoCaptureController] Capture will start");
+ 
+-    // Starting the capture happens on another thread. Wait for it.
+     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+ 
+     __weak VideoCaptureController *weakSelf = self;
+@@ -97,12 +135,163 @@ - (void)startCapture {
+     dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
+ }
+ 
++- (void)startMultiCamSession API_AVAILABLE(ios(13.0)) {
++    AVCaptureDevice *frontDev = [self findDeviceForPosition:AVCaptureDevicePositionFront];
++    AVCaptureDevice *backDev  = [self findDeviceForPosition:AVCaptureDevicePositionBack];
++    if (!frontDev || !backDev) {
++        RCTLog(@"[MultiCam] Could not find both cameras — falling back to single-cam");
++        return;
++    }
++
++    self.frontDevice = frontDev;
++    self.backDevice  = backDev;
++
++    AVCaptureMultiCamSession *session = [[AVCaptureMultiCamSession alloc] init];
++    NSError *err = nil;
++
++    // Back camera input
++    AVCaptureDeviceInput *backInput = [AVCaptureDeviceInput deviceInputWithDevice:backDev error:&err];
++    if (!backInput || err) {
++        RCTLog(@"[MultiCam] Failed to create back camera input: %@", err);
++        return;
++    }
++    if (![session canAddInput:backInput]) {
++        RCTLog(@"[MultiCam] Cannot add back camera input");
++        return;
++    }
++    [session addInputWithNoConnections:backInput];
++
++    // Front camera input
++    err = nil;
++    AVCaptureDeviceInput *frontInput = [AVCaptureDeviceInput deviceInputWithDevice:frontDev error:&err];
++    if (!frontInput || err) {
++        RCTLog(@"[MultiCam] Failed to create front camera input: %@", err);
++        return;
++    }
++    if (![session canAddInput:frontInput]) {
++        RCTLog(@"[MultiCam] Cannot add front camera input");
++        return;
++    }
++    [session addInputWithNoConnections:frontInput];
++
++    if (!self.captureQueue) {
++        self.captureQueue = dispatch_queue_create("com.orbit.multicam.capture", DISPATCH_QUEUE_SERIAL);
++    }
++
++    FourCharCode pixelFormat = [self.capturer preferredOutputPixelFormat];
++
++    // Back camera output
++    AVCaptureVideoDataOutput *backOut = [[AVCaptureVideoDataOutput alloc] init];
++    backOut.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat)};
++    backOut.alwaysDiscardsLateVideoFrames = YES;
++    if (![session canAddOutput:backOut]) {
++        RCTLog(@"[MultiCam] Cannot add back camera output");
++        return;
++    }
++    [session addOutputWithNoConnections:backOut];
++
++    AVCaptureInputPort *backPort = [[backInput portsWithMediaType:AVMediaTypeVideo
++                                                sourceDeviceType:backDev.deviceType
++                                            sourceDevicePosition:AVCaptureDevicePositionBack] firstObject];
++    if (!backPort) {
++        RCTLog(@"[MultiCam] No back camera video port");
++        return;
++    }
++    AVCaptureConnection *backConn = [AVCaptureConnection connectionWithInputPorts:@[backPort] output:backOut];
++    if (![session canAddConnection:backConn]) {
++        RCTLog(@"[MultiCam] Cannot add back camera connection");
++        return;
++    }
++    [session addConnection:backConn];
++
++    // Front camera output
++    AVCaptureVideoDataOutput *frontOut = [[AVCaptureVideoDataOutput alloc] init];
++    frontOut.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat)};
++    frontOut.alwaysDiscardsLateVideoFrames = YES;
++    if (![session canAddOutput:frontOut]) {
++        RCTLog(@"[MultiCam] Cannot add front camera output");
++        return;
++    }
++    [session addOutputWithNoConnections:frontOut];
++
++    AVCaptureInputPort *frontPort = [[frontInput portsWithMediaType:AVMediaTypeVideo
++                                                 sourceDeviceType:frontDev.deviceType
++                                             sourceDevicePosition:AVCaptureDevicePositionFront] firstObject];
++    if (!frontPort) {
++        RCTLog(@"[MultiCam] No front camera video port");
++        return;
++    }
++    AVCaptureConnection *frontConn = [AVCaptureConnection connectionWithInputPorts:@[frontPort] output:frontOut];
++    if (![session canAddConnection:frontConn]) {
++        RCTLog(@"[MultiCam] Cannot add front camera connection");
++        return;
++    }
++    [session addConnection:frontConn];
++
++    // Register ourselves as the sample buffer delegate for both outputs.
++    // captureOutput:didOutputSampleBuffer:fromConnection: filters to the active camera.
++    [backOut  setSampleBufferDelegate:self queue:self.captureQueue];
++    [frontOut setSampleBufferDelegate:self queue:self.captureQueue];
++
++    // Select formats so getSettings() can return valid dimensions
++    self.backFormat  = [self selectFormatForDevice:backDev  withTargetWidth:self.width withTargetHeight:self.height];
++    self.frontFormat = [self selectFormatForDevice:frontDev withTargetWidth:self.width withTargetHeight:self.height];
++    self.selectedFormat = self.usingFrontCamera ? self.frontFormat : self.backFormat;
++
++    self.multiCamSession = session;
++    self.backOutput  = backOut;
++    self.frontOutput = frontOut;
++
++    [session startRunning];
++
++    self.multiCamRunning = YES;
++    self.running = YES;
++
++    RCTLog(@"[MultiCam] Session started — both cameras warm, delivering %@ frames to WebRTC",
++           self.usingFrontCamera ? @"front" : @"back");
++}
++
++// AVCaptureVideoDataOutputSampleBufferDelegate
++- (void)captureOutput:(AVCaptureOutput *)output
++    didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer
++       fromConnection:(AVCaptureConnection *)connection {
++    if (!self.running || !self.capturer.delegate) return;
++
++    // Only forward frames from the currently active camera.
++    // The other camera's frames are silently discarded.
++    BOOL isFrontOutput = (output == self.frontOutput);
++    if (isFrontOutput != self.usingFrontCamera) return;
++
++    CVPixelBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
++    if (!pixelBuffer) return;
++
++    RTCCVPixelBuffer *rtcBuffer = [[RTCCVPixelBuffer alloc] initWithPixelBuffer:pixelBuffer];
++    CMTime ts = CMSampleBufferGetPresentationTimeStamp(sampleBuffer);
++    int64_t timeStampNs = (int64_t)(CMTimeGetSeconds(ts) * NSEC_PER_SEC);
++
++    // Camera sensor outputs in landscape; rotate 90° clockwise to display upright in portrait.
++    // Daily.co's JS layer handles front-camera mirroring via DailyMediaView's `mirror` prop.
++    RTCVideoFrame *frame = [[RTCVideoFrame alloc] initWithBuffer:rtcBuffer
++                                                        rotation:RTCVideoRotation_90
++                                                     timeStampNs:timeStampNs];
++    [self.capturer.delegate capturer:self.capturer didCaptureVideoFrame:frame];
++}
++
+ - (void)stopCapture {
+     if (!self.running)
+         return;
+ 
++    if (self.multiCamRunning) {
++        // Soft stop: keep the multicam session running so the OIS/AF actuators
++        // on the back camera stay engaged. Frames are suppressed by the running flag
++        // in captureOutput:didOutputSampleBuffer:fromConnection:.
++        RCTLog(@"[MultiCam] Soft stop — session stays warm");
++        self.running = NO;
++        self.device = nil;
++        return;
++    }
++
+     RCTLog(@"[VideoCaptureController] Capture will stop");
+-    // Stopping the capture happens on another thread. Wait for it.
+     dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+ 
+     __weak VideoCaptureController *weakSelf = self;
+@@ -178,6 +367,17 @@ - (void)applyConstraints:(NSDictionary *)constraints error:(NSError **)outError
+     if (self.deviceId != deviceId && ![self.deviceId isEqualToString:deviceId]) {
+         hasChanged = YES;
+         self.deviceId = deviceId;
++
++        // In the multicam path, determine usingFrontCamera from the requested device.
++        if (@available(iOS 13.0, *)) {
++            if (self.multiCamRunning) {
++                if ([deviceId isEqualToString:self.backDevice.uniqueID]) {
++                    if (self.usingFrontCamera) { self.usingFrontCamera = NO; }
++                } else if ([deviceId isEqualToString:self.frontDevice.uniqueID]) {
++                    if (!self.usingFrontCamera) { self.usingFrontCamera = YES; }
++                }
++            }
++        }
+     }
+ 
+     if (self.running && hasChanged) {

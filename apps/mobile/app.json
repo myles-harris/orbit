@@ -16,7 +16,13 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Orbit needs camera access for video calls",
         "NSMicrophoneUsageDescription": "Orbit needs microphone access for video calls",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIBackgroundModes": ["audio", "voip"],
+        "NSSupportsLiveActivities": true,
+        "NSSupportsLiveActivitiesFrequentUpdates": true
+      },
+      "entitlements": {
+        "com.apple.developer.usernotifications.time-sensitive": true
       }
     },
     "android": {
@@ -24,13 +30,30 @@
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
-        "MODIFY_AUDIO_SETTINGS"
+        "MODIFY_AUDIO_SETTINGS",
+        "USE_FULL_SCREEN_INTENT",
+        "VIBRATE"
       ]
     },
     "plugins": [
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "sounds": ["./assets/sounds/orbit_ring.wav"]
+        }
+      ],
       "@daily-co/config-plugin-rn-daily-js",
-      "expo-font"
+      "expo-font",
+      "./withPip",
+      ["@bacons/apple-targets", { "appleTeamId": "4B85QC9P6S" }],
+      [
+        "expo-build-properties",
+        {
+          "ios": { "deploymentTarget": "17.2" }
+        }
+      ],
+      "./withCallNotificationService",
+      "expo-localization"
     ],
     "extra": {
       "eas": {

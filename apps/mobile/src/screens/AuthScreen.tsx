@@ -11,7 +11,7 @@ import {
   ScrollView,
   Image,
 } from 'react-native';
-const bgGradient = require('../../assets/background-gradient-4.png');
+const bgGradient = require('../../assets/background-gradient-4.jpeg');
 import { ApiClient } from '@orbit/shared';
 import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../context/AuthContext';
@@ -83,7 +83,11 @@ export default function AuthScreen() {
     }
     try {
       const response = await client.request<{ access_token: string; refresh_token: string }>(
-        'POST', '/auth/complete-signup', { signup_token: signupToken, username: username.trim() }
+        'POST', '/auth/complete-signup', {
+          signup_token: signupToken,
+          username: username.trim(),
+          time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        }
       );
       await SecureStore.setItemAsync('access_token', response.access_token);
       if (response.refresh_token) {
