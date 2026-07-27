@@ -11,7 +11,7 @@ import usersRouter from './routes/users.js';
 
 export const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '4mb' }));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });

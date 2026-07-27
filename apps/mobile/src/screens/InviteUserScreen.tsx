@@ -16,11 +16,12 @@ import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
+import { UserAvatar } from '../components/UserAvatar';
 
 type InviteUserRouteProp = RouteProp<RootStackParamList, 'InviteUser'>;
 type InviteUserNavigationProp = StackNavigationProp<RootStackParamList, 'InviteUser'>;
 
-interface User { id: string; username: string; status: 'member' | 'invited' | null; }
+interface User { id: string; username: string; has_avatar: boolean; status: 'member' | 'invited' | null; }
 
 export default function InviteUserScreen() {
   const route = useRoute<InviteUserRouteProp>();
@@ -84,8 +85,8 @@ export default function InviteUserScreen() {
 
     return (
       <View style={styles.userRow}>
-        <View style={styles.userAvatar}>
-          <Text style={styles.userAvatarText}>{item.username.charAt(0).toUpperCase()}</Text>
+        <View style={{ marginRight: spacing.md }}>
+          <UserAvatar userId={item.id} username={item.username} hasAvatar={item.has_avatar} size={40} colors={colors} />
         </View>
         <Text style={styles.username}>{item.username}</Text>
         {isIneligible ? statusBadge : (
@@ -160,8 +161,6 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     list: { flex: 1 },
     listContent: { paddingHorizontal: spacing.xl, paddingBottom: 40 },
     userRow: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.lg, marginBottom: spacing.sm, flexDirection: 'row', alignItems: 'center', ...shadow.sm },
-    userAvatar: { width: 40, height: 40, borderRadius: radius.md, backgroundColor: colors.primaryLight, justifyContent: 'center', alignItems: 'center', marginRight: spacing.md },
-    userAvatarText: { fontSize: 16, fontWeight: '700', color: colors.primary },
     username: { ...typography.bodyMedium, flex: 1 },
     inviteButton: { backgroundColor: colors.primary, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.full, minWidth: 72, alignItems: 'center' },
     inviteButtonDisabled: { backgroundColor: colors.textTertiary },

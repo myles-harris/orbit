@@ -4,6 +4,7 @@ export type UserDTO = {
     username: string;
     time_zone: string;
     created_at: string;
+    has_avatar: boolean;
 };
 export type GroupMember = {
     user_id: string;
@@ -14,8 +15,10 @@ export type GroupDTO = {
     name: string;
     owner_id: string;
     cadence: 'daily' | 'weekly';
+    daily_frequency?: number | null;
     weekly_frequency?: number | null;
     call_duration_minutes: number;
+    is_muted?: boolean;
     member_count: number;
     members: GroupMember[];
     current_call?: CallSessionDTO | null;

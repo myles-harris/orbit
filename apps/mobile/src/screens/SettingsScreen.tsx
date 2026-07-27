@@ -8,6 +8,7 @@ import {
   ActivityIndicator,
   ScrollView,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { Ionicons } from '@expo/vector-icons';
 import { UserDTO } from '@orbit/shared';
 import { useAuth } from '../context/AuthContext';
@@ -15,12 +16,15 @@ import { useTutorial } from '../context/TutorialContext';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
+import { UserAvatar } from '../components/UserAvatar';
 
 export default function SettingsScreen() {
   const { onLogout } = useAuth();
   const { showTutorial } = useTutorial();
   const { theme: { colors, shadow }, mode, toggleTheme } = useTheme();
   const [user, setUser] = useState<UserDTO | null>(null);
+  const [avatarCacheKey, setAvatarCacheKey] = useState(0);
+  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   const styles = useMemo(() => makeStyles(colors, shadow), [colors]);
 
@@ -37,6 +41,34 @@ export default function SettingsScreen() {
           { text: 'Log In', onPress: () => onLogout() },
         ]);
       }
+    }
+  };
+
+  const handleAvatarPress = async () => {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Permission Required', 'Allow access to your photo library to set a profile picture.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.7,
+      base64: true,
+    });
+    if (result.canceled || !result.assets[0]?.base64) return;
+    const { base64, mimeType } = result.assets[0];
+    setUploadingAvatar(true);
+    try {
+      const client = await createAuthenticatedApiClient();
+      await client.uploadAvatar(base64, mimeType ?? 'image/jpeg');
+      setAvatarCacheKey(Date.now());
+      await loadUser();
+    } catch {
+      Alert.alert('Error', 'Failed to upload photo.');
+    } finally {
+      setUploadingAvatar(false);
     }
   };
 
@@ -58,17 +90,31 @@ export default function SettingsScreen() {
     );
   }
 
-  const initial = user.username.trim().charAt(0).toUpperCase();
-
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       <Text style={styles.logoText}>orbit</Text>
 
       {/* Profile header */}
       <View style={styles.profileCard}>
-        <View style={styles.avatarCircle}>
-          <Text style={styles.avatarText}>{initial}</Text>
-        </View>
+        <TouchableOpacity onPress={handleAvatarPress} activeOpacity={0.75} style={styles.avatarWrapper}>
+          <UserAvatar
+            userId={user.id}
+            username={user.username}
+            hasAvatar={user.has_avatar}
+            size={80}
+            colors={colors}
+            isOwner
+            cacheKey={avatarCacheKey}
+          />
+          {uploadingAvatar && (
+            <View style={styles.avatarOverlay}>
+              <ActivityIndicator color="#fff" size="small" />
+            </View>
+          )}
+          <View style={styles.avatarEditBadge}>
+            <Ionicons name="camera" size={12} color="#fff" />
+          </View>
+        </TouchableOpacity>
         <Text style={styles.username}>{user.username}</Text>
         <Text style={styles.phone}>{user.phone}</Text>
       </View>
@@ -170,17 +216,31 @@ function makeStyles(colors: any, shadow: any) {
       borderWidth: 1,
       borderColor: colors.border,
     },
-    avatarCircle: {
-      width: 80, height: 80,
+    avatarWrapper: {
+      marginBottom: spacing.lg,
+      position: 'relative',
+    },
+    avatarOverlay: {
+      position: 'absolute',
+      inset: 0,
+      borderRadius: radius.xl,
+      backgroundColor: 'rgba(0,0,0,0.4)',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    avatarEditBadge: {
+      position: 'absolute',
+      bottom: 0,
+      right: 0,
+      width: 22,
+      height: 22,
       borderRadius: radius.full,
       backgroundColor: colors.primary,
+      justifyContent: 'center',
+      alignItems: 'center',
       borderWidth: 1.5,
-      borderColor: colors.primaryDark,
-      justifyContent: 'center', alignItems: 'center',
-      marginBottom: spacing.lg,
-      ...shadow.lg,
+      borderColor: colors.surface,
     },
-    avatarText: { fontSize: 32, fontWeight: '700', color: '#fff' },
     username: {
       fontSize: 22,
       fontFamily: 'RobotoMono_700Bold',

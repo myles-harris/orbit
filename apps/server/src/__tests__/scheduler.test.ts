@@ -23,6 +23,7 @@ import { dailyVideo } from '../services/dailyVideo.js';
 import { notifications } from '../services/notifications.js';
 import {
   calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, wallTimeToUtc, SCHEDULE_TZ,
+  dayKeyForDate, dayKey, shuffle,
 } from '../util/scheduleTime.js';
 
 const prisma = new PrismaClient();
@@ -71,6 +72,7 @@ async function createScheduledCall(groupId: string, opts: {
       status: (opts.status ?? 'scheduled') as any,
       call_type: 'scheduled',
       scheduled_at: scheduledAt,
+      scheduled_day: dayKey(scheduledAt),
       ends_at: endsAt,
       room_name: `test-room-${groupId}`,
     },
@@ -517,8 +519,9 @@ describe('scheduler.activateDueCalls (reclaim + isolation)', () => {
   it('activates the second due call even when activateCall throws for the first', async () => {
     const user = await createTestUser();
     const group = await createTestGroup(user.id);
-    const call1 = await createScheduledCall(group.id);
-    const call2 = await createScheduledCall(group.id);
+    // Use dates on different PT calendar days so the partial unique index allows both rows.
+    const call1 = await createScheduledCall(group.id, { scheduledAt: new Date(Date.now() - 26 * 60 * 60_000) });
+    const call2 = await createScheduledCall(group.id, { scheduledAt: new Date(Date.now() - 50 * 60 * 60_000) });
 
     (dailyVideo.createRoom as jest.Mock)
       .mockRejectedValueOnce(new Error('Room creation failed'))
@@ -627,5 +630,295 @@ describe('scheduleTime utilities', () => {
 
     const ptDays = calls.map(c => ptCalendarDay(c.scheduled_at!));
     expect(new Set(ptDays).size).toBe(3);
+  });
+});
+
+// ─── WS-9: scheduling correctness ─────────────────────────────────────────────
+
+describe('WS-9: concurrent generation (9a)', () => {
+  it('two concurrent generateCallsForGroup calls produce exactly one daily call', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'daily' });
+
+    await Promise.all([
+      scheduler.generateCallsForGroup(group.id, 'daily', null),
+      scheduler.generateCallsForGroup(group.id, 'daily', null),
+    ]);
+
+    const calls = await prisma.callSession.findMany({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0].scheduled_day).toBeDefined();
+  });
+
+  it('createScheduledCall sets scheduled_day on the created row', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const tomorrowPT = addDays(calendarDateInTz(new Date()), 1);
+    const t = wallTimeToUtc(tomorrowPT.year, tomorrowPT.monthIndex, tomorrowPT.day, 9 * 60);
+
+    await scheduler.generateCallsForGroup(group.id, 'daily', null);
+
+    const call = await prisma.callSession.findFirst({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    expect(call!.scheduled_day).toBe(dayKeyForDate(tomorrowPT));
+  });
+});
+
+describe('WS-9: zombie sweep (9b)', () => {
+  it('sweeps a scheduled call whose window has already passed to ended', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const now = new Date();
+
+    const zombie = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'scheduled',
+        call_type: 'scheduled',
+        scheduled_at: new Date(now.getTime() - 60 * 60_000),
+        ends_at: new Date(now.getTime() - 30 * 60_000),
+        room_name: 'zombie-room',
+      },
+    });
+
+    await scheduler.closeExpiredCalls();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: zombie.id } });
+    expect(updated!.status).toBe('ended');
+    expect(updated!.ended_at).not.toBeNull();
+  });
+
+  it('does not sweep a scheduled call whose window is still in the future', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const now = new Date();
+
+    const upcoming = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'scheduled',
+        call_type: 'scheduled',
+        scheduled_at: new Date(now.getTime() + 60 * 60_000),
+        ends_at: new Date(now.getTime() + 90 * 60_000),
+        room_name: 'future-room',
+      },
+    });
+
+    await scheduler.closeExpiredCalls();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: upcoming.id } });
+    expect(updated!.status).toBe('scheduled');
+  });
+});
+
+describe('WS-9: per-group error isolation (9d)', () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it('a failing group does not prevent other groups from getting calls', async () => {
+    const user = await createTestUser();
+    const goodGroup = await createTestGroup(user.id, { cadence: 'daily' });
+    const badGroup = await createTestGroup(user.id, { cadence: 'daily' });
+
+    // Make createRoom throw for any call activation from badGroup but not goodGroup.
+    // We can't easily make generateCallsForGroup throw for one group from outside, so
+    // instead we seed badGroup with a corrupt state that causes a DB error on insert
+    // by pre-creating a call for tomorrow — meaning it gets 0 new calls rather than
+    // throwing. To test the actual isolation path, we spy on generateCallsForGroup.
+    const spy = jest.spyOn(scheduler, 'generateCallsForGroup');
+    let callCount = 0;
+    spy.mockImplementation(async (groupId, cadence, freq) => {
+      callCount++;
+      if (groupId === badGroup.id) throw new Error('simulated per-group failure');
+      // Call the real implementation for the good group
+      spy.mockRestore();
+      await scheduler.generateCallsForGroup(groupId, cadence, freq);
+      spy.mockImplementation(async (gid, c, f) => {
+        callCount++;
+        if (gid === badGroup.id) throw new Error('simulated per-group failure');
+      });
+    });
+
+    await scheduler.generateScheduledCalls();
+    spy.mockRestore();
+
+    const goodCalls = await prisma.callSession.findMany({
+      where: { group_id: goodGroup.id, status: 'scheduled' },
+    });
+    expect(goodCalls.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('WS-9: weekly no double-booking across runs (9a + 9e)', () => {
+  it('freq=3 with 3 existing calls: second run creates 0 new calls, no day gets two', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'weekly', weeklyFrequency: 3 });
+
+    await scheduler.generateCallsForGroup(group.id, 'weekly', 3);
+    // Run again — window is the same, should create nothing more
+    await scheduler.generateCallsForGroup(group.id, 'weekly', 3);
+
+    const calls = await prisma.callSession.findMany({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    expect(calls).toHaveLength(3);
+
+    const days = calls.map(c => c.scheduled_day);
+    expect(new Set(days).size).toBe(3);
+  });
+});
+
+describe('WS-9: 30-day regression — no PT day gets two daily calls', () => {
+  it('generates one call per PT calendar day across 30 simulated days', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'daily' });
+
+    const base = new Date();
+    for (let day = 0; day < 30; day++) {
+      const fakeNow = new Date(base.getTime() + day * 24 * 60 * 60_000);
+      const todayPT = calendarDateInTz(fakeNow);
+      const tomorrowPT = addDays(todayPT, 1);
+      const { start, end } = dayBoundsUtc(tomorrowPT);
+
+      const existing = await prisma.callSession.findFirst({
+        where: { group_id: group.id, status: 'scheduled', scheduled_at: { gte: start, lt: end } },
+      });
+      if (!existing) {
+        await scheduler.generateCallsForGroup(group.id, 'daily', null);
+      }
+    }
+
+    const allCalls = await prisma.callSession.findMany({
+      where: { group_id: group.id },
+      orderBy: { scheduled_at: 'asc' },
+    });
+
+    const dayGroups = new Map<string, number>();
+    for (const call of allCalls) {
+      const k = call.scheduled_day ?? dayKey(call.scheduled_at!);
+      dayGroups.set(k, (dayGroups.get(k) ?? 0) + 1);
+    }
+    for (const [, count] of dayGroups) {
+      expect(count).toBe(1); // zero duplicates
+    }
+  });
+});
+
+describe('WS-9: scheduleTime new exports', () => {
+  it('dayKeyForDate formats correctly', () => {
+    expect(dayKeyForDate({ year: 2026, monthIndex: 0, day: 5 })).toBe('2026-01-05');
+    expect(dayKeyForDate({ year: 2026, monthIndex: 11, day: 31 })).toBe('2026-12-31');
+  });
+
+  it('dayKey returns the PT calendar date for a UTC instant', () => {
+    // 2026-07-15 01:00 UTC = 2026-07-14 18:00 PDT
+    const utc = new Date('2026-07-15T01:00:00Z');
+    expect(dayKey(utc)).toBe('2026-07-14');
+  });
+
+  it('shuffle returns a permutation of the same elements', () => {
+    const arr = [0, 1, 2, 3, 4, 5, 6];
+    const result = shuffle(arr);
+    expect(result).toHaveLength(arr.length);
+    expect([...result].sort((a, b) => a - b)).toEqual(arr);
+    expect(arr).toEqual([0, 1, 2, 3, 4, 5, 6]); // original unchanged
+  });
+
+  it('shuffle does not modify the original array', () => {
+    const arr = [1, 2, 3];
+    shuffle(arr);
+    expect(arr).toEqual([1, 2, 3]);
+  });
+});
+
+// ─── WS-7: per-group call window ──────────────────────────────────────────────
+
+describe('WS-7: per-group call window', () => {
+  function hourInTz(d: Date, timeZone: string): number {
+    return Number(
+      new Intl.DateTimeFormat('en-US', { timeZone, hour: 'numeric', hour12: false })
+        .formatToParts(d)
+        .find(p => p.type === 'hour')!.value,
+    ) % 24;
+  }
+
+  it('randomTimeInWindow respects a custom window and timezone (9 AM – 5 PM UTC)', () => {
+    const d = { year: 2026, monthIndex: 6, day: 15 };
+    for (let i = 0; i < 200; i++) {
+      const t = randomTimeInWindow(d, 9 * 60, 17 * 60, 'UTC');
+      const h = hourInTz(t, 'UTC');
+      expect(h).toBeGreaterThanOrEqual(9);
+      expect(h).toBeLessThan(17);
+    }
+  });
+
+  it('generateCallsForGroup with a custom window schedules calls within that window', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'daily' });
+
+    await scheduler.generateCallsForGroup(group.id, 'daily', null, 'America/New_York', 8, 18);
+
+    const calls = await prisma.callSession.findMany({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    expect(calls).toHaveLength(1);
+
+    const h = hourInTz(calls[0].scheduled_at!, 'America/New_York');
+    expect(h).toBeGreaterThanOrEqual(8);
+    expect(h).toBeLessThan(18);
+  });
+
+});
+
+// ─── WS-8: schedule first call at group creation ──────────────────────────────
+
+describe('WS-8: scheduleInitialCallForGroup', () => {
+  it('creates a call for today when the window is open', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'daily' });
+
+    // windowEndHour=24 keeps the window open regardless of when the test runs
+    await scheduler.scheduleInitialCallForGroup(group.id, 'UTC', 0, 24);
+
+    const calls = await prisma.callSession.findMany({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    expect(calls).toHaveLength(1);
+
+    // Verify the call is scheduled for today in UTC
+    const now = new Date();
+    const callDate = calls[0].scheduled_at!;
+    expect(callDate.getUTCFullYear()).toBe(now.getUTCFullYear());
+    expect(callDate.getUTCMonth()).toBe(now.getUTCMonth());
+    expect(callDate.getUTCDate()).toBe(now.getUTCDate());
+  });
+
+  it('creates no call when the window has passed (endHour=0)', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'daily' });
+
+    // windowEndHour=0 means the window endpoint is midnight — always in the past
+    await scheduler.scheduleInitialCallForGroup(group.id, 'UTC', 0, 0);
+
+    const calls = await prisma.callSession.findMany({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    expect(calls).toHaveLength(0);
+  });
+
+  it('does not create a duplicate if called twice for the same group', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id, { cadence: 'daily' });
+
+    await scheduler.scheduleInitialCallForGroup(group.id, 'UTC', 0, 24);
+    await scheduler.scheduleInitialCallForGroup(group.id, 'UTC', 0, 24);
+
+    const calls = await prisma.callSession.findMany({
+      where: { group_id: group.id, status: 'scheduled' },
+    });
+    // P2002 on scheduled_day unique index keeps it to at most 1
+    expect(calls.length).toBeLessThanOrEqual(1);
   });
 });

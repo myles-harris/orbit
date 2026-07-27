@@ -84,6 +84,10 @@ export class ApiClient {
     return this.request<T>('POST', path, body);
   }
 
+  async patch<T>(path: string, body?: unknown): Promise<T> {
+    return this.request<T>('PATCH', path, body);
+  }
+
   async put<T>(path: string, body?: unknown): Promise<T> {
     return this.request<T>('PUT', path, body);
   }
@@ -93,7 +97,7 @@ export class ApiClient {
   }
 
   // User search
-  async searchUsers(query: string, groupId?: string): Promise<{ users: Array<{ id: string; username: string; status: 'member' | 'invited' | null }> }> {
+  async searchUsers(query: string, groupId?: string): Promise<{ users: Array<{ id: string; username: string; has_avatar: boolean; status: 'member' | 'invited' | null }> }> {
     const params = new URLSearchParams({ q: query });
     if (groupId) params.append('groupId', groupId);
     return this.get(`/users/search?${params.toString()}`);
@@ -115,6 +119,30 @@ export class ApiClient {
     group?: { id: string; name: string };
   }> {
     return this.post(`/groups/invites/${inviteId}/respond`, { action });
+  }
+
+  async createInviteLink(groupId: string): Promise<{ invite_code: string; expires_at: string; invite_link: string }> {
+    return this.post(`/groups/${groupId}/invite`);
+  }
+
+  async getInviteInfo(code: string): Promise<{ group_id: string; group_name: string; code: string; expires_at: string }> {
+    return this.get(`/groups/invites/${code}/info`);
+  }
+
+  async joinGroupWithCode(groupId: string, inviteCode: string): Promise<{ status: 'joined' | 'already_member' }> {
+    return this.post(`/groups/${groupId}/join`, { invite_code: inviteCode });
+  }
+
+  async uploadAvatar(data: string, mimeType: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>('PUT', '/me/avatar', { data, mime_type: mimeType });
+  }
+
+  async deleteAvatar(): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>('DELETE', '/me/avatar');
+  }
+
+  getAvatarUrl(userId: string): string {
+    return `${this.baseUrl}/users/${userId}/avatar`;
   }
 
   async getMyInvitations(): Promise<{

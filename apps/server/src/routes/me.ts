@@ -12,23 +12,86 @@ meRouter.get('/', requireJwt, async (req, res) => {
     const userId = (req as any).userId as string;
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: 'not_found' });
-    res.json({ id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at });
+    res.json({
+      id: user.id, phone: user.phone, username: user.username,
+      time_zone: user.time_zone, created_at: user.created_at,
+      has_avatar: user.avatar !== null,
+      avatar_updated_at: user.avatar_updated_at?.toISOString() ?? null,
+    });
   } catch (error) {
     console.error('[GET /me] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });
 
-const patchSchema = z.object({ username: z.string().min(1).optional(), time_zone: z.string().optional() });
+const patchSchema = z.object({
+  username: z.string().min(1).optional(),
+  time_zone: z.string().refine(tz => {
+    try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; } catch { return false; }
+  }, { message: 'invalid_timezone' }).optional(),
+});
 meRouter.patch('/', requireJwt, async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   try {
     const userId = (req as any).userId as string;
     const user = await prisma.user.update({ where: { id: userId }, data: parsed.data });
-    res.json({ id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at });
+    res.json({
+      id: user.id, phone: user.phone, username: user.username,
+      time_zone: user.time_zone, created_at: user.created_at,
+      has_avatar: user.avatar !== null,
+      avatar_updated_at: user.avatar_updated_at?.toISOString() ?? null,
+    });
   } catch (error) {
     console.error('[PATCH /me] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+const AVATAR_MAX_BYTES = 200 * 1024; // 200 KB
+
+// Magic bytes for accepted image types
+const MAGIC_BYTES: Array<{ mime: string; check: (b: Buffer) => boolean }> = [
+  { mime: 'image/jpeg', check: b => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
+  { mime: 'image/png',  check: b => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 },
+  { mime: 'image/webp', check: b => b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50 },
+  { mime: 'image/gif',  check: b => b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 },
+];
+
+const avatarUploadSchema = z.object({
+  data: z.string().min(1),
+  mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']),
+});
+meRouter.put('/avatar', requireJwt, async (req, res) => {
+  const parsed = avatarUploadSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  try {
+    const userId = (req as any).userId as string;
+    const buf = Buffer.from(parsed.data.data, 'base64');
+    if (buf.length > AVATAR_MAX_BYTES) return res.status(400).json({ error: 'avatar_too_large' });
+    const magic = MAGIC_BYTES.find(m => m.mime === parsed.data.mime_type);
+    if (!magic || buf.length < 12 || !magic.check(buf)) {
+      return res.status(400).json({ error: 'invalid_image' });
+    }
+    const now = new Date();
+    await prisma.user.update({
+      where: { id: userId },
+      data: { avatar: buf, avatar_mime_type: parsed.data.mime_type, avatar_updated_at: now },
+    });
+    res.json({ ok: true, avatar_updated_at: now.toISOString() });
+  } catch (error) {
+    console.error('[PUT /me/avatar] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+meRouter.delete('/avatar', requireJwt, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    await prisma.user.update({ where: { id: userId }, data: { avatar: null, avatar_mime_type: null, avatar_updated_at: null } });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[DELETE /me/avatar] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });

@@ -39,18 +39,22 @@ authRouter.post('/verify-otp', async (req, res) => {
     }
 
     const tokens = issueAccessAndRefreshTokens({ userId: existing.id });
-    res.json({ user: { id: existing.id, phone: existing.phone, username: existing.username, time_zone: existing.time_zone, created_at: existing.created_at }, is_new_user: false, ...tokens });
+    res.json({ user: { id: existing.id, phone: existing.phone, username: existing.username, time_zone: existing.time_zone, created_at: existing.created_at, has_avatar: existing.avatar !== null }, is_new_user: false, ...tokens });
   } catch (error) {
     console.error('[verify-otp] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });
 
-const completeSignupSchema = z.object({ signup_token: z.string(), username: z.string().min(1) });
+const completeSignupSchema = z.object({
+  signup_token: z.string(),
+  username: z.string().min(1),
+  time_zone: z.string().optional(),
+});
 authRouter.post('/complete-signup', async (req, res) => {
   const parsed = completeSignupSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
-  const { signup_token, username } = parsed.data;
+  const { signup_token, username, time_zone } = parsed.data;
 
   let phone: string;
   try {
@@ -61,13 +65,18 @@ authRouter.post('/complete-signup', async (req, res) => {
     return res.status(401).json({ error: 'invalid_token' });
   }
 
+  let seedTimezone = 'UTC';
+  if (time_zone) {
+    try { Intl.DateTimeFormat(undefined, { timeZone: time_zone }); seedTimezone = time_zone; } catch {}
+  }
+
   try {
     const existing = await prisma.user.findUnique({ where: { username } });
     if (existing) return res.status(409).json({ error: 'username_taken' });
 
-    const user = await prisma.user.create({ data: { phone, username, time_zone: 'UTC' } });
+    const user = await prisma.user.create({ data: { phone, username, time_zone: seedTimezone } });
     const tokens = issueAccessAndRefreshTokens({ userId: user.id });
-    res.json({ user: { id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at }, ...tokens });
+    res.json({ user: { id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at, has_avatar: false }, ...tokens });
   } catch (error) {
     console.error('[complete-signup] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });

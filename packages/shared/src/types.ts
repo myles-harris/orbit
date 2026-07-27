@@ -4,6 +4,7 @@ export type UserDTO = {
   username: string;
   time_zone: string;
   created_at: string;
+  has_avatar: boolean;
 };
 
 export type GroupMember = { user_id: string; role: 'owner' | 'member' };
