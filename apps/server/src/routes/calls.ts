@@ -34,11 +34,17 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
         members: {
           include: {
             user: {
-              include: { devices: true }
-            }
-          }
-        }
-      }
+              select: {
+                id: true,
+                notify_sound: true,
+                notify_vibrate: true,
+                notify_break_focus: true,
+                devices: true,
+              },
+            },
+          },
+        },
+      },
     });
 
     if (!group) {
@@ -85,36 +91,41 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
       }
     });
 
-    // Send push notifications to all group members except the caller and muted members
-    const tokens = group.members
-      .filter((m: any) => m.user_id !== userId && !m.is_muted)
+    // Send push notifications to all group members except the caller and muted members.
+    const otherMembers = group.members.filter((m: any) => m.user_id !== userId);
+    const callData = {
+      type: 'call_started',
+      callId: call.id,
+      groupId: groupId,
+      callType: 'spontaneous',
+      groupName: group.name,
+    };
+
+    await notifications.sendToBuckets(
+      otherMembers,
+      `${group.name} is calling!`,
+      'Tap to join the call',
+      callData,
+    );
+
+    // iOS 17.2+: start Live Activity on locked/force-quit devices.
+    const ptsTokens = otherMembers
+      .filter((m: any) => !m.is_muted)
       .flatMap((m: any) =>
-        m.user.devices.map((d: any) => ({
-          token: d.token,
-          platform: d.platform as 'ios' | 'android'
-        }))
+        m.user.devices
+          .filter((d: any) => d.platform === 'ios' && d.live_activity_pts_token)
+          .map((d: any) => d.live_activity_pts_token as string)
       );
 
-    console.log(`[call-now] Found ${tokens.length} device tokens for ${group.members.length - 1} other group members (excluding caller)`);
-
-    if (tokens.length > 0) {
-      await notifications.sendPushTokens(
-        tokens,
-        `${group.name} is calling!`,
-        'Tap to join the call',
-        {
-          type: 'call_started',
-          callId: call.id,
-          groupId: groupId,
-          callType: 'spontaneous',
-          groupName: group.name,
-        }
+    if (ptsTokens.length > 0) {
+      await notifications.startLiveActivities(
+        ptsTokens,
+        { callId: call.id, groupId },
+        { groupName: group.name, callType: 'spontaneous' },
       );
-    } else {
-      console.log(`[call-now] No push tokens registered for group ${groupId}`);
     }
 
-    console.log(`[call-now] User ${userId} started spontaneous call ${call.id} for group ${groupId}`);
+    console.log(`[call-now] User ${userId} started spontaneous call ${call.id} for group ${groupId} (${otherMembers.length} other member(s))`);
 
     res.json({
       id: call.id,
@@ -400,22 +411,6 @@ callsRouter.post('/:id/calls/:callId/leave', requireJwt, async (req, res) => {
         }
 
         console.log(`[leave-call] Spontaneous call ${callId} closed - all participants left`);
-
-        // Notify all group members to dismiss Live Activities / ongoing notifications
-        const groupMembers = await prisma.groupMember.findMany({
-          where: { group_id: call.group_id },
-          include: { user: { include: { devices: true } } }
-        });
-        const allTokens = groupMembers.flatMap((m: any) =>
-          m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
-        );
-        if (allTokens.length > 0) {
-          await notifications.sendSilentPushTokens(allTokens, {
-            type: 'call_ended',
-            callId,
-            groupId: call.group_id,
-          });
-        }
       }
     }
 
@@ -463,24 +458,6 @@ callsRouter.post('/:id/calls/:callId/end', requireJwt, async (req, res) => {
       where: { id: callId },
       data: { status: 'ended', ended_at: new Date() }
     });
-
-    // Notify all group members to dismiss Live Activities / ongoing notifications
-    const groupWithDevices = await prisma.group.findUnique({
-      where: { id: groupId },
-      include: { members: { include: { user: { include: { devices: true } } } } }
-    });
-    if (groupWithDevices) {
-      const allTokens = groupWithDevices.members.flatMap((m: any) =>
-        m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
-      );
-      if (allTokens.length > 0) {
-        await notifications.sendSilentPushTokens(allTokens, {
-          type: 'call_ended',
-          callId,
-          groupId,
-        });
-      }
-    }
 
     console.log(`[end-call] User ${userId} ended call ${callId} for group ${groupId}`);
     res.json({ success: true });

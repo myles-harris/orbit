@@ -2,6 +2,6 @@
 module.exports = {
   type: "widget",
   name: "CallLiveActivityExtension",
-  deploymentTarget: "16.2",
+  deploymentTarget: "17.2",
   frameworks: ["SwiftUI", "WidgetKit", "ActivityKit"],
 };

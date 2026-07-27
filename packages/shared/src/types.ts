@@ -3,6 +3,9 @@ export type UserDTO = {
   phone: string;
   username: string;
   time_zone: string;
+  notify_sound: boolean;
+  notify_vibrate: boolean;
+  notify_break_focus: boolean;
   created_at: string;
   has_avatar: boolean;
 };

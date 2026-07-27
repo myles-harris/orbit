@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
-import { CallLiveActivity } from './modules/call-live-activity';
+import { CallLiveActivity, addPushToStartTokenListener } from './modules/call-live-activity';
 import CallNotification from './modules/call-notification';
+import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
 import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -31,15 +32,23 @@ import { navigationRef } from './src/navigation/navigationRef';
 
 import { API_URL } from './src/config';
 
-// Configure notification handler — suppress alert UI for silent call_ended pushes
+// Configure notification handler for call notifications.
+// - Fires haptics for call_started when vibrate flag is set (iOS foreground only;
+//   on iOS the haptic IS the vibration since remote notifications can't control it).
+// - Reads sound/vibrate from the data payload set by the server's sendToBuckets.
 Notifications.setNotificationHandler({
   handleNotification: async (notification) => {
-    const isSilent = notification.request.content.data?.type === 'call_ended';
+    const data = notification.request.content.data as Record<string, string> | undefined;
+    const playSound = data?.sound !== 'false';
+
+    if (data?.vibrate === 'true' && Platform.OS === 'ios') {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    }
+
     return {
-      shouldShowAlert: !isSilent,
-      shouldShowBanner: !isSilent,
-      shouldShowList: !isSilent,
-      shouldPlaySound: !isSilent,
+      shouldShowBanner: true,
+      shouldShowList: true,
+      shouldPlaySound: playSound,
       shouldSetBadge: false,
     };
   },
@@ -52,7 +61,8 @@ function AppContent() {
   // Track active call presence state
   const liveActivityIdRef = useRef<string | null>(null);
 
-  // ─── Android notification channel ──────────────────────────────────────────
+  // Android: ensure the ongoing call notification channel exists (used by CallNotificationHelper).
+  // The notification preference-specific channels are created lazily in SettingsScreen.
   useEffect(() => {
     if (Platform.OS === 'android') {
       Notifications.setNotificationChannelAsync('call-ongoing', {
@@ -116,6 +126,35 @@ function AppContent() {
     }
   }, [isAuthenticated]);
 
+  // Register the push-to-start token (iOS 17.2+) so the server can start a Live Activity
+  // on a locked or force-quit device without the app running first.
+  useEffect(() => {
+    if (!isAuthenticated || Platform.OS !== 'ios' || !CallLiveActivity) return;
+
+    const registerPtsToken = async (token: string) => {
+      try {
+        const deviceToken = await SecureStore.getItemAsync('push_token');
+        if (!deviceToken) return;
+        const accessToken = await SecureStore.getItemAsync('access_token');
+        if (!accessToken) return;
+        const client = new ApiClient(API_URL, () => accessToken);
+        await client.post('/me/devices/register-live-activity', {
+          device_token: deviceToken,
+          pts_token: token,
+        });
+      } catch { /* best-effort */ }
+    };
+
+    // Pull in case a token was issued before JS subscribed (cold-start race).
+    CallLiveActivity.getPushToStartTokenAsync().then((token) => {
+      if (token) registerPtsToken(token);
+    }).catch(() => {});
+
+    // Subscribe to future rotations.
+    const sub = addPushToStartTokenListener(({ token }) => registerPtsToken(token));
+    return () => sub.remove();
+  }, [isAuthenticated]);
+
   // Re-run push setup when app comes back to foreground — catches the case where
   // the user denied permissions, went to Settings to grant them, then returned.
   useEffect(() => {
@@ -146,8 +185,12 @@ function AppContent() {
       );
     }
 
-    // iOS: start a Live Activity (requires native module + Xcode setup)
+    // iOS: start a Live Activity (requires native module + Xcode setup).
+    // Skip if push-to-start already started one for this callId so we don't create a duplicate.
     if (Platform.OS === 'ios' && CallLiveActivity) {
+      const alreadyStarted = await CallLiveActivity.hasActivityForCall(callId).catch(() => false);
+      if (alreadyStarted) return;
+
       // End any previous Live Activity first
       if (liveActivityIdRef.current) {
         await CallLiveActivity.endActivityAsync(liveActivityIdRef.current).catch(() => {});
@@ -163,17 +206,6 @@ function AppContent() {
       } catch (e) {
         console.error('[presence] Failed to start Live Activity:', e);
       }
-    }
-  }, []);
-
-  const endCallPresence = useCallback(async () => {
-    if (Platform.OS === 'android' && CallNotification) {
-      CallNotification.cancelOngoingCall();
-    }
-
-    if (Platform.OS === 'ios' && CallLiveActivity) {
-      await CallLiveActivity.endAllActivitiesAsync().catch(() => {});
-      liveActivityIdRef.current = null;
     }
   }, []);
 
@@ -250,13 +282,11 @@ function AppContent() {
           (data.callType as 'spontaneous' | 'scheduled') ?? 'spontaneous',
           data.endsAt as string | undefined,
         );
-      } else if (data?.type === 'call_ended') {
-        await endCallPresence();
       }
     });
 
     return () => subscription.remove();
-  }, [startCallPresence, endCallPresence]);
+  }, [startCallPresence]);
 
   // Listen for notification taps
   useEffect(() => {
