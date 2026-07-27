@@ -22,7 +22,8 @@ jest.mock('../services/dailyVideo', () => ({
 jest.mock('../services/notifications', () => ({
   notifications: {
     sendPushTokens: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
-    sendSilentPushTokens: jest.fn().mockResolvedValue(undefined),
+    sendToBuckets: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
+    startLiveActivities: jest.fn().mockResolvedValue(undefined),
   },
 }));
 

@@ -1,14 +1,18 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useCallback } from 'react';
 import {
   View,
   Text,
   TouchableOpacity,
   StyleSheet,
   Alert,
+  Switch,
   ActivityIndicator,
   ScrollView,
+  Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import * as IntentLauncher from 'expo-intent-launcher';
+import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
 import { UserDTO } from '@orbit/shared';
 import { useAuth } from '../context/AuthContext';
@@ -17,6 +21,7 @@ import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { UserAvatar } from '../components/UserAvatar';
+import { ensureCallChannel, pruneCallChannels } from '../utils/notificationChannels';
 
 export default function SettingsScreen() {
   const { onLogout } = useAuth();
@@ -25,6 +30,9 @@ export default function SettingsScreen() {
   const [user, setUser] = useState<UserDTO | null>(null);
   const [avatarCacheKey, setAvatarCacheKey] = useState(0);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
+  const [notifySound, setNotifySound] = useState(true);
+  const [notifyVibrate, setNotifyVibrate] = useState(true);
+  const [notifyBreakFocus, setNotifyBreakFocus] = useState(false);
 
   const styles = useMemo(() => makeStyles(colors, shadow), [colors]);
 
@@ -35,6 +43,9 @@ export default function SettingsScreen() {
       const client = await createAuthenticatedApiClient();
       const userData = await client.get<UserDTO>('/me');
       setUser(userData);
+      setNotifySound(userData.notify_sound ?? true);
+      setNotifyVibrate(userData.notify_vibrate ?? true);
+      setNotifyBreakFocus(userData.notify_break_focus ?? false);
     } catch (error: any) {
       if (error.message?.includes('401')) {
         Alert.alert('Session Expired', 'Please log in again.', [
@@ -71,6 +82,61 @@ export default function SettingsScreen() {
       setUploadingAvatar(false);
     }
   };
+
+  const updatePref = useCallback(async (field: string, value: boolean) => {
+    if (field === 'notify_sound') setNotifySound(value);
+    if (field === 'notify_vibrate') setNotifyVibrate(value);
+    if (field === 'notify_break_focus') setNotifyBreakFocus(value);
+    try {
+      const client = await createAuthenticatedApiClient();
+      await client.patch('/me', { [field]: value });
+    } catch {
+      if (field === 'notify_sound') setNotifySound(!value);
+      if (field === 'notify_vibrate') setNotifyVibrate(!value);
+      if (field === 'notify_break_focus') setNotifyBreakFocus(!value);
+      Alert.alert('Error', 'Could not save preference. Please try again.');
+    }
+  }, []);
+
+  const syncAndroidChannel = useCallback(async (prefs: { sound: boolean; vibrate: boolean; breakFocus: boolean }) => {
+    if (Platform.OS !== 'android') return;
+    const channelId = await ensureCallChannel(prefs);
+    await pruneCallChannels(channelId);
+    return channelId;
+  }, []);
+
+  const onToggleSound = useCallback(async (value: boolean) => {
+    await updatePref('notify_sound', value);
+    await syncAndroidChannel({ sound: value, vibrate: notifyVibrate, breakFocus: notifyBreakFocus });
+  }, [notifyVibrate, notifyBreakFocus, updatePref, syncAndroidChannel]);
+
+  const onToggleVibrate = useCallback(async (value: boolean) => {
+    await updatePref('notify_vibrate', value);
+    await syncAndroidChannel({ sound: notifySound, vibrate: value, breakFocus: notifyBreakFocus });
+  }, [notifySound, notifyBreakFocus, updatePref, syncAndroidChannel]);
+
+  const onToggleBreakFocus = useCallback(async (value: boolean) => {
+    await updatePref('notify_break_focus', value);
+    if (Platform.OS === 'android') {
+      const channelId = await syncAndroidChannel({ sound: notifySound, vibrate: notifyVibrate, breakFocus: value });
+      const channel = channelId ? await Notifications.getNotificationChannelAsync(channelId) : null;
+      if (value && !channel?.bypassDnd) {
+        Alert.alert(
+          'One more step',
+          'Android needs Do Not Disturb access to let Orbit calls through.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            {
+              text: 'Open settings',
+              onPress: () => IntentLauncher.startActivityAsync(
+                'android.settings.NOTIFICATION_POLICY_ACCESS_SETTINGS',
+              ),
+            },
+          ],
+        );
+      }
+    }
+  }, [notifySound, notifyVibrate, updatePref, syncAndroidChannel]);
 
   const logout = async () => {
     Alert.alert('Log Out', 'Are you sure you want to log out?', [
@@ -132,6 +198,44 @@ export default function SettingsScreen() {
             <Text style={styles.rowValue}>{user.time_zone}</Text>
           </View>
         </View>
+      </View>
+
+      {/* Notifications */}
+      <View style={styles.section}>
+        <Text style={styles.sectionLabel}>Notifications</Text>
+        <View style={styles.card}>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Chime on call start</Text>
+            <Switch
+              value={notifySound}
+              onValueChange={onToggleSound}
+              trackColor={{ true: colors.primary, false: colors.border }}
+            />
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>Vibrate on call start</Text>
+            <Switch
+              value={notifyVibrate}
+              onValueChange={onToggleVibrate}
+              trackColor={{ true: colors.primary, false: colors.border }}
+            />
+          </View>
+          <View style={[styles.row, styles.rowBorderless]}>
+            <Text style={styles.rowLabel}>
+              {Platform.OS === 'ios' ? 'Let calls through Focus' : 'Let calls through Do Not Disturb'}
+            </Text>
+            <Switch
+              value={notifyBreakFocus}
+              onValueChange={onToggleBreakFocus}
+              trackColor={{ true: colors.primary, false: colors.border }}
+            />
+          </View>
+        </View>
+        <Text style={styles.helperText}>
+          {Platform.OS === 'ios'
+            ? 'Off by default — Orbit stays quiet during Focus. You can also control Time Sensitive alerts in iOS Settings.'
+            : 'Off by default — Orbit stays quiet during Do Not Disturb. Turning this on requires Do Not Disturb access in system settings.'}
+        </Text>
       </View>
 
       {/* Appearance toggle */}
@@ -279,6 +383,14 @@ function makeStyles(colors: any, shadow: any) {
       borderBottomColor: colors.border,
     },
     rowBorderless: { borderBottomWidth: 0 },
+    helperText: {
+      fontSize: 12,
+      fontFamily: 'RobotoMono_400Regular',
+      color: colors.textTertiary,
+      marginTop: spacing.sm,
+      marginLeft: spacing.xs,
+      lineHeight: 18,
+    },
     rowLabel: {
       fontSize: 16,
       fontFamily: 'RobotoMono_400Regular',

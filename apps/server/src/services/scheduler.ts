@@ -287,7 +287,17 @@ export const scheduler = {
         where: { id: call.group_id },
         include: {
           members: {
-            include: { user: { include: { devices: true } } },
+            include: {
+              user: {
+                select: {
+                  id: true,
+                  notify_sound: true,
+                  notify_vibrate: true,
+                  notify_break_focus: true,
+                  devices: true,
+                },
+              },
+            },
           },
         },
       });
@@ -323,17 +333,6 @@ export const scheduler = {
           await dailyVideo.deleteRoom(activeSpontaneousCall.room_name);
         }
 
-        const spontaneousTokens = group.members.flatMap((m: any) =>
-          m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
-        );
-        if (spontaneousTokens.length > 0) {
-          await notifications.sendSilentPushTokens(spontaneousTokens, {
-            type: 'call_ended',
-            callId: activeSpontaneousCall.id,
-            groupId: group.id,
-          });
-        }
-
         console.log(`[scheduler] Closed spontaneous call ${activeSpontaneousCall.id} to make way for scheduled call`);
       }
 
@@ -346,29 +345,42 @@ export const scheduler = {
         data: { status: 'active', started_at: new Date(), room_url: roomUrl, claimed_at: null },
       });
 
-      // Send push notifications to all non-muted group members
-      const tokens = group.members
-        .filter((member: any) => !member.is_muted)
-        .flatMap((member: any) =>
-          member.user.devices.map((device: any) => ({
-            token: device.token,
-            platform: device.platform,
-          }))
+      // Send push notifications to all non-muted group members, bucketed by preferences.
+      const callData = {
+        type: 'call_started',
+        callId: callId,
+        groupId: group.id,
+        callType: 'scheduled',
+        groupName: group.name,
+        endsAt: call.ends_at?.toISOString() ?? '',
+      };
+
+      await notifications.sendToBuckets(
+        group.members,
+        `${group.name} is calling!`,
+        'Tap to join the scheduled call',
+        callData,
+      );
+
+      // iOS 17.2+: start Live Activity on locked/force-quit devices via push-to-start.
+      const ptsTokens = group.members
+        .filter((m: any) => !m.is_muted)
+        .flatMap((m: any) =>
+          m.user.devices
+            .filter((d: any) => d.platform === 'ios' && d.live_activity_pts_token)
+            .map((d: any) => d.live_activity_pts_token as string)
         );
 
-      if (tokens.length > 0) {
-        await notifications.sendPushTokens(
-          tokens,
-          `${group.name} is calling!`,
-          'Tap to join the scheduled call',
+      if (ptsTokens.length > 0) {
+        await notifications.startLiveActivities(
+          ptsTokens,
+          { callId, groupId: group.id },
           {
-            type: 'call_started',
-            callId: callId,
-            groupId: group.id,
-            callType: 'scheduled',
             groupName: group.name,
-            endsAt: call.ends_at?.toISOString() ?? '',
-          }
+            callType: 'scheduled',
+            endsAtMs: call.ends_at ? call.ends_at.getTime() : undefined,
+          },
+          call.ends_at ?? undefined,
         );
       }
 
@@ -518,24 +530,6 @@ export const scheduler = {
           ended_at: new Date()
         }
       });
-
-      // Notify all group members to dismiss Live Activities / ongoing notifications
-      const groupWithDevices = await prisma.group.findUnique({
-        where: { id: call.group_id },
-        include: { members: { include: { user: { include: { devices: true } } } } }
-      });
-      if (groupWithDevices) {
-        const allTokens = groupWithDevices.members.flatMap((m: any) =>
-          m.user.devices.map((d: any) => ({ token: d.token, platform: d.platform as 'ios' | 'android' }))
-        );
-        if (allTokens.length > 0) {
-          await notifications.sendSilentPushTokens(allTokens, {
-            type: 'call_ended',
-            callId,
-            groupId: call.group_id,
-          });
-        }
-      }
 
       console.log(`[scheduler] Closed call ${callId}`);
     } catch (error) {

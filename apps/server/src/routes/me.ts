@@ -7,17 +7,32 @@ import { dailyVideo } from '../services/dailyVideo.js';
 
 export const meRouter = Router();
 
+function serializeUser(user: {
+  id: string; phone: string; username: string; time_zone: string;
+  avatar: Buffer | null; avatar_mime_type: string | null; avatar_updated_at: Date | null;
+  notify_sound: boolean; notify_vibrate: boolean; notify_break_focus: boolean;
+  created_at: Date;
+}) {
+  return {
+    id: user.id,
+    phone: user.phone,
+    username: user.username,
+    time_zone: user.time_zone,
+    has_avatar: user.avatar !== null,
+    avatar_updated_at: user.avatar_updated_at?.toISOString() ?? null,
+    notify_sound: user.notify_sound,
+    notify_vibrate: user.notify_vibrate,
+    notify_break_focus: user.notify_break_focus,
+    created_at: user.created_at,
+  };
+}
+
 meRouter.get('/', requireJwt, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) return res.status(404).json({ error: 'not_found' });
-    res.json({
-      id: user.id, phone: user.phone, username: user.username,
-      time_zone: user.time_zone, created_at: user.created_at,
-      has_avatar: user.avatar !== null,
-      avatar_updated_at: user.avatar_updated_at?.toISOString() ?? null,
-    });
+    res.json(serializeUser(user));
   } catch (error) {
     console.error('[GET /me] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
@@ -29,19 +44,18 @@ const patchSchema = z.object({
   time_zone: z.string().refine(tz => {
     try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; } catch { return false; }
   }, { message: 'invalid_timezone' }).optional(),
+  notify_sound: z.boolean().optional(),
+  notify_vibrate: z.boolean().optional(),
+  notify_break_focus: z.boolean().optional(),
 });
+
 meRouter.patch('/', requireJwt, async (req, res) => {
   const parsed = patchSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   try {
     const userId = (req as any).userId as string;
     const user = await prisma.user.update({ where: { id: userId }, data: parsed.data });
-    res.json({
-      id: user.id, phone: user.phone, username: user.username,
-      time_zone: user.time_zone, created_at: user.created_at,
-      has_avatar: user.avatar !== null,
-      avatar_updated_at: user.avatar_updated_at?.toISOString() ?? null,
-    });
+    res.json(serializeUser(user));
   } catch (error) {
     console.error('[PATCH /me] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
@@ -110,6 +124,28 @@ meRouter.post('/devices/register-push', requireJwt, async (req, res) => {
     res.json({ status: 'registered' });
   } catch (error) {
     console.error('[POST /me/devices/register-push] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+const liveActivitySchema = z.object({
+  device_token: z.string().min(1),
+  pts_token: z.string().min(1),
+});
+
+meRouter.post('/devices/register-live-activity', requireJwt, async (req, res) => {
+  const parsed = liveActivitySchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  try {
+    const userId = (req as any).userId as string;
+    // Scope the update by user_id so users cannot overwrite each other's tokens.
+    await prisma.pushDevice.updateMany({
+      where: { token: parsed.data.device_token, user_id: userId },
+      data: { live_activity_pts_token: parsed.data.pts_token, pts_updated_at: new Date() },
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[POST /me/devices/register-live-activity] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });

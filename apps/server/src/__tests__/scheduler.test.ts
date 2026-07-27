@@ -13,7 +13,8 @@ jest.mock('../services/dailyVideo', () => ({
 jest.mock('../services/notifications', () => ({
   notifications: {
     sendPushTokens: jest.fn().mockResolvedValue({ success: 1, failure: 0 }),
-    sendSilentPushTokens: jest.fn().mockResolvedValue(undefined),
+    sendToBuckets: jest.fn().mockResolvedValue({ success: 1, failure: 0 }),
+    startLiveActivities: jest.fn().mockResolvedValue(undefined),
   },
 }));
 
@@ -171,7 +172,7 @@ describe('scheduler.activateDueCalls', () => {
     expect(updated!.status).toBe('active');
     expect(updated!.room_url).toBe('https://test.daily.co/test-room');
     expect(dailyVideo.createRoom).toHaveBeenCalledTimes(1);
-    expect(notifications.sendPushTokens).toHaveBeenCalledTimes(1);
+    expect(notifications.sendToBuckets).toHaveBeenCalledTimes(1);
   });
 
   it('skips a call whose ends_at has already passed', async () => {
