@@ -87,10 +87,9 @@ function AppContent() {
       try {
         const code = await AsyncStorage.getItem('orbit.pendingInviteCode');
         if (!code) return;
+        if (!navigationRef.isReady()) return; // retry on next auth-state change
+        navigationRef.navigate('JoinInvite', { code });
         await AsyncStorage.removeItem('orbit.pendingInviteCode');
-        if (navigationRef.isReady()) {
-          navigationRef.navigate('JoinInvite', { code });
-        }
       } catch {
         // non-fatal
       }

@@ -35,7 +35,7 @@ interface InvitePreview {
 export default function JoinInviteScreen() {
   const route = useRoute<JoinInviteRouteProp>();
   const navigation = useNavigation<JoinInviteNavigationProp>();
-  const { code } = route.params;
+  const code = route.params?.code;
   const { isAuthenticated } = useAuth();
   const { theme: { colors, typography, shadow } } = useTheme();
   const styles = useMemo(() => makeStyles(colors, typography, shadow), [colors]);
@@ -45,6 +45,10 @@ export default function JoinInviteScreen() {
   const [joining, setJoining] = useState(false);
 
   useEffect(() => {
+    if (!code) {
+      setLoadError('This invite link is invalid.');
+      return;
+    }
     const loadPreview = async () => {
       try {
         const resp = await fetch(`${API_URL}/groups/invites/${encodeURIComponent(code)}/preview`);
@@ -66,7 +70,7 @@ export default function JoinInviteScreen() {
   }, [code]);
 
   const joinGroup = async () => {
-    if (!preview) return;
+    if (!preview || !code) return;
     setJoining(true);
     try {
       const client = await createAuthenticatedApiClient();
@@ -88,7 +92,7 @@ export default function JoinInviteScreen() {
 
   const signInToJoin = async () => {
     // Stash the invite code so AuthScreen can pick it up after sign-in
-    await AsyncStorage.setItem('orbit.pendingInviteCode', code);
+    if (code) await AsyncStorage.setItem('orbit.pendingInviteCode', code);
     navigation.navigate('Auth');
   };
 

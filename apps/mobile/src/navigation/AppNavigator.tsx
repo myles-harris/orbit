@@ -28,7 +28,9 @@ export type RootStackParamList = {
   InviteUser: { groupId: string };
   Invitations: undefined;
   GroupSettings: { groupId: string; isOwner: boolean };
-  JoinInvite: { code: string };
+  // Optional: the screen can mount without params if the navigator falls back to
+  // it, or a malformed orbit://invite/ link is opened.
+  JoinInvite: { code: string } | undefined;
 };
 
 export type MainTabParamList = {
@@ -111,13 +113,10 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
 
   return (
     <NavigationContainer ref={navigationRef} linking={linking}>
-      <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {/* JoinInvite is always accessible so orbit://invite/:code works before sign-in */}
-        <Stack.Screen
-          name="JoinInvite"
-          component={JoinInviteScreen}
-          options={{ headerShown: true, title: 'Join Group', ...sharedHeaderOptions }}
-        />
+      <Stack.Navigator
+        screenOptions={{ headerShown: false }}
+        initialRouteName={isAuthenticated ? 'Main' : 'Auth'}
+      >
         {!isAuthenticated ? (
           <Stack.Screen name="Auth" component={AuthScreen} />
         ) : (
@@ -155,6 +154,16 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
             />
           </>
         )}
+        {/*
+          Registered outside the auth conditional so orbit://invite/:code resolves
+          before sign-in. Declared last, and initialRouteName is set explicitly, so
+          it can never become the implicit initial route on a cold launch.
+        */}
+        <Stack.Screen
+          name="JoinInvite"
+          component={JoinInviteScreen}
+          options={{ headerShown: true, title: 'Join Group', ...sharedHeaderOptions }}
+        />
       </Stack.Navigator>
     </NavigationContainer>
   );
