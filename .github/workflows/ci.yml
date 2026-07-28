@@ -71,4 +71,10 @@ jobs:
           node-version: 20
       - run: npm ci
       - run: npm run build -w packages/shared
+      - name: Fail if packages/shared/dist is stale
+        run: |
+          git diff --exit-code packages/shared/dist || {
+            echo "::error::packages/shared/dist is out of date. Run 'npm run build -w packages/shared' and commit."
+            exit 1
+          }
       - run: npm run typecheck -w apps/mobile
