@@ -7,8 +7,7 @@
     "start": "expo start",
     "android": "expo run:android",
     "ios": "expo run:ios",
-    "prestart": "npm run prebuild:shared",
-    "typecheck": "npm run prebuild:shared && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "prebuild:shared": "cd ../../packages/shared && npm run build"
   },
   "dependencies": {

@@ -8,7 +8,7 @@ export class ErrorBoundary extends Component<Props, State> {
   state: State = { hasError: false };
 
   static getDerivedStateFromError(error: Error): State {
-    return { hasError: true, message: error?.message };
+    return { hasError: true, message: error.message };
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo) {
@@ -21,14 +21,14 @@ export class ErrorBoundary extends Component<Props, State> {
         <View style={styles.container}>
           <Text style={styles.title}>Something went wrong</Text>
           <Text style={styles.subtitle}>An unexpected error occurred.</Text>
-          {this.state.message && (
+          {__DEV__ && this.state.message && (
             <Text selectable style={{ color: '#ff6b6b', fontSize: 12, marginBottom: 16, textAlign: 'center' }}>
               {this.state.message}
             </Text>
           )}
           <TouchableOpacity
             style={styles.button}
-            onPress={() => this.setState({ hasError: false })}
+            onPress={() => this.setState({ hasError: false, message: undefined })}
           >
             <Text style={styles.buttonText}>Try Again</Text>
           </TouchableOpacity>
