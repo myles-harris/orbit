@@ -1,4 +1,4 @@
-import { PrismaClient, Cadence, CallStatus } from '@prisma/client';
+import { PrismaClient, Cadence } from '@prisma/client';
 import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
 import { SCHEDULE_TZ, calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, dayKeyForDate, dayKey, shuffle, wallTimeToUtc } from '../util/scheduleTime.js';

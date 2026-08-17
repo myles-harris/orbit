@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { View, Text, Image } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { API_URL } from '../config';

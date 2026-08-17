@@ -1,6 +1,6 @@
-import React, { useRef, useEffect, useCallback, useMemo } from 'react';
+import { useRef, useEffect, useCallback, useMemo } from 'react';
 import { View, Text, ScrollView, StyleSheet } from 'react-native';
-import { spacing, radius } from '../theme';
+import { radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 
 const ITEM_HEIGHT = 44;
