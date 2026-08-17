@@ -61,6 +61,17 @@ jobs:
       - run: npm run prisma:generate -w apps/server
       - run: npm run build -w apps/server
 
+  # ─── Knip (warn-only — promote to blocking after first clean run) ──
+  knip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - run: npx knip --reporter compact 2>&1 || true
+
   # ─── Mobile Typecheck ──────────────────────────────────────────
   typecheck-mobile:
     runs-on: ubuntu-latest

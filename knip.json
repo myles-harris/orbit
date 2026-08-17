@@ -1,0 +1,24 @@
+{
+  "$schema": "https://unpkg.com/knip@latest/schema.json",
+  "workspaces": {
+    "apps/mobile": {
+      "ignoreDependencies": [
+        "base-64",
+        "node-abort-controller",
+        "react-native-background-timer",
+        "react-native-get-random-values",
+        "react-native-url-polyfill",
+        "@daily-co/react-native-webrtc",
+        "@daily-co/config-plugin-rn-daily-js",
+        "@bacons/apple-targets",
+        "expo-build-properties",
+        "expo-localization",
+        "expo-dev-client",
+        "expo-constants",
+        "react-native-screens",
+        "react-native-safe-area-context",
+        "react-native-gesture-handler"
+      ]
+    }
+  }
+}

@@ -17,7 +17,7 @@ RUN npm ci
 COPY packages/shared/ ./packages/shared/
 COPY apps/server/ ./apps/server/
 
-# Build shared types package (server depends on its dist/)
+# Build shared types package (satisfies workspace resolution — server does not import it directly)
 RUN npm run build -w packages/shared
 
 # Generate Prisma client

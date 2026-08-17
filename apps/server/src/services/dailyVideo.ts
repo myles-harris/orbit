@@ -1,5 +1,3 @@
-import DailyIframe from '@daily-co/daily-js';
-
 const DAILY_API_KEY = process.env.DAILY_API_KEY;
 const DAILY_DOMAIN = process.env.DAILY_DOMAIN || 'orbit-calls.daily.co';
 

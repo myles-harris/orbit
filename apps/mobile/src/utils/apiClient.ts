@@ -32,10 +32,6 @@ async function refreshAccessToken(): Promise<string | null> {
   }
 }
 
-export const createApiClient = () => {
-  return new ApiClient(API_URL, () => null);
-};
-
 export const createAuthenticatedApiClient = async () => {
   let cachedToken = await SecureStore.getItemAsync('access_token');
 

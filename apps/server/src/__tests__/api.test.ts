@@ -55,7 +55,6 @@ import { scheduler } from '../services/scheduler.js';
 import {
   createTestUser,
   createTestUserWithToken,
-  createAccessToken,
   createRefreshToken,
 } from './helpers/auth.js';
 
