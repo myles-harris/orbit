@@ -1,6 +1,25 @@
 # Orbit
 
-Mobile app for staying connected with your regular people.
+Mobile app for staying connected.
+
+If you're not great at making the time to catch up with your people,
+
+Orbit will make it for you.
+
+## Join the beta
+
+Orbit is in iOS beta. From your iPhone:
+
+1. Install [TestFlight](https://apps.apple.com/us/app/testflight/id899247664)
+2. [Join the Orbit beta](https://testflight.apple.com/join/Vh3vUD4Y)
+
+Requires iOS 17.2 or later. Orbit needs camera, microphone, and notification access for calls to work.
+
+Both links need to open on the iPhone you'll be testing with — if you're on desktop, open this page on your phone.
+
+Feedback: use **Send Beta Feedback** in TestFlight, or open an issue here.
+
+Android beta is not yet available.
 
 ## Stack
 
