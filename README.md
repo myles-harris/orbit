@@ -1,6 +1,10 @@
 # Orbit
 
-Mobile app for staying connected with your regular people.
+Mobile app for staying connected.
+
+If you're not great at making the time to catch up with your people,
+
+Orbit will make it for you.
 
 ## Join the beta
 
