@@ -21,7 +21,7 @@ import { UserAvatar } from '../components/UserAvatar';
 type InviteUserRouteProp = RouteProp<RootStackParamList, 'InviteUser'>;
 type InviteUserNavigationProp = StackNavigationProp<RootStackParamList, 'InviteUser'>;
 
-interface User { id: string; username: string; has_avatar: boolean; status: 'member' | 'invited' | null; }
+interface User { id: string; username: string; has_avatar: boolean; avatar_updated_at: string | null; status: 'member' | 'invited' | null; }
 
 export default function InviteUserScreen() {
   const route = useRoute<InviteUserRouteProp>();
@@ -86,7 +86,7 @@ export default function InviteUserScreen() {
     return (
       <View style={styles.userRow}>
         <View style={{ marginRight: spacing.md }}>
-          <UserAvatar userId={item.id} username={item.username} hasAvatar={item.has_avatar} size={40} colors={colors} />
+          <UserAvatar userId={item.id} username={item.username} hasAvatar={item.has_avatar} avatarUpdatedAt={item.avatar_updated_at} size={40} colors={colors} />
         </View>
         <Text style={styles.username}>{item.username}</Text>
         {isIneligible ? statusBadge : (

@@ -8,6 +8,7 @@ export type UserDTO = {
     notify_break_focus: boolean;
     created_at: string;
     has_avatar: boolean;
+    avatar_updated_at: string | null;
 };
 export type GroupMember = {
     user_id: string;

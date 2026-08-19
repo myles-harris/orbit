@@ -1,12 +1,11 @@
-import { PrismaClient, Cadence } from '@prisma/client';
+import { Cadence } from '@prisma/client';
+import { prisma } from '../db/prisma.js';
 import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
 import { SCHEDULE_TZ, calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, dayKeyForDate, dayKey, shuffle, wallTimeToUtc } from '../util/scheduleTime.js';
 
 /** A participant is stale after this long with no heartbeat (client beats every 10s). */
 const HEARTBEAT_STALE_MS = 90 * 1000;
-
-const prisma = new PrismaClient();
 
 /**
  * Scheduler service for managing random call times

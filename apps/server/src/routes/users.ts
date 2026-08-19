@@ -1,9 +1,8 @@
 import express from 'express';
-import { PrismaClient } from '@prisma/client';
 import { requireJwt } from '../util/requireJwt.js';
+import { prisma } from '../db/prisma.js';
 
 const router = express.Router();
-const prisma = new PrismaClient();
 
 router.use(requireJwt);
 
@@ -28,7 +27,7 @@ router.get('/search', async (req, res) => {
 
     const users = await prisma.user.findMany({
       where: whereClause,
-      select: { id: true, username: true, avatar: true, avatar_updated_at: true },
+      select: { id: true, username: true, avatar_updated_at: true },
       take: 10,
       orderBy: { username: 'asc' }
     });
@@ -65,7 +64,7 @@ router.get('/search', async (req, res) => {
     const usersWithStatus = users.map(u => ({
       id: u.id,
       username: u.username,
-      has_avatar: u.avatar !== null,
+      has_avatar: u.avatar_updated_at !== null,
       avatar_updated_at: u.avatar_updated_at?.toISOString() ?? null,
       status: memberIds.has(u.id) ? 'member' : invitedUserIds.has(u.id) ? 'invited' : null,
     }));
@@ -77,26 +76,36 @@ router.get('/search', async (req, res) => {
   }
 });
 
+// A versioned URL (?v=<avatar_updated_at ms>) is content-addressed: it changes whenever
+// the image changes, so it can be cached indefinitely. Clients on builds that predate
+// versioned URLs revalidate quickly instead of holding a day-old copy.
+const AVATAR_CACHE_IMMUTABLE = 'private, max-age=31536000, immutable';
+const AVATAR_CACHE_REVALIDATE = 'private, max-age=60';
+
 router.get('/:userId/avatar', async (req, res) => {
   try {
-    const user = await prisma.user.findUnique({
+    // Metadata only — never touches the BYTEA, so conditional requests (the common
+    // case) are answered without detoasting the blob.
+    const meta = await prisma.user.findUnique({
       where: { id: req.params.userId },
-      select: { avatar: true, avatar_mime_type: true, avatar_updated_at: true },
+      select: { avatar_mime_type: true, avatar_updated_at: true },
     });
-    if (!user?.avatar) return res.status(404).end();
+    if (!meta?.avatar_updated_at) return res.status(404).end();
 
-    const etag = user.avatar_updated_at
-      ? `"${user.avatar_updated_at.getTime()}"`
-      : undefined;
+    const etag = `"${meta.avatar_updated_at.getTime()}"`;
+    res.setHeader('ETag', etag);
+    res.setHeader('Cache-Control', req.query.v ? AVATAR_CACHE_IMMUTABLE : AVATAR_CACHE_REVALIDATE);
 
-    if (etag && req.headers['if-none-match'] === etag) {
-      return res.status(304).end();
-    }
+    if (req.headers['if-none-match'] === etag) return res.status(304).end();
 
-    res.setHeader('Content-Type', user.avatar_mime_type ?? 'application/octet-stream');
-    res.setHeader('Cache-Control', 'private, max-age=86400');
-    if (etag) res.setHeader('ETag', etag);
-    res.end(user.avatar);
+    const blob = await prisma.user.findUnique({
+      where: { id: req.params.userId },
+      select: { avatar: true },
+    });
+    if (!blob?.avatar) return res.status(404).end();
+
+    res.setHeader('Content-Type', meta.avatar_mime_type ?? 'application/octet-stream');
+    res.end(blob.avatar);
   } catch (error) {
     console.error('[GET /users/:userId/avatar] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });

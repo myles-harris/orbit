@@ -16,6 +16,7 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Orbit needs camera access for video calls",
         "NSMicrophoneUsageDescription": "Orbit needs microphone access for video calls",
+        "NSPhotoLibraryUsageDescription": "Orbit needs access to your photo library so you can choose a profile picture.",
         "ITSAppUsesNonExemptEncryption": false,
         "UIBackgroundModes": ["audio", "voip"],
         "NSSupportsLiveActivities": true,

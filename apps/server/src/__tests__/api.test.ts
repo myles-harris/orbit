@@ -391,6 +391,20 @@ describe('Me endpoints', () => {
     // 1x1 PNG in base64 (smallest valid PNG)
     const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
+    /** Minimal structurally-valid JPEG: SOI + APP0/JFIF header, padded to `bytes`. */
+    const jpegOfSize = (bytes: number) => {
+      const header = Buffer.from([
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+      ]);
+      return Buffer.concat([header, Buffer.alloc(Math.max(0, bytes - header.length))]);
+    };
+
+    const putAvatar = (token: string, buf: Buffer, mime = 'image/jpeg') =>
+      request(app)
+        .put('/me/avatar')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ data: buf.toString('base64'), mime_type: mime });
+
     it('returns has_avatar: false for a new user', async () => {
       const { token } = await createTestUserWithToken();
       const res = await request(app).get('/me').set('Authorization', `Bearer ${token}`);
@@ -451,18 +465,63 @@ describe('Me endpoints', () => {
       expect(res.status).toBe(400);
     });
 
-    it('PUT /me/avatar rejects a payload exceeding 2 MB', async () => {
+    it('PUT /me/avatar rejects a payload exceeding the 2 MB cap', async () => {
       const { token } = await createTestUserWithToken();
-      const bigData = Buffer.alloc(2.1 * 1024 * 1024).toString('base64');
-      const res = await request(app)
-        .put('/me/avatar')
-        .set('Authorization', `Bearer ${token}`)
-        .send({ data: bigData, mime_type: 'image/jpeg' });
+      const res = await putAvatar(token, jpegOfSize(2 * 1024 * 1024 + 1));
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('avatar_too_large');
     });
 
-    it('GET /users/search includes has_avatar', async () => {
+    it('PUT /me/avatar accepts a 300 KB image (regression: cap was 200 KB)', async () => {
+      const { token } = await createTestUserWithToken();
+      const res = await putAvatar(token, jpegOfSize(300 * 1024));
+      expect(res.status).toBe(200);
+      expect(res.body.avatar_updated_at).toEqual(expect.any(String));
+    });
+
+    it('PUT /me/avatar accepts an image just under the 2 MB cap', async () => {
+      const { token } = await createTestUserWithToken();
+      expect((await putAvatar(token, jpegOfSize(2 * 1024 * 1024 - 1))).status).toBe(200);
+    });
+
+    it('GET /me never returns the avatar blob', async () => {
+      const { token } = await createTestUserWithToken();
+      await request(app).put('/me/avatar').set('Authorization', `Bearer ${token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/png' });
+
+      const res = await request(app).get('/me').set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body).not.toHaveProperty('avatar');
+      expect(res.body.has_avatar).toBe(true);
+      expect(res.body.avatar_updated_at).toEqual(expect.any(String));
+    });
+
+    it('GET /users/:id/avatar is immutable-cacheable when versioned and 304s on ETag', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const upload = await request(app).put('/me/avatar').set('Authorization', `Bearer ${token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/png' });
+      const version = new Date(upload.body.avatar_updated_at).getTime();
+
+      const versioned = await request(app)
+        .get(`/users/${user.id}/avatar?v=${version}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(versioned.status).toBe(200);
+      expect(versioned.headers['cache-control']).toContain('immutable');
+      expect(versioned.headers['etag']).toBe(`"${version}"`);
+
+      const unversioned = await request(app)
+        .get(`/users/${user.id}/avatar`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(unversioned.headers['cache-control']).not.toContain('immutable');
+
+      const conditional = await request(app)
+        .get(`/users/${user.id}/avatar?v=${version}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('If-None-Match', `"${version}"`);
+      expect(conditional.status).toBe(304);
+    });
+
+    it('GET /users/search includes has_avatar and no avatar blob', async () => {
       const { token } = await createTestUserWithToken({ username: 'searcher_ws2' });
       const { user: target } = await createTestUserWithToken({ username: 'target_ws2' });
 
@@ -473,6 +532,7 @@ describe('Me endpoints', () => {
       const found = res.body.users.find((u: any) => u.id === target.id);
       expect(found).toBeDefined();
       expect(found.has_avatar).toBe(false);
+      expect(found).not.toHaveProperty('avatar');
     });
   });
 
@@ -2278,6 +2338,18 @@ describe('Svc endpoints', () => {
       const res = await request(app).get('/svc/groups/00000000-0000-0000-0000-000000000000/upcoming');
       expect(res.status).toBe(404);
     });
+  });
+});
+
+describe('Error handling', () => {
+  it('returns 413, not 500, for a body over the express.json limit', async () => {
+    const { token } = await createTestUserWithToken();
+    const res = await request(app)
+      .put('/me/avatar')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ data: 'A'.repeat(5 * 1024 * 1024), mime_type: 'image/jpeg' });
+    expect(res.status).toBe(413);
+    expect(res.body.error).toBe('payload_too_large');
   });
 });
 
