@@ -18,6 +18,7 @@ import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import NumberPicker from '../components/NumberPicker';
+import { formatHour, windowStartMax, windowEndMin } from '../utils/groupFormat';
 
 type CreateGroupNavigationProp = StackNavigationProp<RootStackParamList, 'CreateGroup'>;
 
@@ -29,16 +30,9 @@ export default function CreateGroupScreen() {
   const [name, setName] = useState('');
   const [cadence, setCadence] = useState<'daily' | 'weekly'>('daily');
   const [frequency, setFrequency] = useState(1);
-  const [duration, setDuration] = useState(30);
+  const [duration, setDuration] = useState(5);
   const [windowStart, setWindowStart] = useState(6);
   const [windowEnd, setWindowEnd] = useState(22);
-
-  const formatHour = (h: number): string => {
-    if (h === 0) return '12 AM';
-    if (h < 12) return `${h} AM`;
-    if (h === 12) return '12 PM';
-    return `${h - 12} PM`;
-  };
 
   const handleCadenceChange = (value: 'daily' | 'weekly') => {
     setCadence(value);
@@ -108,24 +102,29 @@ export default function CreateGroupScreen() {
         <View style={styles.card}>
           <Text style={styles.fieldLabel}>Call Window</Text>
           <Text style={styles.helperText}>Calls are scheduled at a random time within this window (your local time).</Text>
-          <View style={styles.windowRow}>
-            <View style={styles.windowCol}>
-              <Text style={[styles.fieldLabel, { marginBottom: spacing.sm }]}>Earliest</Text>
-              <NumberPicker min={0} max={22} value={windowStart} onChange={setWindowStart} formatValue={formatHour} />
-            </View>
-            <View style={styles.windowSep}>
-              <Text style={styles.windowDash}>—</Text>
-            </View>
-            <View style={styles.windowCol}>
-              <Text style={[styles.fieldLabel, { marginBottom: spacing.sm }]}>Latest</Text>
-              <NumberPicker min={1} max={23} value={windowEnd} onChange={setWindowEnd} formatValue={formatHour} />
-            </View>
+          <View style={styles.windowStack}>
+            <Text style={styles.fieldLabel}>Earliest</Text>
+            <NumberPicker
+              min={0}
+              max={windowStartMax(windowEnd)}
+              value={windowStart}
+              onChange={setWindowStart}
+              formatValue={formatHour}
+            />
+            <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Latest</Text>
+            <NumberPicker
+              min={windowEndMin(windowStart)}
+              max={23}
+              value={windowEnd}
+              onChange={setWindowEnd}
+              formatValue={formatHour}
+            />
           </View>
         </View>
 
         <View style={styles.card}>
           <Text style={styles.fieldLabel}>Call Duration</Text>
-          <NumberPicker min={2} max={120} value={duration} onChange={setDuration} suffix="min" />
+          <NumberPicker min={2} max={30} value={duration} onChange={setDuration} suffix="min" />
         </View>
 
         <TouchableOpacity style={styles.createButton} onPress={createGroup} activeOpacity={0.85}>
@@ -150,10 +149,7 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     segmentText: { ...typography.captionMedium, color: colors.textSecondary, fontWeight: '600' },
     segmentTextActive: { color: colors.primary },
     helperText: { ...typography.small, color: colors.textTertiary, marginTop: spacing.sm, marginBottom: spacing.sm },
-    windowRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.sm },
-    windowCol: { flex: 1 },
-    windowSep: { width: 32, alignItems: 'center', paddingTop: 28 },
-    windowDash: { ...typography.body, color: colors.textTertiary },
+    windowStack: { marginTop: spacing.sm },
     createButton: { backgroundColor: colors.primary, borderRadius: radius.full, paddingVertical: spacing.md + 2, alignItems: 'center', marginTop: spacing.lg, ...shadow.lg },
     createButtonText: { ...typography.bodySemibold, color: '#fff' },
   });

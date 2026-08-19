@@ -18,11 +18,14 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import * as Localization from 'expo-localization';
 import { formatViewerWindow } from '@orbit/shared';
+import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import NumberPicker from '../components/NumberPicker';
+import { formatHour, windowStartMax, windowEndMin, durationMax, cadenceSummary } from '../utils/groupFormat';
+import { getGroupColorIndex, setGroupColorIndex, defaultPaletteIndex, CARD_PALETTES } from '../utils/groupColors';
 
 type GroupSettingsRouteProp = RouteProp<RootStackParamList, 'GroupSettings'>;
 type GroupSettingsNavigationProp = StackNavigationProp<RootStackParamList, 'GroupSettings'>;
@@ -38,27 +41,21 @@ export default function GroupSettingsScreen() {
   const [groupName, setGroupName] = useState('');
   const [cadence, setCadence] = useState<'daily' | 'weekly'>('daily');
   const [frequency, setFrequency] = useState(1);
-  const [callDuration, setCallDuration] = useState(15);
+  const [callDuration, setCallDuration] = useState(5);
   const [windowStart, setWindowStart] = useState(6);
   const [windowEnd, setWindowEnd] = useState(22);
   const [isMuted, setIsMuted] = useState(false);
+  const [paletteIndex, setPaletteIndex] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [savedName, setSavedName] = useState('');
   const [savedCadence, setSavedCadence] = useState<'daily' | 'weekly'>('daily');
   const [savedFrequency, setSavedFrequency] = useState(1);
-  const [savedCallDuration, setSavedCallDuration] = useState(15);
+  const [savedCallDuration, setSavedCallDuration] = useState(5);
   const [savedWindowStart, setSavedWindowStart] = useState(6);
   const [savedWindowEnd, setSavedWindowEnd] = useState(22);
   const [groupTz, setGroupTz] = useState<string>('UTC');
   const viewerTz = Localization.getCalendars()[0]?.timeZone ?? 'UTC';
-
-  const formatHour = (h: number): string => {
-    if (h === 0) return '12 AM';
-    if (h < 12) return `${h} AM`;
-    if (h === 12) return '12 PM';
-    return `${h - 12} PM`;
-  };
 
   const hasChanges =
     groupName !== savedName ||
@@ -97,21 +94,54 @@ export default function GroupSettingsScreen() {
     } catch (error) {
       Alert.alert('Error', 'Failed to load group settings');
     }
+
+    // Isolated so a storage failure can't blank the screen for a group that
+    // loaded fine — the enclosing catch never calls setLoading(false).
+    try {
+      setPaletteIndex(await getGroupColorIndex(groupId));
+    } catch {
+      // Non-fatal: resolvedPaletteIndex falls back to defaultPaletteIndex(savedName).
+    }
   };
+
+  const pickColor = async (index: number) => {
+    setPaletteIndex(index);
+    try {
+      await setGroupColorIndex(groupId, index);
+    } catch {
+      // Cosmetic preference — swatch is already selected in state, silent failure
+      // degrades to "didn't persist" rather than an unhandled rejection.
+    }
+  };
+
+  const resolvedPaletteIndex = paletteIndex ?? (savedName ? defaultPaletteIndex(savedName) : 0);
 
   const saveSettings = async () => {
     if (!groupName.trim()) { Alert.alert('Error', 'Group name cannot be empty'); return; }
     try {
       const client = await createAuthenticatedApiClient();
-      const updates: any = { name: groupName.trim() };
+      const updates: any = {};
+      if (groupName.trim() !== savedName) updates.name = groupName.trim();
+
       if (isOwner) {
-        updates.cadence = cadence;
-        updates.call_duration_minutes = callDuration;
-        if (cadence === 'daily') updates.daily_frequency = 1;
-        else updates.weekly_frequency = frequency;
-        updates.call_window_start = windowStart;
-        updates.call_window_end = windowEnd;
+        const cadenceChanged = cadence !== savedCadence;
+        if (cadenceChanged) updates.cadence = cadence;
+        // When cadence flips, always restate the frequency for the new cadence —
+        // the server only derives daily_frequency, never weekly_frequency.
+        if (cadenceChanged || frequency !== savedFrequency) {
+          if (cadence === 'daily') updates.daily_frequency = 1;
+          else updates.weekly_frequency = frequency;
+        }
+        if (callDuration !== savedCallDuration) updates.call_duration_minutes = callDuration;
+        // Send the window as a pair so the two hours can never be updated independently.
+        if (windowStart !== savedWindowStart || windowEnd !== savedWindowEnd) {
+          updates.call_window_start = windowStart;
+          updates.call_window_end = windowEnd;
+        }
       }
+
+      if (Object.keys(updates).length === 0) { navigation.goBack(); return; }
+
       await client.put(`/groups/${groupId}`, updates);
       setSavedName(groupName.trim());
       if (isOwner) {
@@ -238,9 +268,17 @@ export default function GroupSettingsScreen() {
     );
   }
 
+  const cadenceLabel = cadenceSummary(savedCadence, savedFrequency);
+  const windowSummary = `${formatHour(savedWindowStart)} – ${formatHour(savedWindowEnd)}`;
+  const windowInViewerTz = groupTz !== viewerTz
+    ? formatViewerWindow(savedWindowStart, savedWindowEnd, groupTz, viewerTz)
+    : null;
+
   return (
     <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
       <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+
+        <Text style={styles.sectionLabel}>Group</Text>
 
         <View style={styles.card}>
           <Text style={styles.fieldLabel}>Group Name</Text>
@@ -253,6 +291,31 @@ export default function GroupSettingsScreen() {
           />
           <Text style={styles.helperText}>All members can update the group name</Text>
         </View>
+
+        {!isOwner && (
+          <>
+            <View style={styles.readOnlyCard}>
+              <View style={styles.readOnlyRow}>
+                <Text style={styles.readOnlyLabel}>Call Frequency</Text>
+                <Text style={styles.readOnlyValue}>{cadenceLabel}</Text>
+              </View>
+              <View style={styles.readOnlyRow}>
+                <Text style={styles.readOnlyLabel}>Call Duration</Text>
+                <Text style={styles.readOnlyValue}>{savedCallDuration} min</Text>
+              </View>
+              <View style={[styles.readOnlyRow, styles.readOnlyRowLast]}>
+                <Text style={styles.readOnlyLabel}>Call Window</Text>
+                <View style={styles.readOnlyValueBlock}>
+                  <Text style={styles.readOnlyValue}>{windowSummary}</Text>
+                  {windowInViewerTz && (
+                    <Text style={styles.readOnlySubValue}>{windowInViewerTz} your time</Text>
+                  )}
+                </View>
+              </View>
+            </View>
+            <Text style={styles.lockNote}>Only the group owner can change these.</Text>
+          </>
+        )}
 
         {isOwner && (
           <>
@@ -288,24 +351,29 @@ export default function GroupSettingsScreen() {
                 Calls are scheduled at a random time within this window, in the group's timezone.
                 {viewerTz !== groupTz ? ` For you: ${formatViewerWindow(windowStart, windowEnd, groupTz, viewerTz)}` : ''}
               </Text>
-              <View style={styles.windowRow}>
-                <View style={styles.windowCol}>
-                  <Text style={[styles.fieldLabel, { marginBottom: spacing.sm }]}>Earliest</Text>
-                  <NumberPicker min={0} max={22} value={windowStart} onChange={setWindowStart} formatValue={formatHour} />
-                </View>
-                <View style={styles.windowSep}>
-                  <Text style={styles.windowDash}>—</Text>
-                </View>
-                <View style={styles.windowCol}>
-                  <Text style={[styles.fieldLabel, { marginBottom: spacing.sm }]}>Latest</Text>
-                  <NumberPicker min={1} max={23} value={windowEnd} onChange={setWindowEnd} formatValue={formatHour} />
-                </View>
+              <View style={styles.windowStack}>
+                <Text style={styles.fieldLabel}>Earliest</Text>
+                <NumberPicker
+                  min={0}
+                  max={windowStartMax(windowEnd)}
+                  value={windowStart}
+                  onChange={setWindowStart}
+                  formatValue={formatHour}
+                />
+                <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Latest</Text>
+                <NumberPicker
+                  min={windowEndMin(windowStart)}
+                  max={23}
+                  value={windowEnd}
+                  onChange={setWindowEnd}
+                  formatValue={formatHour}
+                />
               </View>
             </View>
 
             <View style={styles.card}>
               <Text style={styles.fieldLabel}>Call Duration</Text>
-              <NumberPicker min={2} max={120} value={callDuration} onChange={setCallDuration} suffix="min" />
+              <NumberPicker min={2} max={durationMax(savedCallDuration)} value={callDuration} onChange={setCallDuration} suffix="min" />
             </View>
 
             <View style={styles.card}>
@@ -333,6 +401,28 @@ export default function GroupSettingsScreen() {
             </View>
           </>
         )}
+
+        <Text style={[styles.sectionLabel, { marginTop: spacing.md }]}>Your settings</Text>
+
+        <View style={styles.card}>
+          <Text style={styles.fieldLabel}>Tile Color</Text>
+          <View style={styles.colorPickerRow}>
+            {CARD_PALETTES.map((palette, index) => {
+              const isSelected = index === resolvedPaletteIndex;
+              return (
+                <TouchableOpacity
+                  key={index}
+                  style={[styles.colorSwatch, { backgroundColor: palette.bg }, isSelected && styles.colorSwatchSelected]}
+                  onPress={() => pickColor(index)}
+                  activeOpacity={0.7}
+                >
+                  {isSelected && <Ionicons name="checkmark" size={12} color={palette.text} />}
+                </TouchableOpacity>
+              );
+            })}
+          </View>
+          <Text style={styles.helperText}>Sets this group's card color on your home screen. Only you see it.</Text>
+        </View>
 
         <View style={styles.card}>
           <View style={styles.muteRow}>
@@ -390,19 +480,51 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     container: { flex: 1 },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
     content: { padding: spacing.xl, paddingBottom: spacing.xl },
+    sectionLabel: {
+      ...typography.captionMedium,
+      color: colors.textSecondary,
+      textTransform: 'uppercase',
+      letterSpacing: 0.5,
+      fontWeight: '600',
+      marginBottom: spacing.sm,
+      marginLeft: spacing.xs,
+    },
     card: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.xl, marginBottom: spacing.md, ...shadow.sm },
     fieldLabel: { ...typography.captionMedium, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '600', marginBottom: spacing.sm },
     input: { backgroundColor: colors.background, borderRadius: radius.md, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, fontSize: 16, color: colors.text },
     helperText: { ...typography.small, color: colors.textTertiary, marginTop: spacing.sm, marginBottom: spacing.sm },
-    windowRow: { flexDirection: 'row', alignItems: 'center', marginTop: spacing.sm },
-    windowCol: { flex: 1 },
-    windowSep: { width: 32, alignItems: 'center', paddingTop: 28 },
-    windowDash: { ...typography.body, color: colors.textTertiary },
+    windowStack: { marginTop: spacing.sm },
     segmentRow: { flexDirection: 'row', backgroundColor: colors.background, borderRadius: radius.md, padding: 3 },
     segment: { flex: 1, paddingVertical: spacing.sm + 2, borderRadius: radius.sm, alignItems: 'center' },
     segmentActive: { backgroundColor: colors.surface, ...shadow.sm },
     segmentText: { ...typography.captionMedium, color: colors.textSecondary, fontWeight: '600' },
     segmentTextActive: { color: colors.primary },
+    readOnlyCard: {
+      backgroundColor: colors.surface,
+      borderRadius: radius.lg,
+      overflow: 'hidden',
+      marginBottom: spacing.sm,
+      ...shadow.sm,
+    },
+    readOnlyRow: {
+      flexDirection: 'row',
+      alignItems: 'flex-start',
+      justifyContent: 'space-between',
+      paddingHorizontal: spacing.xl,
+      paddingVertical: spacing.lg,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.border,
+      gap: spacing.md,
+    },
+    readOnlyRowLast: { borderBottomWidth: 0 },
+    readOnlyLabel: { ...typography.bodyMedium, color: colors.textSecondary },
+    readOnlyValueBlock: { flexShrink: 1, alignItems: 'flex-end' },
+    readOnlyValue: { ...typography.bodyMedium, color: colors.text, flexShrink: 1, textAlign: 'right' },
+    readOnlySubValue: { ...typography.small, color: colors.textTertiary, marginTop: 2, textAlign: 'right' },
+    lockNote: { ...typography.small, color: colors.textTertiary, marginBottom: spacing.xl, marginLeft: spacing.xs },
+    colorPickerRow: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap', marginBottom: spacing.xs },
+    colorSwatch: { width: 28, height: 28, borderRadius: radius.full, justifyContent: 'center', alignItems: 'center' },
+    colorSwatchSelected: { borderWidth: 2, borderColor: colors.text },
     muteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     muteTextBlock: { flex: 1, marginRight: spacing.md },
     muteLabel: { ...typography.bodyMedium, color: colors.text, fontWeight: '600' },
