@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
 import { scheduler } from '../services/scheduler.js';
@@ -7,18 +8,41 @@ import { dailyVideo } from '../services/dailyVideo.js';
 
 export const meRouter = Router();
 
-function serializeUser(user: {
-  id: string; phone: string; username: string; time_zone: string;
-  avatar: Buffer | null; avatar_mime_type: string | null; avatar_updated_at: Date | null;
-  notify_sound: boolean; notify_vibrate: boolean; notify_break_focus: boolean;
+// Every scalar the client needs — deliberately excludes `avatar`, which is a
+// multi-megabyte BYTEA. `has_avatar` derives from `avatar_updated_at`; the two
+// columns are written together at every call site and the invariant is enforced
+// by the `user_avatar_consistency` CHECK constraint.
+const USER_PUBLIC_SELECT = {
+  id: true,
+  phone: true,
+  username: true,
+  time_zone: true,
+  avatar_updated_at: true,
+  notify_sound: true,
+  notify_vibrate: true,
+  notify_break_focus: true,
+  created_at: true,
+} satisfies Prisma.UserSelect;
+
+type PublicUser = {
+  id: string;
+  phone: string;
+  username: string;
+  time_zone: string;
+  avatar_updated_at: Date | null;
+  notify_sound: boolean;
+  notify_vibrate: boolean;
+  notify_break_focus: boolean;
   created_at: Date;
-}) {
+};
+
+function serializeUser(user: PublicUser) {
   return {
     id: user.id,
     phone: user.phone,
     username: user.username,
     time_zone: user.time_zone,
-    has_avatar: user.avatar !== null,
+    has_avatar: user.avatar_updated_at !== null,
     avatar_updated_at: user.avatar_updated_at?.toISOString() ?? null,
     notify_sound: user.notify_sound,
     notify_vibrate: user.notify_vibrate,
@@ -30,7 +54,7 @@ function serializeUser(user: {
 meRouter.get('/', requireJwt, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: USER_PUBLIC_SELECT });
     if (!user) return res.status(404).json({ error: 'not_found' });
     res.json(serializeUser(user));
   } catch (error) {
@@ -54,7 +78,7 @@ meRouter.patch('/', requireJwt, async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   try {
     const userId = (req as any).userId as string;
-    const user = await prisma.user.update({ where: { id: userId }, data: parsed.data });
+    const user = await prisma.user.update({ where: { id: userId }, data: parsed.data, select: USER_PUBLIC_SELECT });
     res.json(serializeUser(user));
   } catch (error) {
     console.error('[PATCH /me] Error:', error);
@@ -62,7 +86,7 @@ meRouter.patch('/', requireJwt, async (req, res) => {
   }
 });
 
-const AVATAR_MAX_BYTES = 200 * 1024; // 200 KB
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024; // 2 MB — keep in sync with the boundary tests in api.test.ts
 
 // Magic bytes for accepted image types
 const MAGIC_BYTES: Array<{ mime: string; check: (b: Buffer) => boolean }> = [
@@ -91,6 +115,7 @@ meRouter.put('/avatar', requireJwt, async (req, res) => {
     await prisma.user.update({
       where: { id: userId },
       data: { avatar: buf, avatar_mime_type: parsed.data.mime_type, avatar_updated_at: now },
+      select: { id: true },
     });
     res.json({ ok: true, avatar_updated_at: now.toISOString() });
   } catch (error) {
@@ -102,7 +127,11 @@ meRouter.put('/avatar', requireJwt, async (req, res) => {
 meRouter.delete('/avatar', requireJwt, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
-    await prisma.user.update({ where: { id: userId }, data: { avatar: null, avatar_mime_type: null, avatar_updated_at: null } });
+    await prisma.user.update({
+      where: { id: userId },
+      data: { avatar: null, avatar_mime_type: null, avatar_updated_at: null },
+      select: { id: true },
+    });
     res.json({ ok: true });
   } catch (error) {
     console.error('[DELETE /me/avatar] Error:', error);

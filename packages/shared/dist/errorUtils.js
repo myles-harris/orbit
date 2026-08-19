@@ -30,6 +30,13 @@ export function parseApiError(error) {
         return 'That item could not be found.';
     if (status === 409 || body === 'username_taken')
         return 'That username is already taken.';
+    // Uploads
+    if (body === 'avatar_too_large')
+        return 'That image is too large. Try a different photo.';
+    if (body === 'invalid_image')
+        return "Orbit couldn't read that image. Try a different photo.";
+    if (body === 'payload_too_large' || status === 413)
+        return 'That file is too large to upload.';
     if (status >= 500)
         return 'Server error. Please try again later.';
     if (status === 400)

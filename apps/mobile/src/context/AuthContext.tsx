@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
-import { setSessionExpiredHandler, API_URL, createAuthenticatedApiClient } from '../utils/apiClient';
+import { setSessionExpiredHandler, clearAccessToken, API_URL, createAuthenticatedApiClient } from '../utils/apiClient';
 import { ApiClient } from '@orbit/shared';
 
 interface AuthContextType {
@@ -63,6 +63,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('Failed to deregister push token:', error);
     }
+    clearAccessToken();
     await Promise.all([
       SecureStore.deleteItemAsync('access_token').catch(() => {}),
       SecureStore.deleteItemAsync('refresh_token').catch(() => {}),

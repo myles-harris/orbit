@@ -97,7 +97,15 @@ export class ApiClient {
   }
 
   // User search
-  async searchUsers(query: string, groupId?: string): Promise<{ users: Array<{ id: string; username: string; has_avatar: boolean; status: 'member' | 'invited' | null }> }> {
+  async searchUsers(query: string, groupId?: string): Promise<{
+    users: Array<{
+      id: string;
+      username: string;
+      has_avatar: boolean;
+      avatar_updated_at: string | null;
+      status: 'member' | 'invited' | null;
+    }>;
+  }> {
     const params = new URLSearchParams({ q: query });
     if (groupId) params.append('groupId', groupId);
     return this.get(`/users/search?${params.toString()}`);
@@ -133,8 +141,8 @@ export class ApiClient {
     return this.post(`/groups/${groupId}/join`, { invite_code: inviteCode });
   }
 
-  async uploadAvatar(data: string, mimeType: string): Promise<{ ok: boolean }> {
-    return this.request<{ ok: boolean }>('PUT', '/me/avatar', { data, mime_type: mimeType });
+  async uploadAvatar(data: string, mimeType: string): Promise<{ ok: boolean; avatar_updated_at: string }> {
+    return this.request<{ ok: boolean; avatar_updated_at: string }>('PUT', '/me/avatar', { data, mime_type: mimeType });
   }
 
   async deleteAvatar(): Promise<{ ok: boolean }> {

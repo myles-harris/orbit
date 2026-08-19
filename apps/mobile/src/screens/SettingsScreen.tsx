@@ -11,10 +11,11 @@ import {
   Platform,
 } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
+import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Notifications from 'expo-notifications';
 import { Ionicons } from '@expo/vector-icons';
-import { UserDTO } from '@orbit/shared';
+import { UserDTO, parseApiError } from '@orbit/shared';
 import { useAuth } from '../context/AuthContext';
 import { useTutorial } from '../context/TutorialContext';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
@@ -28,7 +29,7 @@ export default function SettingsScreen() {
   const { showTutorial } = useTutorial();
   const { theme: { colors, shadow }, mode, toggleTheme } = useTheme();
   const [user, setUser] = useState<UserDTO | null>(null);
-  const [avatarCacheKey, setAvatarCacheKey] = useState(0);
+  const [localAvatarUri, setLocalAvatarUri] = useState<string | null>(null);
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const [notifySound, setNotifySound] = useState(true);
   const [notifyVibrate, setNotifyVibrate] = useState(true);
@@ -55,32 +56,94 @@ export default function SettingsScreen() {
     }
   };
 
-  const handleAvatarPress = async () => {
-    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (status !== 'granted') {
-      Alert.alert('Permission Required', 'Allow access to your photo library to set a profile picture.');
-      return;
+  const AVATAR_MAX_EDGE = 512;
+  const AVATAR_JPEG_QUALITY = 0.8;
+
+  const pickAndUploadAvatar = async () => {
+    // iOS: with allowsEditing: true, expo-image-picker uses UIImagePickerController, which
+    // has needed no photo-library authorization since iOS 11. Requesting it anyway calls
+    // PHPhotoLibrary.requestAuthorization(.readWrite) — which hard-crashes without
+    // NSPhotoLibraryUsageDescription and, with it, adds a prompt users can deny themselves
+    // out of a flow that would have worked. Android < 13 does need the storage permissions;
+    // Android 13+ resolves to an empty permission set.
+    if (Platform.OS === 'android') {
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Allow access to your photo library to set a profile picture.');
+        return;
+      }
     }
+
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: true,
       aspect: [1, 1],
-      quality: 0.7,
-      base64: true,
+      quality: 1,     // no lossy pass here; the manipulator performs the single re-encode
+      base64: false,  // never base64-encode the full-resolution asset
     });
-    if (result.canceled || !result.assets[0]?.base64) return;
-    const { base64, mimeType } = result.assets[0];
+    if (result.canceled) return;
+
+    const asset = result.assets[0];
+    if (!asset?.uri) return;
+
     setUploadingAvatar(true);
     try {
+      // Never upscale — a picture already smaller than the target is left at its own size.
+      const targetWidth = Math.min(AVATAR_MAX_EDGE, asset.width || AVATAR_MAX_EDGE);
+
+      // Omitting `height` preserves aspect ratio. The crop UI yields 1:1; if a platform
+      // ever returns a non-square asset, UserAvatar's `cover` handles it without distortion.
+      const context = ImageManipulator.manipulate(asset.uri);
+      context.resize({ width: targetWidth });
+      const rendered = await context.renderAsync();
+      const image = await rendered.saveAsync({
+        compress: AVATAR_JPEG_QUALITY,
+        format: SaveFormat.JPEG,
+        base64: true,
+      });
+      if (!image.base64) throw new Error('encode_failed');
+
+      // Show the resized file immediately — identical bytes to what we're about to upload,
+      // so this cannot desync. Cleared only on failure or removal.
+      setLocalAvatarUri(image.uri);
+
       const client = await createAuthenticatedApiClient();
-      await client.uploadAvatar(base64, mimeType ?? 'image/jpeg');
-      setAvatarCacheKey(Date.now());
+      await client.uploadAvatar(image.base64, 'image/jpeg');
       await loadUser();
-    } catch {
-      Alert.alert('Error', 'Failed to upload photo.');
+    } catch (error) {
+      console.error('[avatar-upload] failed:', error);
+      setLocalAvatarUri(null);
+      Alert.alert('Error', avatarErrorMessage(error));
     } finally {
       setUploadingAvatar(false);
     }
+  };
+
+  const removeAvatar = async () => {
+    setUploadingAvatar(true);
+    try {
+      const client = await createAuthenticatedApiClient();
+      await client.deleteAvatar();
+      setLocalAvatarUri(null);
+      await loadUser();
+    } catch (error) {
+      console.error('[avatar-delete] failed:', error);
+      Alert.alert('Error', avatarErrorMessage(error));
+    } finally {
+      setUploadingAvatar(false);
+    }
+  };
+
+  const handleAvatarPress = () => {
+    if (!user?.has_avatar && !localAvatarUri) {
+      void pickAndUploadAvatar();
+      return;
+    }
+    Alert.alert('Profile Picture', undefined, [
+      { text: 'Choose new photo', onPress: () => void pickAndUploadAvatar() },
+      { text: 'Remove photo', style: 'destructive', onPress: () => void removeAvatar() },
+      { text: 'Cancel', style: 'cancel' },
+    ]);
   };
 
   const updatePref = useCallback(async (field: string, value: boolean) => {
@@ -170,7 +233,8 @@ export default function SettingsScreen() {
             size={80}
             colors={colors}
             isOwner
-            cacheKey={avatarCacheKey}
+            avatarUpdatedAt={user.avatar_updated_at}
+            previewUri={localAvatarUri}
           />
           {uploadingAvatar && (
             <View style={styles.avatarOverlay}>
@@ -297,6 +361,13 @@ export default function SettingsScreen() {
       </View>
     </ScrollView>
   );
+}
+
+function avatarErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message === 'encode_failed') {
+    return "Orbit couldn't process that photo. Try a different one.";
+  }
+  return parseApiError(error);
 }
 
 function makeStyles(colors: any, shadow: any) {

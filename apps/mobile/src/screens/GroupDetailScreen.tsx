@@ -21,10 +21,21 @@ import { UserAvatar } from '../components/UserAvatar';
 type GroupDetailRouteProp = RouteProp<RootStackParamList, 'GroupDetail'>;
 type GroupDetailNavigationProp = StackNavigationProp<RootStackParamList, 'GroupDetail'>;
 
-function MemberAvatar({ userId, username, hasAvatar, isOwner, colors }: { userId: string; username: string; hasAvatar: boolean; isOwner: boolean; colors: any }) {
+function MemberAvatar({ userId, username, hasAvatar, isOwner, colors, avatarUpdatedAt }: {
+  userId: string; username: string; hasAvatar: boolean; isOwner: boolean; colors: any;
+  avatarUpdatedAt?: string | null;
+}) {
   return (
     <View style={{ marginRight: spacing.md }}>
-      <UserAvatar userId={userId} username={username} hasAvatar={hasAvatar} size={40} colors={colors} isOwner={isOwner} />
+      <UserAvatar
+        userId={userId}
+        username={username}
+        hasAvatar={hasAvatar}
+        size={40}
+        colors={colors}
+        isOwner={isOwner}
+        avatarUpdatedAt={avatarUpdatedAt}
+      />
     </View>
   );
 }
@@ -204,7 +215,14 @@ export default function GroupDetailScreen() {
                 key={member.user_id}
                 style={[styles.memberRow, isLast && styles.memberRowLast]}
               >
-                <MemberAvatar userId={member.user_id} username={member.username} hasAvatar={member.has_avatar ?? false} isOwner={isMemberOwner} colors={colors} />
+                <MemberAvatar
+                  userId={member.user_id}
+                  username={member.username}
+                  hasAvatar={member.has_avatar ?? false}
+                  avatarUpdatedAt={member.avatar_updated_at ?? null}
+                  isOwner={isMemberOwner}
+                  colors={colors}
+                />
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>{member.username}</Text>
                   {isMemberOwner && (
