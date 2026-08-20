@@ -27,7 +27,7 @@ jest.mock('twilio', () => jest.fn(() => ({})));
 // eslint-disable-next-line import/first
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
-import { notifications, callChannelId } from '../services/notifications.js';
+import { notifications, callChannelId, CALL_SOUND_IOS, INVITE_PUSH } from '../services/notifications.js';
 import type { PushOptions } from '../services/notifications.js';
 import { app } from '../app.js';
 import { createTestUser, createAccessToken } from './helpers/auth.js';
@@ -94,6 +94,13 @@ describe('sendApns', () => {
     expect(payload.aps.sound).toBeUndefined();
   });
 
+  it('defaults iOS sound to the call tone and lets presets override it', async () => {
+    await notifications.sendApns(['token-e'], 'T', 'B', {});
+    expect(mockSendApnsRaw.mock.calls[0][1].aps.sound).toBe(CALL_SOUND_IOS);
+    await notifications.sendApns(['token-f'], 'T', 'B', {}, INVITE_PUSH);
+    expect(mockSendApnsRaw.mock.calls[1][1].aps.sound).toBe('default');
+  });
+
   it('stub returns failure count equal to token count when unconfigured', async () => {
     const apnsMock = jest.requireMock('../services/apns') as { isApnsConfigured: () => boolean };
     const orig = apnsMock.isApnsConfigured;
@@ -137,6 +144,11 @@ describe('sendFcm', () => {
     await notifications.sendFcm(['fcm-token-4'], 'T', 'B', {}, opts);
     const [msg] = mockFcmSend.mock.calls[0];
     expect(msg.data.channelId).toBe(callChannelId(opts));
+  });
+
+  it('honours an explicit channelId override', async () => {
+    await notifications.sendFcm(['fcm-token-5'], 'T', 'B', {}, INVITE_PUSH);
+    expect(mockFcmSend.mock.calls[0][0].data.channelId).toBe('invites');
   });
 });
 

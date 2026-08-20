@@ -2,6 +2,7 @@ import { createContext, useContext, useState, useEffect, useRef, ReactNode } fro
 import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { setSessionExpiredHandler, clearAccessToken, API_URL, createAuthenticatedApiClient } from '../utils/apiClient';
+import { clearCachedCallPrefs } from '../utils/notificationChannels';
 import { ApiClient } from '@orbit/shared';
 
 interface AuthContextType {
@@ -68,6 +69,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       SecureStore.deleteItemAsync('access_token').catch(() => {}),
       SecureStore.deleteItemAsync('refresh_token').catch(() => {}),
       SecureStore.deleteItemAsync('push_token').catch(() => {}),
+      // Otherwise the next account signed into this device inherits this account's
+      // cached call channel prefs (including a DND-bypass channel) until /me responds.
+      clearCachedCallPrefs(),
     ]);
     setIsAuthenticated(false);
   };

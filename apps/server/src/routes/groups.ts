@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
-import { notifications } from '../services/notifications.js';
+import { notifications, INVITE_PUSH } from '../services/notifications.js';
 import { scheduler } from '../services/scheduler.js';
 import { calendarDateInTz, addDays, dayBoundsUtc } from '../util/scheduleTime.js';
 
@@ -809,7 +809,8 @@ groupsRouter.post('/:id/invite-user', requireJwt, async (req, res) => {
           type: 'invitation_received',
           inviteId: invite.id,
           groupId: groupId
-        }
+        },
+        INVITE_PUSH,
       );
     }
 
