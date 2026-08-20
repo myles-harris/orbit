@@ -57,9 +57,15 @@ object CallNotificationHelper {
   private fun ensureChannel(context: Context) {
     val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     if (manager.getNotificationChannel(CHANNEL_ID) == null) {
-      manager.createNotificationChannel(
-        NotificationChannel(CHANNEL_ID, "Ongoing Calls", NotificationManager.IMPORTANCE_HIGH),
-      )
+      val channel = NotificationChannel(CHANNEL_ID, "Ongoing Calls", NotificationManager.IMPORTANCE_HIGH).apply {
+        // Must match App.tsx's setNotificationChannelAsync('call-ongoing', …). Android locks
+        // sound and importance at creation, so if these two definitions ever diverge AND this
+        // path can run before the JS one, the divergence becomes permanent for that install.
+        // Today JS always runs first; this is defensive, not a live fix.
+        setSound(null, null)
+        enableVibration(false)
+      }
+      manager.createNotificationChannel(channel)
     }
   }
 }

@@ -22,7 +22,7 @@ import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { UserAvatar } from '../components/UserAvatar';
-import { ensureCallChannel, pruneCallChannels } from '../utils/notificationChannels';
+import { syncCallChannel } from '../utils/notificationChannels';
 
 export default function SettingsScreen() {
   const { onLogout } = useAuth();
@@ -161,27 +161,20 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  const syncAndroidChannel = useCallback(async (prefs: { sound: boolean; vibrate: boolean; breakFocus: boolean }) => {
-    if (Platform.OS !== 'android') return;
-    const channelId = await ensureCallChannel(prefs);
-    await pruneCallChannels(channelId);
-    return channelId;
-  }, []);
-
   const onToggleSound = useCallback(async (value: boolean) => {
     await updatePref('notify_sound', value);
-    await syncAndroidChannel({ sound: value, vibrate: notifyVibrate, breakFocus: notifyBreakFocus });
-  }, [notifyVibrate, notifyBreakFocus, updatePref, syncAndroidChannel]);
+    await syncCallChannel({ sound: value, vibrate: notifyVibrate, breakFocus: notifyBreakFocus });
+  }, [notifyVibrate, notifyBreakFocus, updatePref]);
 
   const onToggleVibrate = useCallback(async (value: boolean) => {
     await updatePref('notify_vibrate', value);
-    await syncAndroidChannel({ sound: notifySound, vibrate: value, breakFocus: notifyBreakFocus });
-  }, [notifySound, notifyBreakFocus, updatePref, syncAndroidChannel]);
+    await syncCallChannel({ sound: notifySound, vibrate: value, breakFocus: notifyBreakFocus });
+  }, [notifySound, notifyBreakFocus, updatePref]);
 
   const onToggleBreakFocus = useCallback(async (value: boolean) => {
     await updatePref('notify_break_focus', value);
     if (Platform.OS === 'android') {
-      const channelId = await syncAndroidChannel({ sound: notifySound, vibrate: notifyVibrate, breakFocus: value });
+      const channelId = await syncCallChannel({ sound: notifySound, vibrate: notifyVibrate, breakFocus: value });
       const channel = channelId ? await Notifications.getNotificationChannelAsync(channelId) : null;
       if (value && !channel?.bypassDnd) {
         Alert.alert(
@@ -199,7 +192,7 @@ export default function SettingsScreen() {
         );
       }
     }
-  }, [notifySound, notifyVibrate, updatePref, syncAndroidChannel]);
+  }, [notifySound, notifyVibrate, updatePref]);
 
   const logout = async () => {
     Alert.alert('Log Out', 'Are you sure you want to log out?', [

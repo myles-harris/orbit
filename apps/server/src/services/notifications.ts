@@ -10,10 +10,19 @@ import { sendApnsRaw, isApnsConfigured, BUNDLE } from './apns.js';
 
 type Platform = 'ios' | 'android';
 
+/** iOS bundle filename for the call tone. Set by the expo-notifications plugin `sounds` array. */
+export const CALL_SOUND_IOS = 'orbit_ring.wav';
+
+export const INVITE_CHANNEL_ID = 'invites';
+
 export interface PushOptions {
   sound?: boolean;
   vibrate?: boolean;
   breakFocus?: boolean;
+  /** Overrides the derived calls-* Android channel. Use for anything that is not a call. */
+  channelId?: string;
+  /** iOS sound filename. Defaults to the call tone; pass 'default' for non-call pushes. */
+  soundName?: string;
 }
 
 export function callChannelId(o: PushOptions): string {
@@ -24,6 +33,17 @@ export function callChannelId(o: PushOptions): string {
     o.breakFocus ? 'dnd' : 'nodnd',
   ].join('-');
 }
+
+export function resolveChannelId(o: PushOptions): string {
+  return o.channelId ?? callChannelId(o);
+}
+
+export function resolveSoundName(o: PushOptions): string | undefined {
+  return o.sound !== false ? (o.soundName ?? CALL_SOUND_IOS) : undefined;
+}
+
+/** Preset for every non-call push. Keeps channel and sound from drifting apart. */
+export const INVITE_PUSH: PushOptions = { channelId: INVITE_CHANNEL_ID, soundName: 'default' };
 
 // Initialize Firebase Admin SDK via service account
 let firebaseApp: admin.app.App | null = null;
@@ -140,10 +160,10 @@ export const notifications = {
     const results = { success: 0, failure: 0 };
 
     try {
-      const channelId = callChannelId(opts);
+      const channelId = resolveChannelId(opts);
       const messages = tokens.map(token => ({
         to: token,
-        sound: opts.sound !== false ? 'default' : undefined,
+        sound: resolveSoundName(opts),
         title,
         body,
         data: { ...(data || {}), channelId },
@@ -202,7 +222,7 @@ export const notifications = {
     const payload = {
       aps: {
         alert: { title, body },
-        sound: opts.sound !== false ? 'default' : undefined,
+        sound: resolveSoundName(opts),
         badge: 1,
         'interruption-level': opts.breakFocus ? 'time-sensitive' : 'active',
         'relevance-score': 1.0,
@@ -253,7 +273,7 @@ export const notifications = {
 
     const results = { success: 0, failure: 0 };
     const staleTokens: string[] = [];
-    const channelId = callChannelId(opts);
+    const channelId = resolveChannelId(opts);
 
     for (const token of tokens) {
       try {

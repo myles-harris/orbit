@@ -23,7 +23,10 @@ import {
 import { Chango_400Regular } from '@expo-google-fonts/chango';
 import AppNavigator from './src/navigation/AppNavigator';
 import { ApiClient } from '@orbit/shared';
+import type { UserDTO } from '@orbit/shared';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { createAuthenticatedApiClient } from './src/utils/apiClient';
+import { DEFAULT_CALL_PREFS, readCachedCallPrefs, syncCallChannel } from './src/utils/notificationChannels';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { TutorialProvider } from './src/context/TutorialContext';
@@ -62,7 +65,10 @@ function AppContent() {
   const liveActivityIdRef = useRef<string | null>(null);
 
   // Android: ensure the ongoing call notification channel exists (used by CallNotificationHelper).
-  // The notification preference-specific channels are created lazily in SettingsScreen.
+  // Must match CallNotificationHelper.ensureChannel — Android locks sound/importance at
+  // creation, so if these two definitions ever diverge AND the Kotlin path can run first,
+  // the divergence becomes permanent for that install.
+  // The notification preference-specific channels are synced from syncCallChannelFromServer.
   useEffect(() => {
     if (Platform.OS === 'android') {
       Notifications.setNotificationChannelAsync('call-ongoing', {
@@ -71,12 +77,49 @@ function AppContent() {
         sound: null,
         enableVibrate: false,
       });
+      Notifications.setNotificationChannelAsync('invites', {
+        name: 'Invitations',
+        importance: Notifications.AndroidImportance.DEFAULT,
+        // Default system sound, no DND bypass, no call tone — an invite is not a call.
+      });
+    }
+  }, []);
+
+  // Android: the calls-* channel is what carries the tone, MAX importance and DND bypass.
+  // Without it expo-notifications falls back to its own default-sound channel, so both the
+  // tone and the user's mute preference are lost. Sync from cached prefs first so an
+  // offline launch still lands on the right channel, then reconcile with the server.
+  // syncCallChannel serializes concurrent callers internally (this fires from two different
+  // effects below plus SettingsScreen's manual toggles), so overlapping invocations here are
+  // safe — they queue rather than racing each other's channel create/delete.
+  const syncCallChannelFromServer = useCallback(async () => {
+    if (Platform.OS !== 'android') return;
+
+    const cached = await readCachedCallPrefs();
+    try {
+      await syncCallChannel(cached ?? DEFAULT_CALL_PREFS);
+    } catch (e) {
+      console.warn('[channels] cached sync failed:', e);
+    }
+
+    try {
+      const client = await createAuthenticatedApiClient();
+      const me = await client.get<UserDTO>('/me');
+      await syncCallChannel({
+        sound: me.notify_sound,
+        vibrate: me.notify_vibrate,
+        breakFocus: me.notify_break_focus,
+      });
+    } catch (e) {
+      // Cached channel stays in place; retried on next launch/foreground.
+      console.warn('[channels] pref sync failed:', e);
     }
   }, []);
 
   useEffect(() => {
     if (isAuthenticated) {
       setupPushNotifications();
+      syncCallChannelFromServer();
     }
   }, [isAuthenticated]);
 
@@ -161,6 +204,7 @@ function AppContent() {
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (appState.current.match(/inactive|background/) && nextState === 'active') {
         setupPushNotifications();
+        syncCallChannelFromServer();
       }
       appState.current = nextState;
     });
