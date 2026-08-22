@@ -25,10 +25,9 @@ public class CallLiveActivityModule: Module {
       self.lastPtsToken
     }
 
-    // True if a Live Activity already exists for the given callId.
-    // Used in App.tsx to skip a duplicate client-side start when push-to-start fired.
-    AsyncFunction("hasActivityForCall") { (callId: String) -> Bool in
-      Activity<CallActivityAttributes>.activities.contains { $0.attributes.callId == callId }
+    AsyncFunction("activityIdForCall") { (callId: String) -> String? in
+      Activity<CallActivityAttributes>.activities
+        .first { $0.attributes.callId == callId }?.id
     }
 
     AsyncFunction("startActivityAsync") { (callId: String, groupId: String, state: [String: Any]) -> String? in
@@ -70,6 +69,16 @@ public class CallLiveActivityModule: Module {
     /// End ALL call activities — safety net for stale activities after crashes.
     AsyncFunction("endAllActivitiesAsync") {
       for activity in Activity<CallActivityAttributes>.activities {
+        await activity.end(nil, dismissalPolicy: .immediate)
+      }
+    }
+
+    /// End only activities whose callId is not in the supplied list.
+    /// Used on launch to clear orphans without killing a still-running call.
+    AsyncFunction("endActivitiesExceptAsync") { (callIds: [String]) in
+      let keep = Set(callIds)
+      for activity in Activity<CallActivityAttributes>.activities
+      where !keep.contains(activity.attributes.callId) {
         await activity.end(nil, dismissalPolicy: .immediate)
       }
     }

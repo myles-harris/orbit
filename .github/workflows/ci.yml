@@ -89,3 +89,7 @@ jobs:
             exit 1
           }
       - run: npm run typecheck -w apps/mobile
+      - name: CallActivityAttributes parity
+        run: |
+          diff apps/mobile/modules/call-live-activity/ios/CallActivityAttributes.swift \
+               apps/mobile/targets/call-live-activity-widget/CallActivityAttributes.swift

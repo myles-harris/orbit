@@ -14,6 +14,10 @@ struct CallActivityAttributes: ActivityAttributes {
     var callType: String
     /// Epoch milliseconds. Non-nil only for scheduled calls.
     var endsAtMs: Double?
+    /// Number of participants currently in the call. Optional for two reasons: an
+    /// activity started by a pre-deploy push-to-start payload must still decode, and
+    /// the widget renders the count line only when the server actually supplies one.
+    var participantCount: Int?
   }
 
   var callId: String
