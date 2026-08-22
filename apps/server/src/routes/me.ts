@@ -185,6 +185,71 @@ meRouter.post('/devices/register-live-activity', requireJwt, async (req, res) =>
   }
 });
 
+const activityTokenSchema = z.object({
+  call_id: z.string().uuid(),
+  push_token: z.string().min(1),
+});
+
+/**
+ * Per-activity Live Activity push token. Distinct from the push-to-start token on
+ * PushDevice: this one addresses ONE running activity and is what update/end pushes
+ * target.
+ */
+meRouter.post('/calls/live-activity-token', requireJwt, async (req, res) => {
+  const parsed = activityTokenSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  try {
+    const userId = (req as any).userId as string;
+    const { call_id, push_token } = parsed.data;
+
+    const call = await prisma.callSession.findUnique({
+      where: { id: call_id },
+      select: { group_id: true, status: true },
+    });
+    if (!call) return res.status(404).json({ error: 'call_not_found' });
+    if (call.status !== 'active') return res.status(409).json({ error: 'call_not_active' });
+
+    // Authorization: caller must be a member of the group that owns this call, not
+    // necessarily a CallParticipant. Every non-muted group member gets a Live Activity
+    // whether or not they've joined (see scheduler.ts's startLiveActivities call, which
+    // targets all members' push-to-start tokens, not participants') — the surface exists
+    // to tell people a call is happening. Narrowing this to CallParticipant would break
+    // that for anyone who hasn't opened the call yet.
+    const membership = await prisma.groupMember.findFirst({
+      where: { group_id: call.group_id, user_id: userId },
+      select: { id: true },
+    });
+    if (!membership) return res.status(403).json({ error: 'not_a_member' });
+
+    // Ownership is never reassigned. The unique key is (call_id, push_token), so without
+    // this check any group member who learns another member's activity token could POST
+    // it and take over the row. user_id is load-bearing at stage 8: it drives the mute
+    // filter on fan-out.
+    const existing = await prisma.callLiveActivityToken.findUnique({
+      where: { call_id_push_token: { call_id, push_token } },
+      select: { user_id: true },
+    });
+    if (existing && existing.user_id !== userId) {
+      console.warn(`[presence] Activity token reassignment refused for call ${call_id}`);
+      return res.status(409).json({ error: 'token_owned_by_another_user' });
+    }
+
+    await prisma.callLiveActivityToken.upsert({
+      where: { call_id_push_token: { call_id, push_token } },
+      create: { call_id, user_id: userId, push_token },
+      update: {},
+    });
+
+    res.json({ ok: true });
+
+    // [fix 3] The targeted seed lands at stage 8, where sendPresenceToToken exists.
+    // See 09-presence-fanout-service.md, Step 3.7. Do not add a stub here.
+  } catch (error) {
+    console.error('[POST /me/calls/live-activity-token] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
 meRouter.delete('/devices/register-push', requireJwt, async (req, res) => {
   try {
     const token = (req.query.token as string) || '';

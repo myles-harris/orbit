@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
-import { CallLiveActivity, addPushToStartTokenListener } from './modules/call-live-activity';
+import { CallLiveActivity, addPushToStartTokenListener, addActivityPushTokenListener } from './modules/call-live-activity';
 import CallNotification from './modules/call-notification';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
@@ -244,6 +244,22 @@ function AppContent() {
     });
     return () => sub.remove();
   }, [isAuthenticated, flushPtsRegistration]);
+
+  // Per-activity push tokens. Emitted for every activity including push-to-start ones,
+  // but only while this process is alive. See stage 0, spike 2.
+  useEffect(() => {
+    if (!isAuthenticated || Platform.OS !== 'ios' || !CallLiveActivity) return;
+    const sub = addActivityPushTokenListener(async ({ callId, token }) => {
+      try {
+        const client = await createAuthenticatedApiClient();
+        await client.post('/me/calls/live-activity-token', {
+          call_id: callId,
+          push_token: token,
+        });
+      } catch { /* best-effort; retried on next token rotation */ }
+    });
+    return () => sub.remove();
+  }, [isAuthenticated]);
 
   // Re-run push setup when app comes back to foreground — catches the case where
   // the user denied permissions, went to Settings to grant them, then returned.

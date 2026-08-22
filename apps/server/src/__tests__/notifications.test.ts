@@ -379,6 +379,175 @@ describe('POST /me/devices/register-live-activity', () => {
   });
 });
 
+// ─── POST /me/calls/live-activity-token ──────────────────────────────────────
+
+describe('POST /me/calls/live-activity-token', () => {
+  const setupGroupAndCall = async (usernamePrefix: string) => {
+    const member = await createTestUser({ username: `${usernamePrefix}_member` });
+    const group = await prisma.group.create({
+      data: { name: 'LA Token Group', cadence: 'daily', call_duration_minutes: 30, owner_id: member.id },
+    });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: member.id, role: 'owner' },
+    });
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'spontaneous',
+        room_name: `la-token-room-${group.id}`,
+      },
+    });
+    return { member, group, call };
+  };
+
+  it('stores the token for a member of the call\'s group', async () => {
+    const { member, call } = await setupGroupAndCall('la_store');
+    const token = createAccessToken(member.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-1' });
+
+    expect(res.status).toBe(200);
+    const row = await prisma.callLiveActivityToken.findFirst({
+      where: { call_id: call.id, push_token: 'activity-push-token-1' },
+    });
+    expect(row?.user_id).toBe(member.id);
+  });
+
+  it('upserts rather than duplicating on repeat POST', async () => {
+    const { member, call } = await setupGroupAndCall('la_upsert');
+    const token = createAccessToken(member.id);
+
+    for (let i = 0; i < 2; i++) {
+      const res = await request(app)
+        .post('/me/calls/live-activity-token')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ call_id: call.id, push_token: 'activity-push-token-2' });
+      expect(res.status).toBe(200);
+    }
+
+    const rows = await prisma.callLiveActivityToken.findMany({
+      where: { call_id: call.id, push_token: 'activity-push-token-2' },
+    });
+    expect(rows.length).toBe(1);
+  });
+
+  it('returns 403 for a non-member', async () => {
+    const { call } = await setupGroupAndCall('la_nonmember');
+    const outsider = await createTestUser({ username: 'la_outsider' });
+    const token = createAccessToken(outsider.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-3' });
+
+    expect(res.status).toBe(403);
+    const row = await prisma.callLiveActivityToken.findFirst({
+      where: { call_id: call.id, push_token: 'activity-push-token-3' },
+    });
+    expect(row).toBeNull();
+  });
+
+  it('returns 404 for an unknown call_id', async () => {
+    const user = await createTestUser({ username: 'la_unknown_call' });
+    const token = createAccessToken(user.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: '00000000-0000-0000-0000-000000000000', push_token: 'activity-push-token-4' });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for a missing push_token', async () => {
+    const { member, call } = await setupGroupAndCall('la_missing_token');
+    const token = createAccessToken(member.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('cascade-deletes when the call is deleted', async () => {
+    const { member, call } = await setupGroupAndCall('la_cascade');
+    const token = createAccessToken(member.id);
+
+    await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-5' });
+
+    await prisma.callSession.delete({ where: { id: call.id } });
+
+    const rows = await prisma.callLiveActivityToken.findMany({ where: { call_id: call.id } });
+    expect(rows.length).toBe(0);
+  });
+
+  it('returns 409 and leaves ownership unchanged when a different member POSTs an existing token', async () => {
+    const { member, group, call } = await setupGroupAndCall('la_reassign');
+    const otherMember = await createTestUser({ username: 'la_reassign_other' });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: otherMember.id, role: 'member' },
+    });
+    const ownerToken = createAccessToken(member.id);
+    const otherToken = createAccessToken(otherMember.id);
+
+    await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-6' });
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-6' });
+
+    expect(res.status).toBe(409);
+    const row = await prisma.callLiveActivityToken.findFirst({
+      where: { call_id: call.id, push_token: 'activity-push-token-6' },
+    });
+    expect(row?.user_id).toBe(member.id);
+  });
+
+  it('returns 409 and writes nothing for a call that is not active', async () => {
+    const member = await createTestUser({ username: 'la_inactive_member' });
+    const group = await prisma.group.create({
+      data: { name: 'LA Inactive Group', cadence: 'daily', call_duration_minutes: 30, owner_id: member.id },
+    });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: member.id, role: 'owner' },
+    });
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'ended',
+        call_type: 'spontaneous',
+        room_name: `la-inactive-room-${group.id}`,
+      },
+    });
+    const token = createAccessToken(member.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-7' });
+
+    expect(res.status).toBe(409);
+    const row = await prisma.callLiveActivityToken.findFirst({
+      where: { call_id: call.id, push_token: 'activity-push-token-7' },
+    });
+    expect(row).toBeNull();
+  });
+});
+
 // ─── GET /me/calls/active ──────────────────────────────────────────────────
 
 describe('GET /me/calls/active', () => {

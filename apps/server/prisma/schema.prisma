@@ -23,13 +23,14 @@ model User {
   created_at         DateTime  @default(now()) @db.Timestamptz(6)
 
   // Relations
-  owned_groups      Group[]           @relation("GroupOwner")
-  members           GroupMember[]
-  devices           PushDevice[]
-  call_participants CallParticipant[]
-  created_invites   Invite[]          @relation("InviteCreator")
-  used_invites      Invite[]          @relation("InviteUser")
-  received_invites  Invite[]          @relation("InvitedUser")
+  owned_groups              Group[]                 @relation("GroupOwner")
+  members                   GroupMember[]
+  devices                   PushDevice[]
+  call_participants         CallParticipant[]
+  created_invites           Invite[]                @relation("InviteCreator")
+  used_invites              Invite[]                @relation("InviteUser")
+  received_invites          Invite[]                @relation("InvitedUser")
+  live_activity_push_tokens CallLiveActivityToken[]
 }
 
 enum Cadence {
@@ -109,8 +110,9 @@ model CallSession {
   live_activity_tokens  Json?
 
   // Relations
-  group        Group             @relation(fields: [group_id], references: [id], onDelete: Cascade)
-  participants CallParticipant[]
+  group                     Group                   @relation(fields: [group_id], references: [id], onDelete: Cascade)
+  participants              CallParticipant[]
+  live_activity_push_tokens CallLiveActivityToken[]
 
   @@index([group_id])
   @@index([status])
@@ -133,6 +135,27 @@ model CallParticipant {
 
   @@index([call_id])
   @@index([user_id])
+}
+
+// Per-activity Live Activity push token: addresses one running activity on one device.
+// A table rather than a column on CallSession because a Json column is a read-modify-write
+// lost-update hazard when multiple devices register concurrently at call start.
+model CallLiveActivityToken {
+  id         String   @id @default(uuid())
+  call_id    String
+  user_id    String
+  push_token String
+  updated_at DateTime @updatedAt @db.Timestamptz(6)
+
+  call CallSession @relation(fields: [call_id], references: [id], onDelete: Cascade)
+  user User        @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  // Keyed on push_token, not user_id: a rotated token lands as a second row rather than
+  // replacing the first. Deliberately not fixed here — stage 8's fan-out already deletes a
+  // row when APNs returns BadDeviceToken/Unregistered for it, so a stale row from rotation
+  // self-heals at the next broadcast. Do not add a second cleanup mechanism for this.
+  @@unique([call_id, push_token])
+  @@index([call_id])
 }
 
 model PushDevice {
