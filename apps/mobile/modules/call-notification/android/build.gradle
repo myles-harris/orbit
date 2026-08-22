@@ -1,0 +1,28 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.callnotification'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.callnotification"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // OrbitFirebaseMessagingService subclasses ExpoFirebaseMessagingService and reads
+  // com.google.firebase.messaging.RemoteMessage; CallNotificationHelper builds a
+  // NotificationCompat notification directly. expo-notifications declares all three as
+  // `implementation`, so they don't reach us transitively without restating them here.
+  implementation project(':expo-notifications')
+  implementation 'com.google.firebase:firebase-messaging:24.0.1'
+  implementation 'androidx.core:core:1.6.0'
+}
