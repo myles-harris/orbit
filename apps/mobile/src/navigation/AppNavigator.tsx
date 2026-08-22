@@ -95,6 +95,7 @@ const linking = {
   config: {
     screens: {
       JoinInvite: 'invite/:code',
+      GroupDetail: 'group/:groupId',
     },
   },
 };

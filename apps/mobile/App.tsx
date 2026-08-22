@@ -63,6 +63,14 @@ function AppContent() {
 
   // Track active call presence state
   const liveActivityIdRef = useRef<string | null>(null);
+  // callIds started locally this session. The reconcile fetch below can be in flight
+  // for several hundred ms; if a push arrives and starts an activity for a call the
+  // fetch's snapshot predates, this set keeps it out of the destructive sweep.
+  const startedCallIdsRef = useRef<Set<string>>(new Set());
+  const pushTokenRef = useRef<string | null>(null);
+  const ptsTokenRef = useRef<string | null>(null);
+  const ptsSentRef = useRef<string | null>(null);
+  const ptsInFlightRef = useRef(false);
 
   // Android: ensure the ongoing call notification channel exists (used by CallNotificationHelper).
   // Must match CallNotificationHelper.ensureChannel — Android locks sound/importance at
@@ -161,41 +169,81 @@ function AppContent() {
     seedTimezone();
   }, [isAuthenticated]);
 
-  // Sweep any stale Live Activities left over from a previous session/crash
+  // Reconcile Live Activities against server truth on launch: end orphans left by a
+  // crash or force-quit, but never touch an activity for a call that is still active.
+  // On failure we deliberately do nothing: a stale activity is a far smaller defect
+  // than destroying the countdown for a call in progress.
   useEffect(() => {
-    if (isAuthenticated && Platform.OS === 'ios' && CallLiveActivity) {
-      CallLiveActivity.endAllActivitiesAsync().catch(() => {});
-    }
+    if (!isAuthenticated || Platform.OS !== 'ios' || !CallLiveActivity) return;
+    (async () => {
+      try {
+        const client = await createAuthenticatedApiClient();
+        const { callIds } = await client.get<{ callIds: string[] }>('/me/calls/active');
+        // Union with locally-started calls: startActivityAsync is a fast, same-process
+        // native call, so any call started while this fetch was in flight is already in
+        // startedCallIdsRef by the time we get here, even though the fetch's snapshot
+        // predates it.
+        const keep = new Set([...callIds, ...startedCallIdsRef.current]);
+        await CallLiveActivity!.endActivitiesExceptAsync([...keep]);
+      } catch (e) {
+        console.warn('[presence] Live Activity reconcile skipped:', e);
+      }
+    })();
   }, [isAuthenticated]);
+
+  // The PTS token and the Expo push token arrive from independent async sources.
+  // Whichever lands second triggers the upload; either alone is not enough because
+  // the server keys the PTS token onto an existing PushDevice row.
+  const flushPtsRegistration = useCallback(async () => {
+    const device_token = pushTokenRef.current;
+    const pts_token = ptsTokenRef.current;
+    if (!device_token || !pts_token) return;
+
+    const pair = `${device_token}:${pts_token}`;
+    if (ptsSentRef.current === pair || ptsInFlightRef.current) return;
+
+    ptsInFlightRef.current = true;
+    try {
+      const client = await createAuthenticatedApiClient();
+      await client.post('/me/devices/register-live-activity', { device_token, pts_token });
+      ptsSentRef.current = pair;
+    } catch (e) {
+      // Includes 404 device_not_registered, which means the register-push POST has not
+      // landed yet. Deliberately does NOT set ptsSentRef, so step (d)'s flush after a
+      // successful register-push retries the pair without waiting for a relaunch.
+      console.warn('[presence] PTS registration failed:', e);
+    } finally {
+      ptsInFlightRef.current = false;
+    }
+  }, []);
 
   // Register the push-to-start token (iOS 17.2+) so the server can start a Live Activity
   // on a locked or force-quit device without the app running first.
   useEffect(() => {
     if (!isAuthenticated || Platform.OS !== 'ios' || !CallLiveActivity) return;
 
-    const registerPtsToken = async (token: string) => {
-      try {
-        const deviceToken = await SecureStore.getItemAsync('push_token');
-        if (!deviceToken) return;
-        const accessToken = await SecureStore.getItemAsync('access_token');
-        if (!accessToken) return;
-        const client = new ApiClient(API_URL, () => accessToken);
-        await client.post('/me/devices/register-live-activity', {
-          device_token: deviceToken,
-          pts_token: token,
-        });
-      } catch { /* best-effort */ }
-    };
-
-    // Pull in case a token was issued before JS subscribed (cold-start race).
-    CallLiveActivity.getPushToStartTokenAsync().then((token) => {
-      if (token) registerPtsToken(token);
+    // Seed the device token from a previous session so pairing can complete immediately.
+    SecureStore.getItemAsync('push_token').then((t) => {
+      if (t && !pushTokenRef.current) {
+        pushTokenRef.current = t;
+        flushPtsRegistration();
+      }
     }).catch(() => {});
 
-    // Subscribe to future rotations.
-    const sub = addPushToStartTokenListener(({ token }) => registerPtsToken(token));
+    // Catch a token issued before JS subscribed (cold-start race).
+    CallLiveActivity.getPushToStartTokenAsync().then((token) => {
+      if (token) {
+        ptsTokenRef.current = token;
+        flushPtsRegistration();
+      }
+    }).catch(() => {});
+
+    const sub = addPushToStartTokenListener(({ token }) => {
+      ptsTokenRef.current = token;
+      flushPtsRegistration();
+    });
     return () => sub.remove();
-  }, [isAuthenticated]);
+  }, [isAuthenticated, flushPtsRegistration]);
 
   // Re-run push setup when app comes back to foreground — catches the case where
   // the user denied permissions, went to Settings to grant them, then returned.
@@ -231,8 +279,9 @@ function AppContent() {
     // iOS: start a Live Activity (requires native module + Xcode setup).
     // Skip if push-to-start already started one for this callId so we don't create a duplicate.
     if (Platform.OS === 'ios' && CallLiveActivity) {
-      const alreadyStarted = await CallLiveActivity.hasActivityForCall(callId).catch(() => false);
-      if (alreadyStarted) return;
+      startedCallIdsRef.current.add(callId);
+      const existingId = await CallLiveActivity.activityIdForCall(callId).catch(() => null);
+      if (existingId) { liveActivityIdRef.current = existingId; return; }
 
       // End any previous Live Activity first
       if (liveActivityIdRef.current) {
@@ -284,7 +333,13 @@ function AppContent() {
           token: pushToken,
           platform: Platform.OS as 'ios' | 'android',
         });
+        // Order matters: the server keys the PTS token onto an existing PushDevice row,
+        // so pushTokenRef must not be populated until register-push has succeeded.
+        // Setting it earlier lets flushPtsRegistration fire against a row that does not
+        // exist yet and burn its one attempt on a 404.
+        pushTokenRef.current = pushToken;
         await SecureStore.setItemAsync('push_token', pushToken);
+        flushPtsRegistration();
         console.log('Push token registered with backend');
       }
     } catch (error) {
