@@ -23,7 +23,7 @@ jest.mock('../services/notifications', () => ({
   notifications: {
     sendPushTokens: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
     sendToBuckets: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
-    startLiveActivities: jest.fn().mockResolvedValue(undefined),
+    startLiveActivities: jest.fn().mockResolvedValue([]),
   },
 }));
 

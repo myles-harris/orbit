@@ -168,10 +168,16 @@ meRouter.post('/devices/register-live-activity', requireJwt, async (req, res) =>
   try {
     const userId = (req as any).userId as string;
     // Scope the update by user_id so users cannot overwrite each other's tokens.
-    await prisma.pushDevice.updateMany({
+    const result = await prisma.pushDevice.updateMany({
       where: { token: parsed.data.device_token, user_id: userId },
       data: { live_activity_pts_token: parsed.data.pts_token, pts_updated_at: new Date() },
     });
+
+    if (result.count === 0) {
+      console.warn(`[POST /me/devices/register-live-activity] No device row for user ${userId}, PTS token dropped`);
+      return res.status(404).json({ error: 'device_not_registered' });
+    }
+
     res.json({ ok: true });
   } catch (error) {
     console.error('[POST /me/devices/register-live-activity] Error:', error);
@@ -248,6 +254,28 @@ meRouter.post('/calls/leave', requireJwt, async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[POST /me/calls/leave] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+/**
+ * Active calls across all of the user's groups. The client uses this to reconcile
+ * iOS Live Activities on launch: any activity whose callId is absent here is
+ * orphaned (crash, force-quit) and safe to end.
+ */
+meRouter.get('/calls/active', requireJwt, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    const calls = await prisma.callSession.findMany({
+      where: {
+        status: 'active',
+        group: { members: { some: { user_id: userId } } },
+      },
+      select: { id: true },
+    });
+    res.json({ callIds: calls.map((c) => c.id) });
+  } catch (error) {
+    console.error('[GET /me/calls/active] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });

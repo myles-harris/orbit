@@ -272,6 +272,44 @@ describe('startLiveActivities', () => {
     expect(payload.aps.timestamp).toBeGreaterThanOrEqual(before);
     expect(payload.aps.timestamp).toBeLessThanOrEqual(after);
   });
+
+  it('returns the tokens APNs accepted', async () => {
+    mockSendApnsRaw.mockResolvedValueOnce({ ok: true, status: 200 });
+    const result = await notifications.startLiveActivities(
+      ['pts-token-6'],
+      { callId: 'c', groupId: 'g' },
+      { groupName: 'T', callType: 'scheduled' },
+    );
+    expect(result).toEqual(['pts-token-6']);
+  });
+
+  it('excludes a rejected token from the returned array without failing the others', async () => {
+    mockSendApnsRaw
+      .mockResolvedValueOnce({ ok: false, status: 410, reason: 'Unregistered' })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    const result = await notifications.startLiveActivities(
+      ['pts-bad', 'pts-good'],
+      { callId: 'c', groupId: 'g' },
+      { groupName: 'T', callType: 'scheduled' },
+    );
+    expect(result).toEqual(['pts-good']);
+  });
+
+  it('returns [] and logs STUB when APNs is unconfigured', async () => {
+    const apnsMock = jest.requireMock('../services/apns') as { isApnsConfigured: () => boolean };
+    const orig = apnsMock.isApnsConfigured;
+    apnsMock.isApnsConfigured = () => false;
+    try {
+      const result = await notifications.startLiveActivities(
+        ['pts-token-7'],
+        { callId: 'c', groupId: 'g' },
+        { groupName: 'T', callType: 'scheduled' },
+      );
+      expect(result).toEqual([]);
+    } finally {
+      apnsMock.isApnsConfigured = orig;
+    }
+  });
 });
 
 // ─── POST /me/devices/register-live-activity ─────────────────────────────────
@@ -321,6 +359,100 @@ describe('POST /me/devices/register-live-activity', () => {
       .set('Authorization', `Bearer ${userAToken}`)
       .send({ device_token: 'device-token-a' });
     expect(res.status).toBe(400);
+  });
+
+  it('returns 404 when no device row matches the token', async () => {
+    const res = await request(app)
+      .post('/me/devices/register-live-activity')
+      .set('Authorization', `Bearer ${userAToken}`)
+      .send({ device_token: 'no-such-device-token', pts_token: 'pts-hex-token' });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('device_not_registered');
+  });
+
+  it('returns 404 when the device token belongs to a different user (scoped update is a no-op)', async () => {
+    const res = await request(app)
+      .post('/me/devices/register-live-activity')
+      .set('Authorization', `Bearer ${userAToken}`)
+      .send({ device_token: 'device-token-b', pts_token: 'attacker-token' });
+    expect(res.status).toBe(404);
+  });
+});
+
+// ─── GET /me/calls/active ──────────────────────────────────────────────────
+
+describe('GET /me/calls/active', () => {
+  it('returns an empty list when the user has no active calls', async () => {
+    const user = await createTestUser({ username: 'active_calls_none' });
+    const token = createAccessToken(user.id);
+
+    const res = await request(app)
+      .get('/me/calls/active')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.callIds).toEqual([]);
+  });
+
+  it('returns the call id for an active call in one of the user\'s groups', async () => {
+    const user = await createTestUser({ username: 'active_calls_member' });
+    const token = createAccessToken(user.id);
+
+    const group = await prisma.group.create({
+      data: { name: 'Active Calls Group', cadence: 'daily', call_duration_minutes: 30, owner_id: user.id },
+    });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: user.id, role: 'owner' },
+    });
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'scheduled',
+        room_name: `active-calls-room-${group.id}`,
+      },
+    });
+
+    const res = await request(app)
+      .get('/me/calls/active')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.callIds).toEqual([call.id]);
+  });
+
+  it('does not include an active call from a group the user does not belong to', async () => {
+    const owner = await prisma.user.create({
+      data: {
+        phone: `+1555${Math.floor(1000000 + Math.random() * 9000000)}`,
+        username: `active_calls_owner_${Math.random().toString(36).slice(2, 8)}`,
+        time_zone: 'UTC',
+      },
+    });
+    const group = await prisma.group.create({
+      data: { name: 'Other Group', cadence: 'daily', call_duration_minutes: 30, owner_id: owner.id },
+    });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: owner.id, role: 'owner' },
+    });
+    await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'scheduled',
+        room_name: `other-group-room-${group.id}`,
+      },
+    });
+
+    const outsider = await createTestUser({ username: 'active_calls_outsider' });
+    const token = createAccessToken(outsider.id);
+
+    const res = await request(app)
+      .get('/me/calls/active')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.callIds).toEqual([]);
   });
 });
 

@@ -14,7 +14,7 @@ jest.mock('../services/notifications', () => ({
   notifications: {
     sendPushTokens: jest.fn().mockResolvedValue({ success: 1, failure: 0 }),
     sendToBuckets: jest.fn().mockResolvedValue({ success: 1, failure: 0 }),
-    startLiveActivities: jest.fn().mockResolvedValue(undefined),
+    startLiveActivities: jest.fn().mockResolvedValue([]),
   },
 }));
 
@@ -250,6 +250,82 @@ describe('scheduler.activateDueCalls', () => {
 
     expect(updatedSpontaneous!.status).toBe('ended');
     expect(updatedScheduled!.status).toBe('active');
+  });
+});
+
+// ─── activateCall: per-device Live Activity coverage ───────────────────────
+
+describe('scheduler.activateCall Live Activity coverage', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('suppresses the banner for a device whose Live Activity was delivered', async () => {
+    const user = await createTestUser();
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'ios-device-1', platform: 'ios', live_activity_pts_token: 'pts-1' },
+    });
+    const group = await createTestGroup(user.id);
+    await createScheduledCall(group.id);
+
+    (notifications.startLiveActivities as jest.Mock).mockResolvedValueOnce(['pts-1']);
+
+    await scheduler.activateDueCalls();
+
+    expect(notifications.sendToBuckets).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the banner when the Live Activity push is not accepted', async () => {
+    const user = await createTestUser();
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'ios-device-2', platform: 'ios', live_activity_pts_token: 'pts-2' },
+    });
+    const group = await createTestGroup(user.id);
+    await createScheduledCall(group.id);
+
+    (notifications.startLiveActivities as jest.Mock).mockResolvedValueOnce([]);
+
+    await scheduler.activateDueCalls();
+
+    expect(notifications.sendToBuckets).toHaveBeenCalledTimes(1);
+    const [members] = (notifications.sendToBuckets as jest.Mock).mock.calls[0];
+    const tokens = members.flatMap((m: any) => m.user.devices.map((d: any) => d.token));
+    expect(tokens).toContain('ios-device-2');
+  });
+
+  it('sends the banner only to the uncovered device when a member has two devices', async () => {
+    const user = await createTestUser();
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'ios-covered', platform: 'ios', live_activity_pts_token: 'pts-3' },
+    });
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'android-uncovered', platform: 'android' },
+    });
+    const group = await createTestGroup(user.id);
+    await createScheduledCall(group.id);
+
+    (notifications.startLiveActivities as jest.Mock).mockResolvedValueOnce(['pts-3']);
+
+    await scheduler.activateDueCalls();
+
+    expect(notifications.sendToBuckets).toHaveBeenCalledTimes(1);
+    const [members] = (notifications.sendToBuckets as jest.Mock).mock.calls[0];
+    const tokens = members.flatMap((m: any) => m.user.devices.map((d: any) => d.token));
+    expect(tokens).toEqual(['android-uncovered']);
+  });
+
+  it('does not call startLiveActivities and banners everyone when no device has a PTS token', async () => {
+    const user = await createTestUser();
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'plain-ios-device', platform: 'ios' },
+    });
+    const group = await createTestGroup(user.id);
+    await createScheduledCall(group.id);
+
+    await scheduler.activateDueCalls();
+
+    expect(notifications.startLiveActivities).not.toHaveBeenCalled();
+    expect(notifications.sendToBuckets).toHaveBeenCalledTimes(1);
   });
 });
 
