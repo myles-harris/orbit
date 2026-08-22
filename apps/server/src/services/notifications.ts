@@ -373,10 +373,10 @@ export const notifications = {
     attributes: { callId: string; groupId: string },
     state: CallLiveActivityState,
     staleAt?: Date,
-  ) {
+  ): Promise<string[]> {
     if (!isApnsConfigured()) {
       console.log(`[push] STUB: Would send Live Activity start push to ${ptsTokens.length} device(s)`);
-      return;
+      return [];
     }
 
     const payload = {
@@ -390,16 +390,31 @@ export const notifications = {
       },
     };
 
-    for (const token of ptsTokens) {
-      const r = await sendApnsRaw(token, payload, {
-        pushType: 'liveactivity',
-        topic: `${BUNDLE}.push-type.liveactivity`,
-        priority: 10,
-      });
-      if (!r.ok) {
-        console.error(`[push] Live Activity start push failed (${r.status}): ${r.reason}`);
-      }
+    // Bounded concurrency. Groups are small today, but this call sits ahead of the
+    // alert push on the activation path, so an unbounded fan-out on a large group
+    // would delay every banner behind it.
+    const CONCURRENCY = 16;
+    const delivered: string[] = [];
+    for (let i = 0; i < ptsTokens.length; i += CONCURRENCY) {
+      const slice = ptsTokens.slice(i, i + CONCURRENCY);
+      const results = await Promise.all(
+        slice.map(async (token) => {
+          const r = await sendApnsRaw(token, payload, {
+            pushType: 'liveactivity',
+            topic: `${BUNDLE}.push-type.liveactivity`,
+            priority: 10,
+          });
+          if (!r.ok) {
+            console.error(`[push] Live Activity start push failed (${r.status}): ${r.reason}`);
+            return null;
+          }
+          return token;
+        }),
+      );
+      for (const t of results) if (t !== null) delivered.push(t);
     }
+
+    return delivered;
   },
 
   /**

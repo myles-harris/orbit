@@ -357,34 +357,68 @@ export const scheduler = {
         endsAt: call.ends_at?.toISOString() ?? '',
       };
 
-      await notifications.sendToBuckets(
-        group.members,
-        `${group.name} is calling!`,
-        'Tap to join the scheduled call',
-        callData,
-      );
+      const ptsByToken = new Map<string, string>();
+      for (const m of group.members as any[]) {
+        if (m.is_muted) continue;
+        for (const d of m.user.devices) {
+          if (d.platform === 'ios' && d.live_activity_pts_token) {
+            ptsByToken.set(d.live_activity_pts_token, d.token);
+          }
+        }
+      }
 
-      // iOS 17.2+: start Live Activity on locked/force-quit devices via push-to-start.
-      const ptsTokens = group.members
-        .filter((m: any) => !m.is_muted)
-        .flatMap((m: any) =>
-          m.user.devices
-            .filter((d: any) => d.platform === 'ios' && d.live_activity_pts_token)
-            .map((d: any) => d.live_activity_pts_token as string)
-        );
-
-      if (ptsTokens.length > 0) {
-        await notifications.startLiveActivities(
-          ptsTokens,
+      let delivered = new Set<string>();
+      if (ptsByToken.size > 0) {
+        const ok = await notifications.startLiveActivities(
+          [...ptsByToken.keys()],
           { callId, groupId: group.id },
           {
             groupName: group.name,
             callType: 'scheduled',
             endsAtMs: call.ends_at ? call.ends_at.getTime() : undefined,
+            // STAGE 8 INSERTION POINT: `participantCount: 0` goes here.
+            // Until it does, the field is absent and the widget's count line
+            // does not render. That is the intended pre-stage-8 state.
           },
           call.ends_at ?? undefined,
         );
+        delivered = new Set(ok);
+      } else {
+        console.log(`[scheduler] No Live Activity PTS tokens for group ${group.id}, locked-device countdown will not appear`);
       }
+
+      // Coverage is per DEVICE, not per member: sendToBuckets delivers to every token a
+      // member owns, so a member-level filter would send the banner to the same iPhone
+      // that just received a Live Activity whenever the member has any second device.
+      const deliveredDeviceTokens = new Set<string>();
+      for (const pts of delivered) {
+        const deviceToken = ptsByToken.get(pts);
+        if (deviceToken) deliveredDeviceTokens.add(deviceToken);
+      }
+
+      const uncovered = (group.members as any[])
+        .map((m) => ({
+          ...m,
+          user: {
+            ...m.user,
+            devices: m.user.devices.filter((d: any) => !deliveredDeviceTokens.has(d.token)),
+          },
+        }))
+        .filter((m) => m.user.devices.length > 0);
+
+      if (uncovered.length > 0) {
+        await notifications.sendToBuckets(
+          uncovered,
+          `${group.name} is calling!`,
+          'Tap to join the scheduled call',
+          callData,
+        );
+      }
+
+      console.log(
+        `[scheduler] call ${callId}: live activity ${delivered.size}/${ptsByToken.size} device(s), ` +
+        `alert push to ${uncovered.length}/${group.members.length} member(s)`
+      );
 
       console.log(`[scheduler] Activated scheduled call ${callId} for group ${group.name}`);
     } catch (error) {
