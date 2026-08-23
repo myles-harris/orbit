@@ -27,3 +27,14 @@ apps/mobile/android/
 /ios/
 /android/
 /app.json
+
+# Secrets
+apps/mobile/google-service-account.json
+*firebase-adminsdk*.json
+
+# OS and build artifacts
+.DS_Store
+**/.DS_Store
+apps/mobile/dist/
+apps/server/dist/
+dump.rdb
