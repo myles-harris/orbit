@@ -28,6 +28,7 @@
     },
     "android": {
       "package": "com.mylesharris.orbit",
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "CAMERA",
         "RECORD_AUDIO",
