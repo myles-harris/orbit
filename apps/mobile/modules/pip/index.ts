@@ -5,21 +5,27 @@ type PipModuleType = {
   isSupported(): boolean;
 };
 
-let PipModule: PipModuleType;
+const noop: PipModuleType = {
+  enterPipMode: () => {},
+  isSupported: () => false,
+};
+
+let PipModule: PipModuleType = noop;
 
 if (Platform.OS === 'android') {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { requireNativeModule } = require('expo-modules-core');
-  const Native = requireNativeModule('Pip');
-  PipModule = {
-    enterPipMode: () => Native.enterPipMode(),
-    isSupported: () => Native.isSupported?.() ?? false,
-  };
-} else {
-  PipModule = {
-    enterPipMode: () => {},
-    isSupported: () => false,
-  };
+  try {
+    const { requireNativeModule } = require('expo-modules-core');
+    const Native = requireNativeModule('Pip');
+    PipModule = {
+      enterPipMode: () => Native.enterPipMode(),
+      isSupported: () => Native.isSupported?.() ?? false,
+    };
+  } catch (e) {
+    // modules/pip has no android/build.gradle, so expo-modules-autolinking skips it
+    // and this throws at import, taking CallScreen's import chain down with it.
+    // Degrade to no-op until the deferred Android work lands. The warn is deliberate.
+    console.warn('[Pip] native module unavailable, Android PiP disabled', e);
+  }
 }
 
 export default PipModule;
