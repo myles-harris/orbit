@@ -35,8 +35,10 @@ public class CallLiveActivityModule: Module {
       let groupName = state["groupName"] as? String ?? ""
       let callType = state["callType"] as? String ?? "spontaneous"
       let endsAtMs = state["endsAt"] as? Double
+      let participantCount = state["participantCount"] as? Int
       let contentState = CallActivityAttributes.CallState(
-        groupName: groupName, callType: callType, endsAtMs: endsAtMs)
+        groupName: groupName, callType: callType, endsAtMs: endsAtMs,
+        participantCount: participantCount)
       let attributes = CallActivityAttributes(callId: callId, groupId: groupId)
       let endsAt = endsAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
       do {

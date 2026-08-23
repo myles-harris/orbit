@@ -6,6 +6,9 @@ type CallNotificationModuleType = {
     callId: string,
     groupId: string,
     endsAtMs: number | null,
+    participantCount: number | null,
+    ongoing: boolean,
+    timeoutAtMs: number | null,
   ): void;
   cancelOngoingCall(): void;
 };
@@ -23,8 +26,8 @@ if (Platform.OS === 'android') {
     const { requireNativeModule } = require('expo-modules-core');
     const Native = requireNativeModule('CallNotification');
     CallNotification = {
-      postOngoingCall: (groupName, callId, groupId, endsAtMs) =>
-        Native.postOngoingCall(groupName, callId, groupId, endsAtMs),
+      postOngoingCall: (groupName, callId, groupId, endsAtMs, participantCount, ongoing, timeoutAtMs) =>
+        Native.postOngoingCall(groupName, callId, groupId, endsAtMs, participantCount, ongoing, timeoutAtMs),
       cancelOngoingCall: () => Native.cancelOngoingCall(),
     };
   } catch (e) {

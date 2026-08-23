@@ -5,6 +5,7 @@ export interface CallActivityState {
   callType: 'spontaneous' | 'scheduled';
   /** Epoch milliseconds. Only set for scheduled calls. */
   endsAt?: number;
+  participantCount?: number;
 }
 
 type CallLiveActivityModuleType = {

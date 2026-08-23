@@ -289,6 +289,7 @@ function AppContent() {
       CallNotification.postOngoingCall(
         groupName, callId, groupId,
         endsAt ? new Date(endsAt).getTime() : null,
+        null, true, null,
       );
     }
 
