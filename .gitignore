@@ -27,3 +27,6 @@ apps/mobile/android/
 /ios/
 /android/
 /app.json
+apps/mobile/google-service-account.json
+./apps/mobile/google-service-account.json
+./apps/mobile/google-service-account.json
