@@ -10,11 +10,13 @@ class CallNotificationModule : Module() {
     Function("postOngoingCall") { groupName: String, callId: String, groupId: String, endsAtMs: Double? ->
       val context = appContext.reactContext ?: return@Function
       CallNotificationHelper.post(context, groupName, callId, groupId, endsAtMs?.toLong())
+      null
     }
 
     Function("cancelOngoingCall") {
       val context = appContext.reactContext ?: return@Function
       CallNotificationHelper.cancel(context)
+      null
     }
   }
 }
