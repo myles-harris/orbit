@@ -13,23 +13,29 @@ object CallNotificationHelper {
 
   // [fix 11] The client cannot know the participant count. startCallPresence fires on
   // notification tap, cold start, and foreground receive, any of which can happen after
-  // the server has already pushed a count. If the client asserted 0 it would silently
-  // overwrite the server's value on this same NOTIFICATION_ID. Callers that don't know
-  // the count pass null and we reuse the last one the server sent.
+  // the server has already pushed a count. If the client asserted a number it would
+  // silently overwrite the server's value on this same NOTIFICATION_ID. Callers that
+  // don't know the count pass null and we reuse the last one the server sent.
+  //
+  // NULLABLE, not Int = 0. Three distinct states have to stay distinguishable:
+  //   null -> no count has ever been received; render no count phrase at all
+  //   0    -> the server said zero (everyone left); render "0 in the call"
+  //   n    -> the server said n
+  // An Int sentinel of 0 collapses the first two. That is wrong from stage 8 onward
+  // (a legitimately empty call must read "0 in the call"), and before stage 8 it makes
+  // every Android notification read "0 in the call" for the entire window between this
+  // stage shipping and the fan-out deploying. iOS avoids that by gating its count line
+  // on `participantCount != nil`; this is the Android equivalent.
   //
   // [v2] Scoped by callId. One NOTIFICATION_ID is reused across calls, so without this
   // a count from a previous call leaks onto the next call's card whenever the previous
   // one was not cancelled first (crash, force-stop, preemption).
-  @Volatile private var lastKnownCount: Int = 0
+  //
+  // NOTE: this is process state, and stage 0b confirmed FCM cold-starts the process to
+  // deliver. On a cold start it is null, so a card posted before any presence push
+  // renders no count phrase, which is correct. Verify on device (L7).
+  @Volatile private var lastKnownCount: Int? = null
   @Volatile private var lastCountCallId: String? = null
-
-  // [divergence from brief] Stage 2's iOS Live Activity gates its count line on
-  // participantCount != nil, so nothing renders before stage 8 starts sending pushes.
-  // Android's notification text has no such nil state to gate on — count defaults to
-  // 0 — so without this it would show "0 in the call" on every call from this stage's
-  // release until stage 8 ships. Track whether a real count has ever been received and
-  // omit the count phrase entirely until then, to match iOS's behaviour.
-  @Volatile private var hasKnownCount: Boolean = false
 
   fun post(
     context: Context,
@@ -44,15 +50,11 @@ object CallNotificationHelper {
     ensureChannel(context)
 
     if (callId != lastCountCallId) {
-      lastKnownCount = 0
+      lastKnownCount = null
       lastCountCallId = callId
-      hasKnownCount = false
     }
     val count = participantCount ?: lastKnownCount
-    if (participantCount != null) {
-      lastKnownCount = participantCount
-      hasKnownCount = true
-    }
+    if (participantCount != null) lastKnownCount = participantCount
 
     val launchIntent = context.packageManager
       .getLaunchIntentForPackage(context.packageName)?.apply {
@@ -74,17 +76,19 @@ object CallNotificationHelper {
       .setCategory(NotificationCompat.CATEGORY_CALL)
       .setPriority(NotificationCompat.PRIORITY_HIGH)
 
-    val countText = if (!hasKnownCount) null
-      else if (count == 1) "1 in the call" else "$count in the call"
+    // Null count means no presence push has arrived for this call yet, so the phrase
+    // is omitted entirely rather than asserting a number we do not have.
+    val countText = count?.let { if (it == 1) "1 in the call" else "$it in the call" }
+
     if (endsAtMs != null) {
       builder
-        .setContentText(if (countText != null) "$countText · Tap to join" else "Tap to join")
+        .setContentText(countText?.let { "$it · Tap to join" } ?: "Tap to join")
         .setWhen(endsAtMs)
         .setUsesChronometer(true)
         .setChronometerCountDown(true)
         .setShowWhen(true)
     } else {
-      builder.setContentText(if (countText != null) "$countText · Tap to join" else "Active call · Tap to join")
+      builder.setContentText(countText?.let { "Active call · $it" } ?: "Active call")
     }
 
     // Expiry: ends_at for scheduled, started_at + 1 h for spontaneous. Spontaneous
@@ -99,9 +103,9 @@ object CallNotificationHelper {
 
   fun cancel(context: Context) {
     NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
-    lastKnownCount = 0
+    // Null, not 0, or the conflation returns on the second call in a session.
+    lastKnownCount = null
     lastCountCallId = null
-    hasKnownCount = false
   }
 
   private fun ensureChannel(context: Context) {
