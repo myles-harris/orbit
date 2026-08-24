@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing, PanResponder, Dimensions, Alert, AppState, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, Pressable, StyleSheet, Animated, Easing, PanResponder, Dimensions, Alert, AppState, BackHandler, AccessibilityInfo, Platform } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
@@ -7,6 +7,7 @@ import Daily, { DailyCall, DailyParticipant, DailyEventObject, DailyMediaView, R
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { Ionicons } from '@expo/vector-icons';
+import { StatusBar } from 'expo-status-bar';
 import PipModule from '../../modules/pip';
 
 type CallRouteProp = RouteProp<RootStackParamList, 'Call'>;
@@ -639,6 +640,12 @@ export default function CallScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Call video is always on black; the app-level StatusBar follows the theme
+          and would render dark glyphs on black in light mode once the screen goes
+          full-screen. expo-status-bar merges mounted StatusBars in mount order, so
+          this wins while the call is up and reverts on unmount. */}
+      <StatusBar style="light" />
+
       {/* Video fills the entire screen */}
       <View style={StyleSheet.absoluteFill}>
         {renderLayout()}
