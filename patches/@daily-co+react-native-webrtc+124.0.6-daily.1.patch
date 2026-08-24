@@ -1,12 +1,31 @@
 diff --git a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
-index 532276a..2af10d9 100644
+index 532276a..30813f2 100644
 --- a/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
 +++ b/node_modules/@daily-co/react-native-webrtc/ios/RCTWebRTC/VideoCaptureController.m
-@@ -3,8 +3,12 @@
+@@ -3,8 +3,31 @@
  #import "VideoCaptureController.h"
  
  #import <React/RCTLog.h>
 +#import <UIKit/UIKit.h>
++
++// Orbit: capture diagnostics, Debug builds only.
++//
++// These deliberately use NSLog rather than RCTLog: React-Core ships as a prebuilt binary
++// framework in this app, so RCT_DEBUG is not overridable per scheme and RCTLog compiles out
++// to nothing even in a Debug build — which is why the original [MultiCam] logging was
++// invisible for the entire investigation. But NSLog does NOT compile out, so using it
++// directly would ship every one of these lines to release, where they cost I/O on the
++// capture path and leak implementation detail into the device console.
++//
++// The `if (0)` form keeps the arguments compiled and type-checked, so format specifiers are
++// still validated and variables used only by a log do not become unused-variable warnings
++// in release; the optimiser drops the call.
++#if DEBUG
++#define OrbitLog(...) NSLog(__VA_ARGS__)
++#else
++#define OrbitLog(...) do { if (0) NSLog(__VA_ARGS__); } while (0)
++#endif
++
 +#import <WebRTC/RTCCVPixelBuffer.h>
 +#import <WebRTC/RTCVideoFrame.h>
 +#import <WebRTC/RTCVideoCapturer.h>
@@ -16,7 +35,7 @@ index 532276a..2af10d9 100644
  
  @property(nonatomic, strong) RTCCameraVideoCapturer *capturer;
  @property(nonatomic, strong) AVCaptureDeviceFormat *selectedFormat;
-@@ -15,8 +19,45 @@ @interface VideoCaptureController ()
+@@ -15,8 +38,47 @@ @interface VideoCaptureController ()
  @property(nonatomic, assign) int height;
  @property(nonatomic, assign) int frameRate;
  
@@ -49,20 +68,22 @@ index 532276a..2af10d9 100644
 +
  @end
  
-+// Orbit: at most one AVCaptureMultiCamSession may exist in the process. stopCapture does
-+// a SOFT stop for multicam — it clears `running` but deliberately leaves the session live
-+// so a camera flip stays instant — which means a controller that has ended its call is
-+// still holding both cameras until it deallocs. A controller created for the next call
-+// then builds a second multicam session on hardware the first one still owns, and the new
-+// session runs but never delivers a frame. That is the "leave and rejoin and it is still
-+// black" case. A weak reference is enough: we only ever need to tell the previous owner to
-+// let go, and if it has already deallocated there is nothing to do.
++// Orbit: at most one AVCaptureMultiCamSession may exist in the process. A second session
++// built while another still owns the cameras starts cleanly, reports isRunning, accepts
++// camera switches, and never delivers a single frame — the "leave the call, rejoin, still
++// black" case.
++//
++// stopCapture now tears the session down, so the common path releases the cameras
++// promptly. This remains as the backstop for the paths that do not go through stopCapture
++// at all: a controller dropped without its track being released relies on dealloc, and
++// dealloc timing is not ours to control. A weak reference is enough — we only ever need to
++// tell a previous owner to let go, and if it has already deallocated there is nothing to do.
 +static __weak VideoCaptureController *sOrbitActiveMultiCamOwner = nil;
 +
  @implementation VideoCaptureController
  
  - (instancetype)initWithCapturer:(RTCCameraVideoCapturer *)capturer andConstraints:(NSDictionary *)constraints {
-@@ -24,17 +65,69 @@ - (instancetype)initWithCapturer:(RTCCameraVideoCapturer *)capturer andConstrain
+@@ -24,17 +86,69 @@ - (instancetype)initWithCapturer:(RTCCameraVideoCapturer *)capturer andConstrain
      if (self) {
          self.capturer = capturer;
          self.running = NO;
@@ -112,7 +133,7 @@ index 532276a..2af10d9 100644
 +        if (self.multiCamRunning) {
 +            self.selectedFormat = self.usingFrontCamera ? self.frontFormat : self.backFormat;
 +            self.running = YES;
-+            NSLog(@"[Orbit][MultiCam] Camera switched to %@", self.usingFrontCamera ? @"front" : @"back");
++            OrbitLog(@"[Orbit][MultiCam] Camera switched to %@", self.usingFrontCamera ? @"front" : @"back");
 +            return;
 +        }
 +        // Orbit: multicam is foreground-only. It cannot capture while backgrounded —
@@ -132,7 +153,7 @@ index 532276a..2af10d9 100644
      if (self.deviceId) {
          self.device = [AVCaptureDevice deviceWithUniqueID:self.deviceId];
      }
-@@ -47,7 +140,6 @@ - (void)startCapture {
+@@ -47,7 +161,6 @@ - (void)startCapture {
  
      if (!self.device) {
          RCTLogWarn(@"[VideoCaptureController] No capture devices found!");
@@ -140,7 +161,7 @@ index 532276a..2af10d9 100644
          return;
      }
  
-@@ -56,28 +148,21 @@ - (void)startCapture {
+@@ -56,28 +169,21 @@ - (void)startCapture {
                                                 withTargetHeight:self.height];
      if (!format) {
          RCTLogWarn(@"[VideoCaptureController] No valid formats for device %@", self.device);
@@ -175,7 +196,7 @@ index 532276a..2af10d9 100644
      dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
  
      __weak VideoCaptureController *weakSelf = self;
-@@ -95,14 +180,601 @@ - (void)startCapture {
+@@ -95,14 +201,614 @@ - (void)startCapture {
                          }];
  
      dispatch_semaphore_wait(semaphore, DISPATCH_TIME_FOREVER);
@@ -195,7 +216,7 @@ index 532276a..2af10d9 100644
 +        // NSLog rather than RCTLog: React-Core ships as a prebuilt binary framework here,
 +        // so RCT_DEBUG is not overridable per scheme and RCTLog compiles out to nothing
 +        // even in a Debug build. That is why the original [MultiCam] logs never appeared.
-+        NSLog(@"[Orbit][Capture] path=singlecam multitaskingCameraAccess supported=%d enabled=%d",
++        OrbitLog(@"[Orbit][Capture] path=singlecam multitaskingCameraAccess supported=%d enabled=%d",
 +              session.isMultitaskingCameraAccessSupported,
 +              session.multitaskingCameraAccessEnabled);
 +    }
@@ -241,7 +262,7 @@ index 532276a..2af10d9 100644
 +            return;
 +        }
 +        if ([UIApplication sharedApplication].applicationState != UIApplicationStateActive) {
-+            NSLog(@"[Orbit][Swap] controller created while backgrounded — single-cam only");
++            OrbitLog(@"[Orbit][Swap] controller created while backgrounded — single-cam only");
 +            strongSelf.orbitBackgrounded = YES;
 +        }
 +    });
@@ -268,7 +289,7 @@ index 532276a..2af10d9 100644
 +                if (!strongSelf.running || !strongSelf.multiCamRunning) {
 +                    return;
 +                }
-+                NSLog(@"[Orbit][Swap] backgrounding -> single-cam (background capture)");
++                OrbitLog(@"[Orbit][Swap] backgrounding -> single-cam (background capture)");
 +                [strongSelf orbitTearDownMultiCam];
 +                strongSelf.device = nil;
 +                strongSelf.deviceId = nil;
@@ -297,7 +318,7 @@ index 532276a..2af10d9 100644
 +                if (![AVCaptureMultiCamSession isMultiCamSupported]) {
 +                    return;
 +                }
-+                NSLog(@"[Orbit][Swap] foregrounding -> multicam (warm both cameras)");
++                OrbitLog(@"[Orbit][Swap] foregrounding -> multicam (warm both cameras)");
 +                [strongSelf orbitStopSingleCam];
 +                [strongSelf orbitStartCaptureLocked];
 +            }
@@ -342,7 +363,7 @@ index 532276a..2af10d9 100644
 +    // isRunning is YES here, the camera has not been released and no amount of retrying the
 +    // multicam build will help — the fix would be to stop routing background capture through
 +    // RTCCameraVideoCapturer at all and own that session ourselves.
-+    NSLog(@"[Orbit][Swap] single-cam stopped — isRunning=%d inputs=%lu outputs=%lu",
++    OrbitLog(@"[Orbit][Swap] single-cam stopped — isRunning=%d inputs=%lu outputs=%lu",
 +          session.isRunning, (unsigned long)session.inputs.count,
 +          (unsigned long)session.outputs.count);
 +
@@ -380,18 +401,18 @@ index 532276a..2af10d9 100644
 +
 +- (void)orbitCaptureSessionWasInterrupted:(NSNotification *)notification {
 +    NSInteger reason = [notification.userInfo[AVCaptureSessionInterruptionReasonKey] integerValue];
-+    NSLog(@"[Orbit][Capture] session INTERRUPTED reason=%ld%@", (long)reason,
++    OrbitLog(@"[Orbit][Capture] session INTERRUPTED reason=%ld%@", (long)reason,
 +          reason == AVCaptureSessionInterruptionReasonVideoDeviceNotAvailableInBackground
 +              ? @" (VideoDeviceNotAvailableInBackground — multitasking camera access is NOT in effect)"
 +              : @"");
 +}
 +
 +- (void)orbitCaptureSessionInterruptionEnded:(NSNotification *)notification {
-+    NSLog(@"[Orbit][Capture] session interruption ended");
++    OrbitLog(@"[Orbit][Capture] session interruption ended");
 +}
 +
 +- (void)orbitCaptureSessionRuntimeError:(NSNotification *)notification {
-+    NSLog(@"[Orbit][Capture] session RUNTIME ERROR: %@",
++    OrbitLog(@"[Orbit][Capture] session RUNTIME ERROR: %@",
 +          notification.userInfo[AVCaptureSessionErrorKey]);
 +}
 +
@@ -445,7 +466,7 @@ index 532276a..2af10d9 100644
 +    }
 +    NSError *lockErr = nil;
 +    if (![device lockForConfiguration:&lockErr]) {
-+        NSLog(@"[Orbit][MultiCam] could not lock %@ camera to reset format: %@",
++        OrbitLog(@"[Orbit][MultiCam] could not lock %@ camera to reset format: %@",
 +              device.position == AVCaptureDevicePositionFront ? @"front" : @"back", lockErr);
 +        return;
 +    }
@@ -459,7 +480,7 @@ index 532276a..2af10d9 100644
 +    [device unlockForConfiguration];
 +
 +    CMVideoDimensions dim = CMVideoFormatDescriptionGetDimensions(format.formatDescription);
-+    NSLog(@"[Orbit][MultiCam] reset %@ camera to multicam-legal %dx%d",
++    OrbitLog(@"[Orbit][MultiCam] reset %@ camera to multicam-legal %dx%d",
 +          device.position == AVCaptureDevicePositionFront ? @"front" : @"back",
 +          dim.width, dim.height);
 +}
@@ -475,7 +496,7 @@ index 532276a..2af10d9 100644
 +        sOrbitActiveMultiCamOwner = self;
 +    }
 +    if (previousOwner && previousOwner != self) {
-+        NSLog(@"[Orbit][MultiCam] releasing cameras held by a previous controller");
++        OrbitLog(@"[Orbit][MultiCam] releasing cameras held by a previous controller");
 +        @synchronized(previousOwner) {
 +            [previousOwner orbitTearDownMultiCam];
 +            previousOwner.running = NO;
@@ -485,7 +506,7 @@ index 532276a..2af10d9 100644
 +    AVCaptureDevice *frontDev = [self findDeviceForPosition:AVCaptureDevicePositionFront];
 +    AVCaptureDevice *backDev  = [self findDeviceForPosition:AVCaptureDevicePositionBack];
 +    if (!frontDev || !backDev) {
-+        NSLog(@"[Orbit][MultiCam] Could not find both cameras — falling back to single-cam");
++        OrbitLog(@"[Orbit][MultiCam] Could not find both cameras — falling back to single-cam");
 +        return;
 +    }
 +
@@ -510,7 +531,7 @@ index 532276a..2af10d9 100644
 +    AVCaptureDeviceFormat *backFmt  = [self orbitMultiCamFormatForDevice:backDev];
 +    AVCaptureDeviceFormat *frontFmt = [self orbitMultiCamFormatForDevice:frontDev];
 +    if (!backFmt || !frontFmt) {
-+        NSLog(@"[Orbit][MultiCam] no multicam-capable format on %@ — falling back to single-cam",
++        OrbitLog(@"[Orbit][MultiCam] no multicam-capable format on %@ — falling back to single-cam",
 +              !backFmt ? @"back camera" : @"front camera");
 +        return;
 +    }
@@ -523,11 +544,11 @@ index 532276a..2af10d9 100644
 +    // Back camera input
 +    AVCaptureDeviceInput *backInput = [AVCaptureDeviceInput deviceInputWithDevice:backDev error:&err];
 +    if (!backInput || err) {
-+        NSLog(@"[Orbit][MultiCam] Failed to create back camera input: %@", err);
++        OrbitLog(@"[Orbit][MultiCam] Failed to create back camera input: %@", err);
 +        return;
 +    }
 +    if (![session canAddInput:backInput]) {
-+        NSLog(@"[Orbit][MultiCam] Cannot add back camera input");
++        OrbitLog(@"[Orbit][MultiCam] Cannot add back camera input");
 +        return;
 +    }
 +    [session addInputWithNoConnections:backInput];
@@ -536,11 +557,11 @@ index 532276a..2af10d9 100644
 +    err = nil;
 +    AVCaptureDeviceInput *frontInput = [AVCaptureDeviceInput deviceInputWithDevice:frontDev error:&err];
 +    if (!frontInput || err) {
-+        NSLog(@"[Orbit][MultiCam] Failed to create front camera input: %@", err);
++        OrbitLog(@"[Orbit][MultiCam] Failed to create front camera input: %@", err);
 +        return;
 +    }
 +    if (![session canAddInput:frontInput]) {
-+        NSLog(@"[Orbit][MultiCam] Cannot add front camera input");
++        OrbitLog(@"[Orbit][MultiCam] Cannot add front camera input");
 +        return;
 +    }
 +    [session addInputWithNoConnections:frontInput];
@@ -556,7 +577,7 @@ index 532276a..2af10d9 100644
 +    backOut.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat)};
 +    backOut.alwaysDiscardsLateVideoFrames = YES;
 +    if (![session canAddOutput:backOut]) {
-+        NSLog(@"[Orbit][MultiCam] Cannot add back camera output");
++        OrbitLog(@"[Orbit][MultiCam] Cannot add back camera output");
 +        return;
 +    }
 +    [session addOutputWithNoConnections:backOut];
@@ -565,12 +586,12 @@ index 532276a..2af10d9 100644
 +                                                sourceDeviceType:backDev.deviceType
 +                                            sourceDevicePosition:AVCaptureDevicePositionBack] firstObject];
 +    if (!backPort) {
-+        NSLog(@"[Orbit][MultiCam] No back camera video port");
++        OrbitLog(@"[Orbit][MultiCam] No back camera video port");
 +        return;
 +    }
 +    AVCaptureConnection *backConn = [AVCaptureConnection connectionWithInputPorts:@[backPort] output:backOut];
 +    if (![session canAddConnection:backConn]) {
-+        NSLog(@"[Orbit][MultiCam] Cannot add back camera connection");
++        OrbitLog(@"[Orbit][MultiCam] Cannot add back camera connection");
 +        return;
 +    }
 +    [session addConnection:backConn];
@@ -580,7 +601,7 @@ index 532276a..2af10d9 100644
 +    frontOut.videoSettings = @{(id)kCVPixelBufferPixelFormatTypeKey: @(pixelFormat)};
 +    frontOut.alwaysDiscardsLateVideoFrames = YES;
 +    if (![session canAddOutput:frontOut]) {
-+        NSLog(@"[Orbit][MultiCam] Cannot add front camera output");
++        OrbitLog(@"[Orbit][MultiCam] Cannot add front camera output");
 +        return;
 +    }
 +    [session addOutputWithNoConnections:frontOut];
@@ -589,12 +610,12 @@ index 532276a..2af10d9 100644
 +                                                 sourceDeviceType:frontDev.deviceType
 +                                             sourceDevicePosition:AVCaptureDevicePositionFront] firstObject];
 +    if (!frontPort) {
-+        NSLog(@"[Orbit][MultiCam] No front camera video port");
++        OrbitLog(@"[Orbit][MultiCam] No front camera video port");
 +        return;
 +    }
 +    AVCaptureConnection *frontConn = [AVCaptureConnection connectionWithInputPorts:@[frontPort] output:frontOut];
 +    if (![session canAddConnection:frontConn]) {
-+        NSLog(@"[Orbit][MultiCam] Cannot add front camera connection");
++        OrbitLog(@"[Orbit][MultiCam] Cannot add front camera connection");
 +        return;
 +    }
 +    [session addConnection:frontConn];
@@ -631,7 +652,7 @@ index 532276a..2af10d9 100644
 +
 +    self.multiCamRunning = YES;
 +    self.running = YES;
-+    NSLog(@"[Orbit][MultiCam] Session started — isRunning=%d, delivering %@ frames to WebRTC",
++    OrbitLog(@"[Orbit][MultiCam] Session started — isRunning=%d, delivering %@ frames to WebRTC",
 +           session.isRunning, self.usingFrontCamera ? @"front" : @"back");
 +
 +    [self orbitScheduleMultiCamFrameWatchdog];
@@ -666,7 +687,7 @@ index 532276a..2af10d9 100644
 +                return;
 +            }
 +            if (strongSelf.orbitMultiCamAttempt >= 3) {
-+                NSLog(@"[Orbit][MultiCam] still no frames after %lu rebuilds — falling back to "
++                OrbitLog(@"[Orbit][MultiCam] still no frames after %lu rebuilds — falling back to "
 +                      @"single-cam for this call",
 +                      (unsigned long)strongSelf.orbitMultiCamAttempt);
 +                strongSelf.orbitMultiCamAttempt = 0;
@@ -681,7 +702,7 @@ index 532276a..2af10d9 100644
 +                return;
 +            }
 +            strongSelf.orbitMultiCamAttempt += 1;
-+            NSLog(@"[Orbit][MultiCam] no frames 800ms after start — rebuilding (attempt %lu)",
++            OrbitLog(@"[Orbit][MultiCam] no frames 800ms after start — rebuilding (attempt %lu)",
 +                  (unsigned long)strongSelf.orbitMultiCamAttempt);
 +            [strongSelf orbitTearDownMultiCam];
 +        }
@@ -718,7 +739,7 @@ index 532276a..2af10d9 100644
 +        // Once per session, not periodically: at 30fps a repeating log is a line every few
 +        // seconds for as long as the camera is muted.
 +        if (self.orbitFramesDropped == 1) {
-+            NSLog(@"[Orbit][Frames] dropping — running=%d delegate=%@ (dropped=%lu delivered=%lu)",
++            OrbitLog(@"[Orbit][Frames] dropping — running=%d delegate=%@ (dropped=%lu delivered=%lu)",
 +                  self.running, self.capturer.delegate ? @"yes" : @"NIL",
 +                  (unsigned long)self.orbitFramesDropped, (unsigned long)self.orbitFramesDelivered);
 +        }
@@ -737,7 +758,7 @@ index 532276a..2af10d9 100644
 +    // First frame only. That is the whole signal — it proves this session is actually
 +    // producing, which startRunning does not. The watchdog reads the counter, not the log.
 +    if (self.orbitFramesDelivered == 1) {
-+        NSLog(@"[Orbit][Frames] first frame delivered (camera=%@)",
++        OrbitLog(@"[Orbit][Frames] first frame delivered (camera=%@)",
 +              self.usingFrontCamera ? @"front" : @"back");
 +    }
 +
@@ -764,10 +785,23 @@ index 532276a..2af10d9 100644
          return;
  
 +    if (self.multiCamRunning) {
-+        // Soft stop: keep the multicam session running so the OIS/AF actuators
-+        // on the back camera stay engaged. Frames are suppressed by the running flag
-+        // in captureOutput:didOutputSampleBuffer:fromConnection:.
-+        NSLog(@"[Orbit][MultiCam] Soft stop — session stays warm");
++        // Orbit: a real stop, not the soft stop this used to do.
++        //
++        // Soft stop left the multicam session running and merely discarded frames, to keep
++        // the OIS/AF actuators warm. That is a lie to the user: iOS lights the camera
++        // indicator whenever a session holds a camera input, so muting your camera left the
++        // green dot on while the UI said the camera was off, and leaving a call left it on
++        // until this object happened to dealloc. Both of stopCapture's callers are exactly
++        // the moments the indicator must go out — mediaStreamTrackSetEnabled(NO) is the
++        // user muting their camera, mediaStreamTrackRelease is the call ending.
++        //
++        // Camera flips do not come through here (switchCamera calls startCapture only), so
++        // this costs nothing on the hot path. It costs one multicam rebuild (~280ms) when
++        // unmuting, which is the correct trade for an accurate privacy indicator.
++        if (@available(iOS 13.0, *)) {
++            [self orbitTearDownMultiCam];
++            OrbitLog(@"[Orbit][MultiCam] Stopped — cameras released, indicator should clear");
++        }
 +        self.running = NO;
 +        self.device = nil;
 +        return;
@@ -778,7 +812,7 @@ index 532276a..2af10d9 100644
      dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
  
      __weak VideoCaptureController *weakSelf = self;
-@@ -178,6 +850,17 @@ - (void)applyConstraints:(NSDictionary *)constraints error:(NSError **)outError
+@@ -178,6 +884,17 @@ - (void)applyConstraints:(NSDictionary *)constraints error:(NSError **)outError
      if (self.deviceId != deviceId && ![self.deviceId isEqualToString:deviceId]) {
          hasChanged = YES;
          self.deviceId = deviceId;
