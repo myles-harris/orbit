@@ -67,6 +67,13 @@ export default function CallScreen() {
   // Most-recently-spoke participants first; used to prioritise which 9 to show
   const [speakerHistory, setSpeakerHistory] = useState<string[]>([]);
 
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const controlsVisibleRef = useRef(true);
+  const controlsOpacity = useRef(new Animated.Value(1)).current;
+  // With swipe-dismiss and hardware back both removed, hidden controls would
+  // leave a screen-reader user with no reachable way to leave the call.
+  const [screenReaderOn, setScreenReaderOn] = useState(false);
+
   useEffect(() => {
     initializeCall();
     return () => {
@@ -117,6 +124,49 @@ export default function CallScreen() {
       }
       appStateRef.current = nextState;
       setAppState(nextState);
+    });
+    return () => sub.remove();
+  }, []);
+
+  const didMountControlsRef = useRef(false);
+
+  useEffect(() => {
+    controlsVisibleRef.current = controlsVisible;
+    // Skip the mount pass: controlsOpacity is already 1, so animating 1 -> 1 costs
+    // a frame and a native-driver round-trip for nothing.
+    if (!didMountControlsRef.current) {
+      didMountControlsRef.current = true;
+      return;
+    }
+    Animated.timing(controlsOpacity, {
+      toValue: controlsVisible ? 1 : 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [controlsVisible]);
+
+  useEffect(() => {
+    let mounted = true;
+    AccessibilityInfo.isScreenReaderEnabled().then(on => {
+      if (mounted) setScreenReaderOn(on);
+    });
+    const sub = AccessibilityInfo.addEventListener('screenReaderChanged', setScreenReaderOn);
+    return () => { mounted = false; sub.remove(); };
+  }, []);
+
+  // Never leave a screen-reader user with the controls hidden.
+  useEffect(() => {
+    if (screenReaderOn) setControlsVisible(true);
+  }, [screenReaderOn]);
+
+  // Android hardware back must not leave the call: Leave is the only exit.
+  // Reveals hidden controls rather than no-opping, so a back press gives visible
+  // feedback instead of reading as a frozen app.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!controlsVisibleRef.current) setControlsVisible(true);
+      return true;
     });
     return () => sub.remove();
   }, []);
@@ -726,6 +776,19 @@ export default function CallScreen() {
         />
       )}
 
+      {/* Background tap target. Above the video layer AND above the 1x1 RTCPIPView
+          anchor, below the self-view (zIndex 10) and the controls (zIndex 20), so taps
+          on those are consumed by their own responders and never reach here.
+          accessible={false} keeps a full-screen button out of the VoiceOver rotor;
+          hiding is suppressed entirely while a screen reader is active. */}
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        accessible={false}
+        onPress={() => {
+          if (!screenReaderOn) setControlsVisible(v => !v);
+        }}
+      />
+
       {/* Local PiP (draggable) */}
       {localParticipant && videoEnabled && (
         <Animated.View
@@ -763,8 +826,8 @@ export default function CallScreen() {
               dispatch touches outside a parent's bounds, so overhanging hitSlop would
               work on iOS and silently fail on Android. */}
           <Animated.View
-            style={styles.pipFlipButton}
-            pointerEvents="auto"
+            style={[styles.pipFlipButton, { opacity: controlsOpacity }]}
+            pointerEvents={controlsVisible ? 'auto' : 'none'}
           >
             <TouchableOpacity
               style={styles.pipFlipButtonInner}
@@ -801,7 +864,10 @@ export default function CallScreen() {
       )}
 
       {/* Controls — floating buttons, no background */}
-      <View style={styles.controlsWrapper} pointerEvents="box-none">
+      <Animated.View
+        style={[styles.controlsWrapper, { opacity: controlsOpacity }]}
+        pointerEvents={controlsVisible ? 'box-none' : 'none'}
+      >
         <View style={[styles.controlsRow, { paddingBottom: insets.bottom + 18 }]}>
           <TouchableOpacity
             style={[styles.controlButton, !audioEnabled && styles.controlButtonOff]}
@@ -828,7 +894,7 @@ export default function CallScreen() {
           </TouchableOpacity>
 
         </View>
-      </View>
+      </Animated.View>
     </View>
   );
 }
