@@ -756,6 +756,31 @@ export default function CallScreen() {
               />
             </View>
           </Animated.View>
+
+          {/* Flip affordance. Mounted on localPipWrapper, which carries no transform,
+              so it stays upright and tappable through the 3D flip. hitSlop is capped at
+              6 so the 44pt target lands exactly on the wrapper's edges: Android does not
+              dispatch touches outside a parent's bounds, so overhanging hitSlop would
+              work on iOS and silently fail on Android. */}
+          <Animated.View
+            style={styles.pipFlipButton}
+            pointerEvents="auto"
+          >
+            <TouchableOpacity
+              style={styles.pipFlipButtonInner}
+              onPress={() => {
+                // toggleCamera rethrows on failure. The existing call site in
+                // onPanResponderRelease leaves that rejection unhandled; do not add a second.
+                toggleCamera().catch(e => console.warn('[CameraSwitch] flip failed', e));
+              }}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel="Switch camera"
+            >
+              <Ionicons name="camera-reverse" size={16} color="#fff" />
+            </TouchableOpacity>
+          </Animated.View>
         </Animated.View>
       )}
 
@@ -896,6 +921,26 @@ const styles = StyleSheet.create({
   },
   localVideo: {
     flex: 1,
+  },
+  pipFlipButton: {
+    position: 'absolute',
+    right: 6,
+    bottom: 6,
+  },
+  // Same glass treatment as controlButton, scaled for a 110x150 self-view.
+  pipFlipButtonInner: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.38)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#fff',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
   },
 
   // ─── Timer ──────────────────────────────────────────────────────────────────
