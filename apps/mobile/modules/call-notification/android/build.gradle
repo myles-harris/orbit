@@ -21,11 +21,18 @@ repositories {
 dependencies {
   // expo-notifications is consumed as a Maven artifact, not a Gradle project, so
   // project(':expo-notifications') does not resolve. Artifact id is
-  // expo.modules.notifications, not expo-notifications. compileOnly because the real
-  // implementation is already in the app via autolinking.
+  // expo.modules.notifications, not expo-notifications.
   // ExpoFirebaseMessagingService is internal Expo API: keep this version in step with
   // the expo-notifications in package.json.
-  compileOnly 'host.exp.exponent:expo.modules.notifications:0.32.16'
+  //
+  // implementation, not compileOnly: this is the exact same artifact+version the app
+  // pulls in via autolinking, so Gradle dedupes it in the merged classpath — nothing
+  // extra ships. compileOnly hid ExpoFirebaseMessagingService's superclass chain from
+  // this module's partial lint model, which :app:lintVitalRelease (release-only, never
+  // exercised by prior dev-profile builds) then aggregates; lint fell back to treating
+  // OrbitFirebaseMessagingService as not provably extending android.app.Service and
+  // failed the release build on "must extend android.app.Service [Instantiatable]".
+  implementation 'host.exp.exponent:expo.modules.notifications:0.32.16'
 
   implementation platform('com.google.firebase:firebase-bom:33.7.0')
   implementation 'com.google.firebase:firebase-messaging'
