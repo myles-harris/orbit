@@ -38,3 +38,5 @@ apps/mobile/google-service-account.json
 apps/mobile/dist/
 apps/server/dist/
 dump.rdb
+apps/server/.env.production.local
+apps/server/.env.test
