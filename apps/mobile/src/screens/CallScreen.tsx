@@ -3,7 +3,7 @@ import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing, PanResponde
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
-import Daily, { DailyCall, DailyParticipant, DailyEventObject, DailyMediaView, RTCPIPView, MediaStream as RTCMediaStream } from '@daily-co/react-native-daily-js';
+import Daily, { DailyCall, DailyParticipant, DailyEventObject, DailyMediaView, RTCPIPView, MediaStream as RTCMediaStream, MediaStreamTrack } from '@daily-co/react-native-daily-js';
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { Ionicons } from '@expo/vector-icons';
@@ -28,6 +28,10 @@ export default function CallScreen() {
   const [isChangingCamera, setIsChangingCamera] = useState(false);
   const videoEnabledRef = useRef(true);
   const appStateRef = useRef(AppState.currentState);
+  // appStateRef is read synchronously inside the AppState listener to detect
+  // transitions; appState is the reactive copy so effects can depend on it.
+  // Two variables, two jobs. Don't collapse them.
+  const [appState, setAppState] = useState(AppState.currentState);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(
     endsAt ? Math.max(0, Math.round((new Date(endsAt).getTime() - Date.now()) / 1000)) : null
   );
@@ -63,24 +67,27 @@ export default function CallScreen() {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (appStateRef.current === 'active' && nextState === 'background') {
-        console.log('[PiP] app backgrounded');
         if (Platform.OS === 'android') {
           PipModule.enterPipMode();
         }
       } else if (appStateRef.current !== 'active' && nextState === 'active') {
         if (callObjectRef.current && videoEnabledRef.current) {
-          callObjectRef.current.setLocalVideo(false);
-          callObjectRef.current.setLocalVideo(true);
+          // A setLocalVideo(false)/setLocalVideo(true) pair used to run here to clear a
+          // stale local preview after foregrounding. That staleness was a symptom of
+          // the camera being suspended while backgrounded; multitasking camera access
+          // now keeps capture alive, so the track is never stale to begin with.
+          //
+          // The pair was also expensive in a way that isn't obvious from JS: each
+          // setLocalVideo(false) releases the track, which deallocs the native capture
+          // controller, and setLocalVideo(true) re-acquires via getUserMedia and builds
+          // a whole new AVCaptureSession. On the back camera that re-parks the OIS
+          // actuator every time, which is audible and visible as jitter. Remounting the
+          // view re-attaches the still-live track and is all that was ever needed.
           setLocalVideoKey(k => k + 1);
-        } else if (!videoEnabledRef.current && pipStreamRef.current) {
-          // Video was intentionally off before backgrounding — clear the PiP
-          // stream now that we're back in the foreground.
-          (pipStreamRef.current as any)?.release?.(false);
-          pipStreamRef.current = null;
-          setPipStreamURL(null);
         }
       }
       appStateRef.current = nextState;
+      setAppState(nextState);
     });
     return () => sub.remove();
   }, []);
@@ -259,17 +266,10 @@ export default function CallScreen() {
     try {
       const nextFront = !useFrontCamera;
 
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(d => d.kind === 'videoinput');
-      const target = videoDevices.find(d =>
-        nextFront
-          ? /front|user|face/i.test(d.label)
-          : /back|rear|environment/i.test(d.label)
-      );
-
       // Phase 1: current camera view (untouched) rotates to the vanishing point.
-      // setCamera is NOT called yet — Daily.co would swap the track immediately,
-      // showing the new camera during the animation. We wait until edge-on.
+      // The camera switch is NOT started yet — Daily.co would swap the track
+      // immediately, showing the new camera during the animation. We wait until
+      // edge-on.
       await new Promise<void>(resolve => {
         Animated.timing(flipAnim, {
           toValue: 1,
@@ -280,7 +280,7 @@ export default function CallScreen() {
       });
 
       // Card is edge-on and invisible — now start the camera switch.
-      // Set up the ready promise BEFORE calling setCamera so a fast track-started
+      // Set up the ready promise BEFORE starting it so a fast track-started
       // doesn't slip past the listener.
       const trackReadyPromise = new Promise<void>(resolve => {
         cameraTrackReadyResolveRef.current = resolve;
@@ -290,14 +290,16 @@ export default function CallScreen() {
       setIsChangingCamera(true);
       setUseFrontCamera(nextFront);
 
-      let switchPromise: Promise<unknown>;
-      if (target?.deviceId) {
-        console.log('[CameraSwitch] using setCamera', target.deviceId);
-        switchPromise = callObjectRef.current.setCamera(target.deviceId);
-      } else {
-        console.log('[CameraSwitch] FALLBACK cycleCamera — no device label matched');
-        switchPromise = callObjectRef.current.cycleCamera();
-      }
+      // cycleCamera() rather than setCamera(deviceId): it routes to the native
+      // switchCamera, which swaps the device input on the EXISTING AVCaptureSession.
+      // setCamera goes through a fresh getUserMedia, which allocates a new capture
+      // controller and builds an entirely new session — and that full rebuild
+      // re-parks the back camera's OIS actuator on every flip, which is what makes
+      // the phone audibly buzz and the image shake after a couple of toggles.
+      // This control is a binary front/back toggle, so cycling is the right API;
+      // the enumerateDevices + label-matching it replaces was also expensive
+      // (observed once at 1.3s just to acquire the device list).
+      const switchPromise = callObjectRef.current.cycleCamera();
 
       await switchPromise;
       await Promise.race([
@@ -367,80 +369,95 @@ export default function CallScreen() {
     [participants]
   );
 
-  // Most-recently active remote speaker — used as the subject of the system PiP
-  // window when the user backgrounds the app.
-  const pipSpeaker = useMemo(() => {
-    for (const id of speakerHistory) {
-      const p = Object.values(participants).find(p => p.session_id === id && !p.local);
-      if (p) return p;
+  // ─── PiP subject ────────────────────────────────────────────────────────────
+  // AC-2/AC-3: with any remote present, PiP shows exactly one remote, the most
+  // recent active speaker with a usable track. Self is never shown while a remote
+  // exists; if no remote has usable video we clear the window rather than falling
+  // back to self. Only when genuinely alone does PiP show the local camera.
+  //
+  // Presence of `track` is the right test, not `state === 'playable'`: per Daily's
+  // type contract `track` is only present when the state is playable, and
+  // `persistentTrack` is the not-guaranteed-playable sibling. Don't "optimise" this
+  // to persistentTrack, it would hand PiP an unplayable reference.
+  //
+  // This recomputes on every participant-updated (audio levels etc.) but returns the
+  // same MediaStreamTrack reference when the subject hasn't changed, so the effect
+  // below stays stable and iOS gets a chance to settle the PiP session.
+  const pipVideoTrack = useMemo(() => {
+    const remotes = Object.values(participants).filter(p => !p.local);
+
+    if (remotes.length === 0) {
+      return localParticipant?.tracks.video.track ?? null;
     }
-    return Object.values(participants).find(p => !p.local) ?? null;
-  }, [speakerHistory, participants]);
 
-  // Build a WebRTC stream URL from the pip speaker's tracks. RTCPIPView (unlike
-  // DailyMediaView) takes a streamURL string, so we create an RTCMediaStream.
-  // Derive stable track references so the effect only re-runs when the actual
-  // MediaStreamTrack objects change — not on every participant-updated event
-  // (which fires on audio level changes, etc. and would constantly churn the
-  // stream URL and prevent iOS from ever stabilising the PiP session).
-  // Fall back to local video when there are no remote participants (e.g. alone
-  // in the call). Local audio is excluded to avoid hearing yourself.
-  const pipVideoTrack = pipSpeaker
-    ? (pipSpeaker.tracks.video.state === 'playable' ? pipSpeaker.tracks.video.track : null)
-    : (localParticipant?.tracks.video.track ?? null);
-  const pipAudioTrack = pipSpeaker?.tracks.audio.state === 'playable' ? pipSpeaker.tracks.audio.track : null;
+    for (const id of speakerHistory) {
+      const track = remotes.find(r => r.session_id === id)?.tracks.video.track;
+      if (track) return track;
+    }
+    for (const p of remotes) {
+      if (p.tracks.video.track) return p.tracks.video.track;
+    }
+    return null;
+  }, [participants, localParticipant, speakerHistory]);
 
-  // Solo-in-call PiP is fed by the local camera track, which iOS can briefly
-  // drop (state flips away from 'playable', or the track ref goes null) right
-  // as the app resigns active — before call-PiP capture continuation kicks
-  // in. If we tore the stream down immediately, AVKit would kill the PiP
-  // window the instant it lost its content source. Instead, hold onto the
-  // last good stream and only clear it if no track recovers within a beat.
+  // RTCPIPView takes a streamURL, not a track, so wrap the chosen track in an
+  // RTCMediaStream. Audio is deliberately excluded: RTCVideoView only ever reads
+  // videoTracks.firstObject (RTCVideoViewManager.m:363), so including the audio track
+  // bought nothing and churned the stream URL on every audio-level update. Remote
+  // audio is unaffected, it rides the DailyMediaView tiles, which stay mounted.
+  const pipTrackRef = useRef<MediaStreamTrack | null>(null);
   const pipStreamRef = useRef<RTCMediaStream | null>(null);
   const pipClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [pipStreamURL, setPipStreamURL] = useState<string | null>(null);
+  const [pipStreamURL, setPipStreamURL] = useState<string | undefined>(undefined);
+
   useEffect(() => {
-    const tracks = [pipVideoTrack, pipAudioTrack].filter(Boolean) as any[];
-    console.log(
-      '[PiP] tracks effect — speaker:', !!pipSpeaker,
-      'video:', !!pipVideoTrack, 'audio:', !!pipAudioTrack,
-      'hadStream:', !!pipStreamRef.current
-    );
+    // streamURL has no consumer on Android; skip the native stream churn entirely.
+    if (Platform.OS !== 'ios') return;
 
     if (pipClearTimerRef.current) {
       clearTimeout(pipClearTimerRef.current);
       pipClearTimerRef.current = null;
     }
 
-    if (tracks.length > 0) {
-      const stream = new RTCMediaStream(tracks);
+    if (pipVideoTrack) {
+      // Same subject as last time, nothing to rebuild. This matters because the
+      // effect also depends on appState: without it, every foreground transition
+      // would issue a fresh streamURL exactly as AVKit is tearing PiP down. It also
+      // makes a track that drops and returns as the same object a no-op beyond
+      // cancelling the pending clear above.
+      if (pipTrackRef.current === pipVideoTrack) return;
+
+      const stream = new RTCMediaStream([pipVideoTrack as any]);
       const previous = pipStreamRef.current;
+      pipTrackRef.current = pipVideoTrack;
       pipStreamRef.current = stream;
-      const url = stream.toURL();
-      console.log('[PiP] setting stream URL:', url);
-      setPipStreamURL(url);
+      setPipStreamURL(stream.toURL());
+      // release(false): these tracks are Daily-owned. release() defaults to
+      // releaseTracks = true, which would dispose the participant's video everywhere.
       (previous as any)?.release?.(false);
-    } else if (pipStreamRef.current) {
-      if (appStateRef.current === 'active') {
-        // Foregrounded and tracks gone — user toggled video off. Clear after
-        // a brief beat in case of a transient track hiccup during a camera
-        // switch or rejoin.
-        console.log('[PiP] no tracks (foreground) — starting clear timer');
-        pipClearTimerRef.current = setTimeout(() => {
-          console.log('[PiP] clear timer fired — clearing stream URL');
-          (pipStreamRef.current as any)?.release?.(false);
-          pipStreamRef.current = null;
-          setPipStreamURL(null);
-          pipClearTimerRef.current = null;
-        }, 1500);
-      } else {
-        // Backgrounded — camera is suspended while iOS establishes the PiP
-        // session. Hold the stream alive so RTCPIPView stays mounted and
-        // AVKit can complete the PiP start-up animation.
-        console.log('[PiP] no tracks (background) — holding stream for PiP');
-      }
+      return;
     }
-  }, [pipVideoTrack, pipAudioTrack]);
+
+    if (!pipStreamRef.current) return;
+
+    // Backgrounded with no track: hold. Setting streamURL on a track-less stream is a
+    // native no-op (RTCVideoViewManager.m:363), so holding keeps the last frame in the
+    // window. That's the degradation path if multitasking camera access isn't actually
+    // honoured on this device, a frozen self-image rather than a black rectangle.
+    // Do not remove this guard without re-reading the design section of this brief.
+    if (appState !== 'active') return;
+
+    // Foregrounded with no track: the user toggled video off, or we just came back
+    // from a hold. Clear after a beat to absorb a transient drop during a camera flip
+    // or rejoin.
+    pipClearTimerRef.current = setTimeout(() => {
+      (pipStreamRef.current as any)?.release?.(false);
+      pipStreamRef.current = null;
+      pipTrackRef.current = null;
+      setPipStreamURL(undefined);
+      pipClearTimerRef.current = null;
+    }, 1500);
+  }, [pipVideoTrack, appState]);
 
   useEffect(() => {
     return () => {
@@ -627,15 +644,34 @@ export default function CallScreen() {
         {renderLayout()}
       </View>
 
-      {/* iOS system PiP source — 1×1 invisible anchor used by AVKit's
-          PIPController. AVKit renders the actual floating window using an
+      {/* iOS system PiP source: a 1×1 invisible anchor for AVKit's PIPController.
+          AVKit renders the real floating window from an
           AVPictureInPictureVideoCallViewController fed by RTCPIPView's
-          SampleBufferVideoCallView; the visual size of this element doesn't
-          matter. startAutomatically fires as soon as the app is backgrounded. */}
-      {Platform.OS === 'ios' && pipStreamURL && (
+          SampleBufferVideoCallView, so this element's on-screen size is irrelevant.
+
+          MOUNTED UNCONDITIONALLY for the life of the call: unmounting deallocs the
+          native PIPController (PIPController.m:18) and kills the window mid-call.
+          streamURL is the only thing that changes: the native setter swaps the
+          renderer in place (PIPController.m:86), which is what makes speaker
+          switching work with no native code of our own.
+
+          The inline iosPIP literal is safe: RN deep-diffs plain object props, and
+          setPIPOptions is idempotent (RTCVideoViewManager.m:194) even if it weren't.
+          preferredSize is a 9:16 ratio hint. Left unset, AVKit sizes the window from
+          the video's own dimensions and it would resize on every speaker change.
+
+          ORDERING (see the in-call UX stage): the full-screen background tap target
+          added at stage 6 is a later sibling than this element, so it paints above
+          this 1×1 view and the bottom-right corner stays tappable. Do not move this
+          element below it. */}
+      {Platform.OS === 'ios' && (
         <RTCPIPView
           streamURL={pipStreamURL}
-          iosPIP={{ startAutomatically: true, stopAutomatically: true }}
+          iosPIP={{
+            startAutomatically: true,
+            stopAutomatically: true,
+            preferredSize: { width: 270, height: 480 },
+          }}
           style={{ position: 'absolute', width: 1, height: 1, bottom: 0, right: 0 }}
         />
       )}
