@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useMemo } from 'react';
-import { View, Text, TouchableOpacity, StyleSheet, Animated, Easing, PanResponder, Dimensions, Alert, AppState, Platform } from 'react-native';
+import { View, Text, TouchableOpacity, Pressable, StyleSheet, Animated, Easing, PanResponder, Dimensions, Alert, AppState, BackHandler, AccessibilityInfo, Platform } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
@@ -7,10 +7,39 @@ import Daily, { DailyCall, DailyParticipant, DailyEventObject, DailyMediaView, R
 import { Audio, InterruptionModeIOS, InterruptionModeAndroid } from 'expo-av';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { Ionicons } from '@expo/vector-icons';
+import { StatusBar } from 'expo-status-bar';
 import PipModule from '../../modules/pip';
+import { useSafeAreaInsets, type EdgeInsets } from 'react-native-safe-area-context';
 
 type CallRouteProp = RouteProp<RootStackParamList, 'Call'>;
 type CallNavigationProp = StackNavigationProp<RootStackParamList, 'Call'>;
+
+const PIP_WIDTH = 110;
+const PIP_HEIGHT = 150;
+// Minimum gap between the self-view and any screen edge or on-screen furniture.
+const PIP_MARGIN = 12;
+// Height of the control row measured up from insets.bottom:
+//   18 (gap below the buttons) + 60 (button) + 16 (controlsRow paddingTop).
+// Keep in sync with controlsRow in the StyleSheet.
+const CONTROLS_HEIGHT = 94;
+// Top edge of the countdown pill measured up from insets.bottom:
+//   114 (its bottom offset) + ~38 (paddingVertical 8+8 + ~22 line box).
+const TIMER_TOP = 152;
+
+const computePipBounds = (
+  i: EdgeInsets,
+  timerShown: boolean,
+  screenWidth: number,
+  screenHeight: number,
+) => {
+  const bottomFurniture = timerShown ? TIMER_TOP : CONTROLS_HEIGHT;
+  return {
+    minX: PIP_MARGIN,
+    maxX: screenWidth - PIP_WIDTH - PIP_MARGIN,
+    minY: i.top + PIP_MARGIN,
+    maxY: screenHeight - i.bottom - bottomFurniture - PIP_MARGIN - PIP_HEIGHT,
+  };
+};
 
 export default function CallScreen() {
   const route = useRoute<CallRouteProp>();
@@ -37,6 +66,13 @@ export default function CallScreen() {
   );
   // Most-recently-spoke participants first; used to prioritise which 9 to show
   const [speakerHistory, setSpeakerHistory] = useState<string[]>([]);
+
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const controlsVisibleRef = useRef(true);
+  const controlsOpacity = useRef(new Animated.Value(1)).current;
+  // With swipe-dismiss and hardware back both removed, hidden controls would
+  // leave a screen-reader user with no reachable way to leave the call.
+  const [screenReaderOn, setScreenReaderOn] = useState(false);
 
   useEffect(() => {
     initializeCall();
@@ -88,6 +124,49 @@ export default function CallScreen() {
       }
       appStateRef.current = nextState;
       setAppState(nextState);
+    });
+    return () => sub.remove();
+  }, []);
+
+  const didMountControlsRef = useRef(false);
+
+  useEffect(() => {
+    controlsVisibleRef.current = controlsVisible;
+    // Skip the mount pass: controlsOpacity is already 1, so animating 1 -> 1 costs
+    // a frame and a native-driver round-trip for nothing.
+    if (!didMountControlsRef.current) {
+      didMountControlsRef.current = true;
+      return;
+    }
+    Animated.timing(controlsOpacity, {
+      toValue: controlsVisible ? 1 : 0,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  }, [controlsVisible]);
+
+  useEffect(() => {
+    let mounted = true;
+    AccessibilityInfo.isScreenReaderEnabled().then(on => {
+      if (mounted) setScreenReaderOn(on);
+    });
+    const sub = AccessibilityInfo.addEventListener('screenReaderChanged', setScreenReaderOn);
+    return () => { mounted = false; sub.remove(); };
+  }, []);
+
+  // Never leave a screen-reader user with the controls hidden.
+  useEffect(() => {
+    if (screenReaderOn) setControlsVisible(true);
+  }, [screenReaderOn]);
+
+  // Android hardware back must not leave the call: Leave is the only exit.
+  // Reveals hidden controls rather than no-opping, so a back press gives visible
+  // feedback instead of reading as a frozen app.
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      if (!controlsVisibleRef.current) setControlsVisible(true);
+      return true;
     });
     return () => sub.remove();
   }, []);
@@ -468,14 +547,28 @@ export default function CallScreen() {
 
   // ─── PiP drag ────────────────────────────────────────────────────────────────
 
-  const PIP_WIDTH = 110;
-  const PIP_HEIGHT = 150;
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
+  const insets = useSafeAreaInsets();
+  // Stable for the lifetime of a call: secondsLeft is seeded once from route
+  // params and, when non-null, decrements to 0 but never returns to null.
+  const hasTimer = secondsLeft !== null;
+
+  // The PanResponder below is created once via useRef, so it cannot close over
+  // these values, it reads them through a ref at release time. Same indirection
+  // the file already uses for toggleCameraRef.
+  // Refreshed during render rather than in an effect: an effect that repositions
+  // on inset change would fight a future Android system-PiP path, where the
+  // activity shrinks and insets drop to zero, and the self-view would jump on
+  // both entry and restore.
+  const pipBounds = computePipBounds(insets, hasTimer, screenWidth, screenHeight);
+  const pipBoundsRef = useRef(pipBounds);
+  pipBoundsRef.current = pipBounds;
+
   const pipPosition = useRef(
-    new Animated.ValueXY({ x: screenWidth - PIP_WIDTH - 16, y: 56 })
+    new Animated.ValueXY({ x: pipBounds.maxX, y: pipBounds.minY })
   ).current;
-  const pipOffset = useRef({ x: screenWidth - PIP_WIDTH - 16, y: 56 });
+  const pipOffset = useRef({ x: pipBounds.maxX, y: pipBounds.minY });
 
   const pipPanResponder = useRef(
     PanResponder.create({
@@ -491,10 +584,11 @@ export default function CallScreen() {
       ),
       onPanResponderRelease: (_, gesture) => {
         pipPosition.flattenOffset();
+        const b = pipBoundsRef.current;
         const rawX = pipOffset.current.x + gesture.dx;
         const rawY = pipOffset.current.y + gesture.dy;
-        const clampedX = Math.max(0, Math.min(rawX, screenWidth - PIP_WIDTH));
-        const clampedY = Math.max(0, Math.min(rawY, screenHeight - PIP_HEIGHT - 100));
+        const clampedX = Math.max(b.minX, Math.min(rawX, b.maxX));
+        const clampedY = Math.max(b.minY, Math.min(rawY, b.maxY));
         pipOffset.current = { x: clampedX, y: clampedY };
         Animated.spring(pipPosition, {
           toValue: { x: clampedX, y: clampedY },
@@ -639,6 +733,12 @@ export default function CallScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Call video is always on black; the app-level StatusBar follows the theme
+          and would render dark glyphs on black in light mode once the screen goes
+          full-screen. expo-status-bar merges mounted StatusBars in mount order, so
+          this wins while the call is up and reverts on unmount. */}
+      <StatusBar style="light" />
+
       {/* Video fills the entire screen */}
       <View style={StyleSheet.absoluteFill}>
         {renderLayout()}
@@ -676,6 +776,19 @@ export default function CallScreen() {
         />
       )}
 
+      {/* Background tap target. Above the video layer AND above the 1x1 RTCPIPView
+          anchor, below the self-view (zIndex 10) and the controls (zIndex 20), so taps
+          on those are consumed by their own responders and never reach here.
+          accessible={false} keeps a full-screen button out of the VoiceOver rotor;
+          hiding is suppressed entirely while a screen reader is active. */}
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        accessible={false}
+        onPress={() => {
+          if (!screenReaderOn) setControlsVisible(v => !v);
+        }}
+      />
+
       {/* Local PiP (draggable) */}
       {localParticipant && videoEnabled && (
         <Animated.View
@@ -706,12 +819,44 @@ export default function CallScreen() {
               />
             </View>
           </Animated.View>
+
+          {/* Flip affordance. Mounted on localPipWrapper, which carries no transform,
+              so it stays upright and tappable through the 3D flip. hitSlop is capped at
+              6 so the 44pt target lands exactly on the wrapper's edges: Android does not
+              dispatch touches outside a parent's bounds, so overhanging hitSlop would
+              work on iOS and silently fail on Android. */}
+          <Animated.View
+            style={[styles.pipFlipButton, { opacity: controlsOpacity }]}
+            pointerEvents={controlsVisible ? 'auto' : 'none'}
+          >
+            <TouchableOpacity
+              style={styles.pipFlipButtonInner}
+              onPress={() => {
+                // toggleCamera rethrows on failure. The existing call site in
+                // onPanResponderRelease leaves that rejection unhandled; do not add a second.
+                toggleCamera().catch(e => console.warn('[CameraSwitch] flip failed', e));
+              }}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+              accessibilityLabel="Switch camera"
+            >
+              <Ionicons name="camera-reverse" size={16} color="#fff" />
+            </TouchableOpacity>
+          </Animated.View>
         </Animated.View>
       )}
 
       {/* Countdown timer */}
       {secondsLeft !== null && (
-        <View style={[styles.timerContainer, secondsLeft <= 60 && styles.timerContainerUrgent]}>
+        <View
+          pointerEvents="none"
+          style={[
+            styles.timerContainer,
+            { bottom: insets.bottom + 114 },
+            secondsLeft <= 60 && styles.timerContainerUrgent,
+          ]}
+        >
           <Text style={[styles.timerText, secondsLeft <= 60 && styles.timerTextUrgent]}>
             {formatTime(secondsLeft)}
           </Text>
@@ -719,8 +864,11 @@ export default function CallScreen() {
       )}
 
       {/* Controls — floating buttons, no background */}
-      <View style={styles.controlsWrapper} pointerEvents="box-none">
-        <View style={styles.controlsRow}>
+      <Animated.View
+        style={[styles.controlsWrapper, { opacity: controlsOpacity }]}
+        pointerEvents={controlsVisible ? 'box-none' : 'none'}
+      >
+        <View style={[styles.controlsRow, { paddingBottom: insets.bottom + 18 }]}>
           <TouchableOpacity
             style={[styles.controlButton, !audioEnabled && styles.controlButtonOff]}
             onPress={toggleAudio}
@@ -746,7 +894,7 @@ export default function CallScreen() {
           </TouchableOpacity>
 
         </View>
-      </View>
+      </Animated.View>
     </View>
   );
 }
@@ -840,11 +988,30 @@ const styles = StyleSheet.create({
   localVideo: {
     flex: 1,
   },
+  pipFlipButton: {
+    position: 'absolute',
+    right: 6,
+    bottom: 6,
+  },
+  // Same glass treatment as controlButton, scaled for a 110x150 self-view.
+  pipFlipButtonInner: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.38)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: '#fff',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+  },
 
   // ─── Timer ──────────────────────────────────────────────────────────────────
   timerContainer: {
     position: 'absolute',
-    bottom: 148,
     alignSelf: 'center',
     backgroundColor: 'rgba(255,255,255,0.15)',
     paddingHorizontal: 20,
@@ -879,7 +1046,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 20,
     paddingTop: 16,
-    paddingBottom: 52,
     paddingHorizontal: 24,
     // No background — buttons float over the video
   },
