@@ -9,9 +9,37 @@ import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { Ionicons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
 import PipModule from '../../modules/pip';
+import { useSafeAreaInsets, type EdgeInsets } from 'react-native-safe-area-context';
 
 type CallRouteProp = RouteProp<RootStackParamList, 'Call'>;
 type CallNavigationProp = StackNavigationProp<RootStackParamList, 'Call'>;
+
+const PIP_WIDTH = 110;
+const PIP_HEIGHT = 150;
+// Minimum gap between the self-view and any screen edge or on-screen furniture.
+const PIP_MARGIN = 12;
+// Height of the control row measured up from insets.bottom:
+//   18 (gap below the buttons) + 60 (button) + 16 (controlsRow paddingTop).
+// Keep in sync with controlsRow in the StyleSheet.
+const CONTROLS_HEIGHT = 94;
+// Top edge of the countdown pill measured up from insets.bottom:
+//   114 (its bottom offset) + ~38 (paddingVertical 8+8 + ~22 line box).
+const TIMER_TOP = 152;
+
+const computePipBounds = (
+  i: EdgeInsets,
+  timerShown: boolean,
+  screenWidth: number,
+  screenHeight: number,
+) => {
+  const bottomFurniture = timerShown ? TIMER_TOP : CONTROLS_HEIGHT;
+  return {
+    minX: PIP_MARGIN,
+    maxX: screenWidth - PIP_WIDTH - PIP_MARGIN,
+    minY: i.top + PIP_MARGIN,
+    maxY: screenHeight - i.bottom - bottomFurniture - PIP_MARGIN - PIP_HEIGHT,
+  };
+};
 
 export default function CallScreen() {
   const route = useRoute<CallRouteProp>();
@@ -469,14 +497,28 @@ export default function CallScreen() {
 
   // ─── PiP drag ────────────────────────────────────────────────────────────────
 
-  const PIP_WIDTH = 110;
-  const PIP_HEIGHT = 150;
   const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
+  const insets = useSafeAreaInsets();
+  // Stable for the lifetime of a call: secondsLeft is seeded once from route
+  // params and, when non-null, decrements to 0 but never returns to null.
+  const hasTimer = secondsLeft !== null;
+
+  // The PanResponder below is created once via useRef, so it cannot close over
+  // these values, it reads them through a ref at release time. Same indirection
+  // the file already uses for toggleCameraRef.
+  // Refreshed during render rather than in an effect: an effect that repositions
+  // on inset change would fight a future Android system-PiP path, where the
+  // activity shrinks and insets drop to zero, and the self-view would jump on
+  // both entry and restore.
+  const pipBounds = computePipBounds(insets, hasTimer, screenWidth, screenHeight);
+  const pipBoundsRef = useRef(pipBounds);
+  pipBoundsRef.current = pipBounds;
+
   const pipPosition = useRef(
-    new Animated.ValueXY({ x: screenWidth - PIP_WIDTH - 16, y: 56 })
+    new Animated.ValueXY({ x: pipBounds.maxX, y: pipBounds.minY })
   ).current;
-  const pipOffset = useRef({ x: screenWidth - PIP_WIDTH - 16, y: 56 });
+  const pipOffset = useRef({ x: pipBounds.maxX, y: pipBounds.minY });
 
   const pipPanResponder = useRef(
     PanResponder.create({
@@ -492,10 +534,11 @@ export default function CallScreen() {
       ),
       onPanResponderRelease: (_, gesture) => {
         pipPosition.flattenOffset();
+        const b = pipBoundsRef.current;
         const rawX = pipOffset.current.x + gesture.dx;
         const rawY = pipOffset.current.y + gesture.dy;
-        const clampedX = Math.max(0, Math.min(rawX, screenWidth - PIP_WIDTH));
-        const clampedY = Math.max(0, Math.min(rawY, screenHeight - PIP_HEIGHT - 100));
+        const clampedX = Math.max(b.minX, Math.min(rawX, b.maxX));
+        const clampedY = Math.max(b.minY, Math.min(rawY, b.maxY));
         pipOffset.current = { x: clampedX, y: clampedY };
         Animated.spring(pipPosition, {
           toValue: { x: clampedX, y: clampedY },
@@ -718,7 +761,14 @@ export default function CallScreen() {
 
       {/* Countdown timer */}
       {secondsLeft !== null && (
-        <View style={[styles.timerContainer, secondsLeft <= 60 && styles.timerContainerUrgent]}>
+        <View
+          pointerEvents="none"
+          style={[
+            styles.timerContainer,
+            { bottom: insets.bottom + 114 },
+            secondsLeft <= 60 && styles.timerContainerUrgent,
+          ]}
+        >
           <Text style={[styles.timerText, secondsLeft <= 60 && styles.timerTextUrgent]}>
             {formatTime(secondsLeft)}
           </Text>
@@ -727,7 +777,7 @@ export default function CallScreen() {
 
       {/* Controls — floating buttons, no background */}
       <View style={styles.controlsWrapper} pointerEvents="box-none">
-        <View style={styles.controlsRow}>
+        <View style={[styles.controlsRow, { paddingBottom: insets.bottom + 18 }]}>
           <TouchableOpacity
             style={[styles.controlButton, !audioEnabled && styles.controlButtonOff]}
             onPress={toggleAudio}
@@ -851,7 +901,6 @@ const styles = StyleSheet.create({
   // ─── Timer ──────────────────────────────────────────────────────────────────
   timerContainer: {
     position: 'absolute',
-    bottom: 148,
     alignSelf: 'center',
     backgroundColor: 'rgba(255,255,255,0.15)',
     paddingHorizontal: 20,
@@ -886,7 +935,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 20,
     paddingTop: 16,
-    paddingBottom: 52,
     paddingHorizontal: 24,
     // No background — buttons float over the video
   },
