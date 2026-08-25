@@ -14,10 +14,13 @@ jest.mock('../services/notifications', () => ({
 }));
 
 import { PrismaClient } from '@prisma/client';
-import { broadcastCallPresence, sendPresenceToToken, forgetCallPresence } from '../services/callPresence.js';
+import {
+  broadcastCallPresence, sendPresenceToToken, forgetCallPresence, endLiveActivitiesForCall,
+} from '../services/callPresence.js';
 import { notifications } from '../services/notifications.js';
 
 const mockUpdate = notifications.updateLiveActivities as jest.Mock;
+const mockEnd = notifications.endLiveActivities as jest.Mock;
 const mockSendExpoData = notifications.sendExpoData as jest.Mock;
 
 const prisma = new PrismaClient();
@@ -28,6 +31,7 @@ afterAll(async () => {
 
 beforeEach(() => {
   mockUpdate.mockClear();
+  mockEnd.mockClear();
   mockSendExpoData.mockClear();
 });
 
@@ -329,5 +333,72 @@ describe('PRESENCE_ENABLED=false', () => {
       expect(mockUpdate).not.toHaveBeenCalled();
       expect(mockSendExpoData).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe('endLiveActivitiesForCall', () => {
+  it('sends event: end to every registered token and deletes the token rows', async () => {
+    const owner = await makeUser('endjob1');
+    const group = await makeGroupWithOwner(owner.id);
+    const call = await makeCall(group.id);
+    await addActivityToken(call.id, owner.id, 'ios-tok-end');
+
+    await endLiveActivitiesForCall(call.id);
+
+    expect(mockEnd).toHaveBeenCalledTimes(1);
+    const [tokens] = mockEnd.mock.calls[0];
+    expect(tokens).toEqual(['ios-tok-end']);
+
+    const remaining = await prisma.callLiveActivityToken.count({ where: { call_id: call.id } });
+    expect(remaining).toBe(0);
+  });
+
+  it('sends nothing but still clears token rows when no tokens are registered', async () => {
+    const owner = await makeUser('endjob2');
+    const group = await makeGroupWithOwner(owner.id);
+    const call = await makeCall(group.id);
+
+    await endLiveActivitiesForCall(call.id);
+
+    expect(mockEnd).not.toHaveBeenCalled();
+  });
+
+  it('runs even when PRESENCE_ENABLED=false — the end job is not a presence update', async () => {
+    process.env.PRESENCE_ENABLED = 'false';
+    try {
+      await jest.isolateModulesAsync(async () => {
+        // isolateModulesAsync gives a fresh module registry, so the mocked
+        // notifications module must be re-imported here too — asserting against
+        // the outer mockEnd would check a different jest.fn() instance. It also
+        // freshly re-requires db/prisma.js, opening a second, separate Postgres
+        // connection that this file's own afterAll never sees — disconnect it
+        // explicitly or it leaks for the rest of the (--runInBand) test run.
+        const { endLiveActivitiesForCall: isolatedEnd } = await import('../services/callPresence.js');
+        const { notifications: isolatedNotifications } = await import('../services/notifications.js');
+        const { prisma: isolatedPrisma } = await import('../db/prisma.js');
+
+        try {
+          const owner = await makeUser('endjob3');
+          const group = await makeGroupWithOwner(owner.id);
+          const call = await makeCall(group.id);
+          await addActivityToken(call.id, owner.id, 'ios-tok-end-disabled');
+
+          await isolatedEnd(call.id);
+
+          expect(isolatedNotifications.endLiveActivities).toHaveBeenCalledTimes(1);
+          const remaining = await prisma.callLiveActivityToken.count({ where: { call_id: call.id } });
+          expect(remaining).toBe(0);
+        } finally {
+          await isolatedPrisma.$disconnect();
+        }
+      });
+    } finally {
+      delete process.env.PRESENCE_ENABLED;
+    }
+  });
+
+  it('forgets an already-gone call without erroring', async () => {
+    await expect(endLiveActivitiesForCall('00000000-0000-0000-0000-000000000000')).resolves.toBeUndefined();
+    expect(mockEnd).not.toHaveBeenCalled();
   });
 });

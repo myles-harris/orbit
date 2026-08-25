@@ -2,7 +2,8 @@ import { Cadence } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
-import { broadcastCallPresence, forgetCallPresence } from './callPresence.js';
+import { broadcastCallPresence, forgetCallPresence, expiryFor } from './callPresence.js';
+import { scheduleLiveActivityEnd } from '../queue/schedulerQueue.js';
 import { SCHEDULE_TZ, calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, dayKeyForDate, dayKey, shuffle, wallTimeToUtc } from '../util/scheduleTime.js';
 
 /** A participant is stale after this long with no heartbeat (client beats every 10s). */
@@ -418,6 +419,15 @@ export const scheduler = {
         `[scheduler] call ${callId}: live activity ${delivered.size}/${ptsByToken.size} device(s), ` +
         `alert push to ${uncovered.length}/${group.members.length} member(s)`
       );
+
+      // [fix 12] expiryFor returns null when a scheduled call has no ends_at (reachable
+      // via the DEV routes at calls.ts:552 and :622). Skip rather than assert non-null.
+      // Note: `call` still holds the pre-activation started_at (the status: 'active'
+      // update above is not reflected back), but expiryFor only reads ends_at for
+      // scheduled calls, so that staleness is harmless here.
+      const expiry = expiryFor(call);
+      if (expiry) await scheduleLiveActivityEnd(call.id, expiry);
+      else console.warn(`[presence] No expiry anchor for call ${call.id}, no end job scheduled`);
 
       console.log(`[scheduler] Activated scheduled call ${callId} for group ${group.name}`);
     } catch (error) {

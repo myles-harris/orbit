@@ -204,6 +204,35 @@ export function forgetCallPresence(callId: string): void {
   lastCount.delete(callId);
 }
 
+/**
+ * Ends every registered Live Activity for a call and clears its token rows. Runs
+ * regardless of PRESENCE_ENABLED, deliberately: that flag stops the fan-out, but must
+ * not strand activities on lock screens forever. endLiveActivities sends `event: 'end'`
+ * and is not a presence update.
+ */
+export async function endLiveActivitiesForCall(callId: string): Promise<void> {
+  const call = await loadCall(callId);
+  if (!call) { forgetCallPresence(callId); return; }
+
+  const [tokens, group, count] = await Promise.all([
+    prisma.callLiveActivityToken.findMany({ where: { call_id: callId }, select: { push_token: true } }),
+    prisma.group.findUnique({ where: { id: call.group_id }, select: { name: true } }),
+    prisma.callParticipant.count({ where: { call_id: callId, left_at: null } }),
+  ]);
+
+  if (tokens.length > 0 && group) {
+    await notifications.endLiveActivities(
+      tokens.map(t => t.push_token),
+      buildState(group.name, call, count),
+      new Date(),
+    );
+  }
+
+  await prisma.callLiveActivityToken.deleteMany({ where: { call_id: callId } });
+  forgetCallPresence(callId);
+  console.log(`[presence] Ended ${tokens.length} Live Activity/ies for call ${callId}`);
+}
+
 /** [fix 9] Test-only: clears every pending timer so Jest does not report open handles. */
 export function resetCallPresenceState(): void {
   for (const t of pending.values()) clearTimeout(t);
