@@ -58,6 +58,7 @@ import { createHmac } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { app } from '../app.js';
 import { scheduler } from '../services/scheduler.js';
+import { schedulerQueue } from '../queue/schedulerQueue.js';
 import {
   createTestUser,
   createTestUserWithToken,
@@ -1726,6 +1727,25 @@ describe('Calls endpoints', () => {
         .set('Authorization', `Bearer ${otherToken}`);
 
       expect(res.status).toBe(403);
+    });
+
+    it('schedules the end-live-activities job at started_at + 1h (SPONTANEOUS_TTL_MS)', async () => {
+      (schedulerQueue.add as jest.Mock).mockClear();
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/call-now`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(schedulerQueue.add).toHaveBeenCalledTimes(1);
+      const [name, data, opts] = (schedulerQueue.add as jest.Mock).mock.calls[0];
+      expect(name).toBe('end-live-activities');
+      expect(data).toEqual({ callId: res.body.id });
+      expect(opts.jobId).toBe(`end-la-${res.body.id}`);
+      expect(opts.delay).toBeGreaterThan(60 * 60_000 - 5000);
+      expect(opts.delay).toBeLessThanOrEqual(60 * 60_000);
     });
   });
 

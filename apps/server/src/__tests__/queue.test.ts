@@ -1,8 +1,13 @@
 const mockUpsertJobScheduler = jest.fn().mockResolvedValue(undefined);
+const mockAdd = jest.fn().mockResolvedValue(undefined);
+const mockGetJob = jest.fn().mockResolvedValue(null);
+const mockJobRemove = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('bullmq', () => ({
   Queue: jest.fn().mockImplementation(() => ({
     upsertJobScheduler: mockUpsertJobScheduler,
+    add: mockAdd,
+    getJob: mockGetJob,
   })),
   Worker: jest.fn().mockImplementation(() => ({
     on: jest.fn(),
@@ -18,7 +23,15 @@ jest.mock('../services/scheduler', () => ({
   },
 }));
 
-import { registerSchedulerJobs } from '../queue/schedulerQueue.js';
+const mockEndLiveActivitiesForCall = jest.fn().mockResolvedValue(undefined);
+jest.mock('../services/callPresence', () => ({
+  endLiveActivitiesForCall: (...args: any[]) => mockEndLiveActivitiesForCall(...args),
+  // setup.ts's afterEach requires this module directly to clear pending debounce
+  // timers between tests; a mock that omits it breaks every test in this file.
+  resetCallPresenceState: jest.fn(),
+}));
+
+import { registerSchedulerJobs, scheduleLiveActivityEnd } from '../queue/schedulerQueue.js';
 import { processJob } from '../worker/scheduler.js';
 import { scheduler } from '../services/scheduler.js';
 
@@ -107,9 +120,64 @@ describe('processJob', () => {
     expect(scheduler.pruneStaleParticipants).toHaveBeenCalledTimes(1);
   });
 
+  it('calls endLiveActivitiesForCall for end-live-activities', async () => {
+    await processJob({ name: 'end-live-activities', data: { callId: 'call-1' } } as any);
+    expect(mockEndLiveActivitiesForCall).toHaveBeenCalledWith('call-1');
+  });
+
   it('throws on an unknown job name', async () => {
     await expect(
       processJob({ name: 'not-a-real-job' } as any)
     ).rejects.toThrow('Unknown job');
+  });
+});
+
+// ─── scheduleLiveActivityEnd ────────────────────────────────────────────────
+
+describe('scheduleLiveActivityEnd', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGetJob.mockResolvedValue(null);
+  });
+
+  it('adds an end-live-activities job with delay approximately endAt - now', async () => {
+    const endAt = new Date(Date.now() + 60_000);
+    await scheduleLiveActivityEnd('call-a', endAt);
+
+    expect(mockAdd).toHaveBeenCalledTimes(1);
+    const [name, data, opts] = mockAdd.mock.calls[0];
+    expect(name).toBe('end-live-activities');
+    expect(data).toEqual({ callId: 'call-a' });
+    expect(opts.jobId).toBe('end-la-call-a');
+    expect(opts.delay).toBeGreaterThan(55_000);
+    expect(opts.delay).toBeLessThanOrEqual(60_000);
+  });
+
+  it('clamps delay to 0 for an endAt already in the past', async () => {
+    await scheduleLiveActivityEnd('call-b', new Date(Date.now() - 5_000));
+
+    const [, , opts] = mockAdd.mock.calls[0];
+    expect(opts.delay).toBe(0);
+  });
+
+  it('[fix 2] removes the existing job before adding the new one when rescheduling', async () => {
+    mockGetJob.mockResolvedValueOnce({ remove: mockJobRemove });
+
+    await scheduleLiveActivityEnd('call-c', new Date(Date.now() + 30_000));
+
+    expect(mockGetJob).toHaveBeenCalledWith('end-la-call-c');
+    expect(mockJobRemove).toHaveBeenCalledTimes(1);
+    expect(mockAdd).toHaveBeenCalledTimes(1);
+    const [, , opts] = mockAdd.mock.calls[0];
+    expect(opts.delay).toBeGreaterThan(25_000);
+  });
+
+  it('does not throw when the existing job is already gone', async () => {
+    mockGetJob.mockResolvedValueOnce({ remove: jest.fn().mockRejectedValue(new Error('gone')) });
+
+    await expect(
+      scheduleLiveActivityEnd('call-d', new Date(Date.now() + 10_000)),
+    ).resolves.toBeUndefined();
+    expect(mockAdd).toHaveBeenCalledTimes(1);
   });
 });
