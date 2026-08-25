@@ -36,6 +36,11 @@ export async function scheduleLiveActivityEnd(callId: string, endAt: Date) {
   );
 }
 
+export async function cancelLiveActivityEnd(callId: string): Promise<void> {
+  const job = await schedulerQueue.getJob(`end-la-${callId}`);
+  if (job) await job.remove();
+}
+
 export async function registerSchedulerJobs() {
   await schedulerQueue.upsertJobScheduler(
     'generate-scheduled-calls',

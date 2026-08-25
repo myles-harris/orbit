@@ -75,9 +75,14 @@ export default function CallScreen() {
   const [screenReaderOn, setScreenReaderOn] = useState(false);
 
   useEffect(() => {
-    initializeCall();
+    let cancelled = false;
+    initializeCall(() => cancelled);
     return () => {
-      if (callObjectRef.current) callObjectRef.current.destroy();
+      cancelled = true;
+      if (callObjectRef.current) {
+        callObjectRef.current.destroy();
+        callObjectRef.current = null;
+      }
     };
   }, []);
 
@@ -195,7 +200,7 @@ export default function CallScreen() {
     if (secondsLeft === 0) endCallRef.current(true);
   }, [secondsLeft]);
 
-  const initializeCall = async () => {
+  const initializeCall = async (isCancelled: () => boolean) => {
     try {
       // Keep audio alive when the app is sent to the background.
       // UIBackgroundModes: ["voip"] in app.json enables this on iOS.
@@ -209,8 +214,14 @@ export default function CallScreen() {
         interruptionModeAndroid: InterruptionModeAndroid.DoNotMix,
       });
 
+      if (isCancelled()) return;
       const callObject = Daily.createCallObject();
       callObjectRef.current = callObject;
+      if (isCancelled()) {
+        callObject.destroy();
+        callObjectRef.current = null;
+        return;
+      }
 
       callObject
         .on('joined-meeting', handleJoinedMeeting)
@@ -298,6 +309,14 @@ export default function CallScreen() {
   };
 
   const endCall = async (expired = false) => {
+    // Leave first: the user tapped Leave and expects the camera off immediately.
+    // Guarded so a leave() rejection (e.g. the call object already torn down)
+    // can't skip the backend notification below — that must fire regardless.
+    try {
+      if (callObjectRef.current) await callObjectRef.current.leave();
+    } catch (error) {
+      console.error('Failed to leave Daily call locally:', error);
+    }
     try {
       const client = await createAuthenticatedApiClient();
       if (expired) {
@@ -308,7 +327,6 @@ export default function CallScreen() {
     } catch (error) {
       console.error('Failed to notify backend:', error);
     }
-    if (callObjectRef.current) await callObjectRef.current.leave();
   };
 
   const toggleVideo = () => {

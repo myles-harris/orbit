@@ -60,6 +60,22 @@ describe('POST /auth/complete-signup', () => {
   });
 });
 
+describe('requireJwt secret handling', () => {
+  it('rejects a token signed with the old insecure literal fallback "dev"', async () => {
+    const user = await createTestUser();
+    // Regression test for the vulnerability step A0 closes: requireJwt used to verify
+    // with `process.env.JWT_SECRET || 'dev'`, so any unset-secret deployment accepted
+    // (and this exact forged token would let an attacker impersonate) any user.
+    const forgedToken = jwt.sign({}, 'dev', { subject: user.id, expiresIn: 900 });
+
+    const res = await request(app)
+      .get('/me')
+      .set('Authorization', `Bearer ${forgedToken}`);
+
+    expect(res.status).toBe(401);
+  });
+});
+
 describe('POST /auth/refresh', () => {
   it('returns new tokens with a valid refresh token', async () => {
     const user = await createTestUser();
