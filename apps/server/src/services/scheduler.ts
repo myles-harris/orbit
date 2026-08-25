@@ -2,6 +2,7 @@ import { Cadence } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
+import { broadcastCallPresence, forgetCallPresence } from './callPresence.js';
 import { SCHEDULE_TZ, calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, dayKeyForDate, dayKey, shuffle, wallTimeToUtc } from '../util/scheduleTime.js';
 
 /** A participant is stale after this long with no heartbeat (client beats every 10s). */
@@ -376,9 +377,7 @@ export const scheduler = {
             groupName: group.name,
             callType: 'scheduled',
             endsAtMs: call.ends_at ? call.ends_at.getTime() : undefined,
-            // STAGE 8 INSERTION POINT: `participantCount: 0` goes here.
-            // Until it does, the field is absent and the widget's count line
-            // does not render. That is the intended pre-stage-8 state.
+            participantCount: 0,
           },
           call.ends_at ?? undefined,
         );
@@ -503,6 +502,7 @@ export const scheduler = {
           where: { id: participant.id },
           data: { left_at: new Date() },
         });
+        broadcastCallPresence(participant.call_id);
 
         console.log(`[scheduler] Pruned stale participant ${participant.user_id} from call ${participant.call_id}`);
 
@@ -568,6 +568,7 @@ export const scheduler = {
       });
 
       console.log(`[scheduler] Closed call ${callId}`);
+      forgetCallPresence(callId);
     } catch (error) {
       console.error(`[scheduler] Error closing call ${callId}:`, error);
     }
