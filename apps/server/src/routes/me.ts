@@ -5,6 +5,7 @@ import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
 import { scheduler } from '../services/scheduler.js';
 import { dailyVideo } from '../services/dailyVideo.js';
+import { broadcastCallPresence, sendPresenceToToken } from '../services/callPresence.js';
 
 export const meRouter = Router();
 
@@ -242,8 +243,14 @@ meRouter.post('/calls/live-activity-token', requireJwt, async (req, res) => {
 
     res.json({ ok: true });
 
-    // [fix 3] The targeted seed lands at stage 8, where sendPresenceToToken exists.
-    // See 09-presence-fanout-service.md, Step 3.7. Do not add a stub here.
+    // [fix 3] Seed this activity with the current count. Broadcasts only fire on a
+    // count CHANGE, so a token that registers mid-call would otherwise render whatever
+    // push-to-start seeded, forever, on a call where the count never changes again.
+    // This is the normal path if stage 0's spike 2 came back negative.
+    // (call.status is already guaranteed 'active' by the check at line 211 above —
+    // sendPresenceToToken re-checks it fresh itself, so no re-check is needed here.)
+    void sendPresenceToToken(call_id, push_token).catch(err =>
+      console.error(`[presence] Targeted seed failed for call ${call_id}:`, err));
   } catch (error) {
     console.error('[POST /me/calls/live-activity-token] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
@@ -290,6 +297,7 @@ meRouter.post('/calls/leave', requireJwt, async (req, res) => {
         where: { id: participant.id },
         data: { left_at: new Date() },
       });
+      broadcastCallPresence(participant.call_id);
 
       console.log(`[POST /me/calls/leave] marked participant ${participant.id} as left (call=${participant.call_id}, type=${participant.call.call_type}, status=${participant.call.status})`);
 

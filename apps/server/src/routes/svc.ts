@@ -1,9 +1,54 @@
-import { Router } from 'express';
+import { Router, Request } from 'express';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { prisma } from '../db/prisma.js';
 import { scheduler } from '../services/scheduler.js';
 import { dailyVideo } from '../services/dailyVideo.js';
+import { broadcastCallPresence } from '../services/callPresence.js';
 
 export const svcRouter = Router();
+
+const DAILY_WEBHOOK_SECRET = process.env.DAILY_WEBHOOK_SECRET;
+const WEBHOOK_MAX_AGE_MS = 5 * 60 * 1000;
+
+/**
+ * Verifies Daily's HMAC-SHA256 webhook signature: base64(hmacSha256(base64Decode(secret),
+ * `${timestamp}.${rawBody}`)), compared against the X-Webhook-Signature header. The
+ * timestamp header is also bounded to reject replayed requests.
+ *
+ * Fails open (with a warning) when DAILY_WEBHOOK_SECRET is unset, matching this stage's
+ * "no env change needed to ship" pattern elsewhere — but this route becomes a genuine
+ * broadcast trigger the moment PRESENCE_ENABLED is on, so the secret should be set in
+ * every environment that isn't purely local.
+ */
+function verifyDailyWebhook(req: Request): boolean {
+  if (!DAILY_WEBHOOK_SECRET) {
+    console.warn('[daily-webhook] DAILY_WEBHOOK_SECRET not set — accepting unauthenticated webhook');
+    return true;
+  }
+
+  const timestamp = req.header('X-Webhook-Timestamp');
+  const signature = req.header('X-Webhook-Signature');
+  const rawBody = (req as any).rawBody as Buffer | undefined;
+  if (!timestamp || !signature || !rawBody) return false;
+
+  const timestampMs = Number(timestamp) * 1000;
+  if (!Number.isFinite(timestampMs) || Math.abs(Date.now() - timestampMs) > WEBHOOK_MAX_AGE_MS) {
+    return false;
+  }
+
+  let key: Buffer;
+  try {
+    key = Buffer.from(DAILY_WEBHOOK_SECRET, 'base64');
+  } catch {
+    return false;
+  }
+  const expected = createHmac('sha256', key).update(`${timestamp}.${rawBody.toString()}`).digest('base64');
+
+  const expectedBuf = Buffer.from(expected);
+  const actualBuf = Buffer.from(signature);
+  if (expectedBuf.length !== actualBuf.length) return false;
+  return timingSafeEqual(expectedBuf, actualBuf);
+}
 
 // Worker roll-over to generate future schedules
 svcRouter.post('/schedule/rollover', async (_req, res) => {
@@ -32,9 +77,15 @@ svcRouter.post('/calls/:id/close', async (req, res) => {
  * Daily.co retries delivery on non-2xx responses, so we always return 200
  * immediately and process asynchronously.
  *
- * To enable signature verification, set DAILY_WEBHOOK_SECRET in .env.
+ * Rejects requests that don't carry a valid HMAC signature once DAILY_WEBHOOK_SECRET
+ * is set in .env — see verifyDailyWebhook above.
  */
 svcRouter.post('/daily/webhook', async (req, res) => {
+  if (!verifyDailyWebhook(req)) {
+    console.warn('[daily-webhook] Rejected request with missing or invalid signature');
+    return res.status(401).json({ error: 'invalid_signature' });
+  }
+
   res.json({ received: true });
 
   const { type, properties } = req.body ?? {};
@@ -74,6 +125,7 @@ svcRouter.post('/daily/webhook', async (req, res) => {
       where: { id: participant.id },
       data: { left_at: new Date() },
     });
+    broadcastCallPresence(call.id);
 
     console.log(`[daily-webhook] Recorded disconnect for user ${userId} in call ${call.id}`);
 

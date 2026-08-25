@@ -102,6 +102,7 @@ export interface CallLiveActivityState {
   groupName: string;
   callType: 'scheduled' | 'spontaneous';
   endsAtMs?: number;
+  participantCount?: number;
 }
 
 export const notifications = {
@@ -198,6 +199,56 @@ export const notifications = {
       results.failure = tokens.length;
     }
 
+    return results;
+  },
+
+  /**
+   * Data-only ("headless") Expo push. No title/body/channelId, so expo-notifications
+   * does not present it and it instead reaches OrbitFirebaseMessagingService, which
+   * decides what to post. Android-only by design: iOS presence goes via the Live
+   * Activity APNs path, so this never needs _contentAvailable.
+   */
+  async sendExpoData(tokens: string[], data: Record<string, string>) {
+    const results = { success: 0, failure: 0 };
+    if (tokens.length === 0) return results;
+
+    // Expo caps a single request at 100 messages.
+    const CHUNK = 100;
+    for (let i = 0; i < tokens.length; i += CHUNK) {
+      const slice = tokens.slice(i, i + CHUNK);
+      try {
+        const messages = slice.map(token => ({ to: token, data, priority: 'high' }));
+        const response = await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify(messages),
+        });
+        const result = await response.json();
+
+        // Expo returns top-level `errors` for request-level failures (bad JSON,
+        // rate limit, auth) with no `data` array at all. Reading only `result.data`
+        // means a rejected batch counts as zero successes and zero failures and is
+        // invisible in the logs.
+        if (Array.isArray(result.errors) && result.errors.length > 0) {
+          console.error('[push] Expo data push rejected:', result.errors);
+          results.failure += slice.length;
+          continue;
+        }
+        if (!Array.isArray(result.data)) {
+          console.error('[push] Expo data push: unexpected response shape', result);
+          results.failure += slice.length;
+          continue;
+        }
+
+        for (const receipt of result.data) {
+          if (receipt.status === 'ok') results.success++;
+          else { console.error('[push] Expo data push failed:', receipt); results.failure++; }
+        }
+      } catch (error) {
+        console.error('[push] Expo data push error:', error);
+        results.failure += slice.length;
+      }
+    }
     return results;
   },
 
@@ -415,6 +466,85 @@ export const notifications = {
     }
 
     return delivered;
+  },
+
+  /**
+   * Silently update a running Live Activity. No `alert` key, so no sound or banner.
+   * Priority 5 is required for non-alerting updates and is what keeps this inside
+   * Apple's frequent-update budget (NSSupportsLiveActivitiesFrequentUpdates is set
+   * in app.json).
+   */
+  async updateLiveActivities(
+    activityTokens: string[],
+    state: CallLiveActivityState,
+    staleAt?: Date,
+  ) {
+    if (!isApnsConfigured()) {
+      console.log(`[push] STUB: Would send Live Activity update to ${activityTokens.length} device(s)`);
+      return { success: 0, failure: 0, stale: [] as string[] };
+    }
+
+    const results = { success: 0, failure: 0, stale: [] as string[] };
+    const payload = {
+      aps: {
+        timestamp: Math.floor(Date.now() / 1000),
+        event: 'update',
+        'content-state': state,
+        ...(staleAt ? { 'stale-date': Math.floor(staleAt.getTime() / 1000) } : {}),
+      },
+    };
+
+    // Chunked concurrency, matching startLiveActivities after stage 1.
+    // A join or leave in a large group fans out to every member's device; a sequential
+    // loop puts the last member's card seconds behind the first's.
+    const CONCURRENCY = 16;
+    for (let i = 0; i < activityTokens.length; i += CONCURRENCY) {
+      const slice = activityTokens.slice(i, i + CONCURRENCY);
+      const settled = await Promise.all(
+        slice.map((token) =>
+          sendApnsRaw(token, payload, {
+            pushType: 'liveactivity',
+            topic: `${BUNDLE}.push-type.liveactivity`,
+            priority: 5,
+          }).then((r) => ({ token, r })),
+        ),
+      );
+      for (const { token, r } of settled) {
+        if (r.ok) results.success++;
+        else {
+          results.failure++;
+          if (r.reason === 'BadDeviceToken' || r.reason === 'Unregistered') results.stale.push(token);
+          else console.error(`[push] Live Activity update failed (${r.status}): ${r.reason}`);
+        }
+      }
+    }
+    return results;
+  },
+
+  /** End a running Live Activity. dismissAt controls when it leaves the Lock Screen. */
+  async endLiveActivities(activityTokens: string[], state: CallLiveActivityState, dismissAt?: Date) {
+    if (!isApnsConfigured()) {
+      console.log(`[push] STUB: Would send Live Activity end to ${activityTokens.length} device(s)`);
+      return;
+    }
+    const payload = {
+      aps: {
+        timestamp: Math.floor(Date.now() / 1000),
+        event: 'end',
+        'content-state': state,
+        ...(dismissAt ? { 'dismissal-date': Math.floor(dismissAt.getTime() / 1000) } : {}),
+      },
+    };
+    await Promise.all(
+      activityTokens.map(async (token) => {
+        const r = await sendApnsRaw(token, payload, {
+          pushType: 'liveactivity',
+          topic: `${BUNDLE}.push-type.liveactivity`,
+          priority: 5,
+        });
+        if (!r.ok) console.error(`[push] Live Activity end failed (${r.status}): ${r.reason}`);
+      }),
+    );
   },
 
   /**

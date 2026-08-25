@@ -312,6 +312,119 @@ describe('startLiveActivities', () => {
   });
 });
 
+// ─── updateLiveActivities ─────────────────────────────────────────────────────
+
+describe('updateLiveActivities', () => {
+  it('sends event: update', async () => {
+    await notifications.updateLiveActivities(['token-u1'], { groupName: 'G', callType: 'scheduled', participantCount: 2 });
+    const [, payload] = mockSendApnsRaw.mock.calls[0];
+    expect(payload.aps.event).toBe('update');
+  });
+
+  it('carries no alert key', async () => {
+    await notifications.updateLiveActivities(['token-u2'], { groupName: 'G', callType: 'scheduled', participantCount: 1 });
+    const [, payload] = mockSendApnsRaw.mock.calls[0];
+    expect(payload.aps.alert).toBeUndefined();
+  });
+
+  it('sends at priority 5', async () => {
+    await notifications.updateLiveActivities(['token-u3'], { groupName: 'G', callType: 'scheduled', participantCount: 1 });
+    const [, , headers] = mockSendApnsRaw.mock.calls[0];
+    expect(headers.priority).toBe(5);
+  });
+
+  it('uses the liveactivity topic suffix', async () => {
+    await notifications.updateLiveActivities(['token-u4'], { groupName: 'G', callType: 'scheduled', participantCount: 1 });
+    const [, , headers] = mockSendApnsRaw.mock.calls[0];
+    expect(headers.topic).toBe('com.mylesharris.orbit.push-type.liveactivity');
+  });
+
+  it('sends participantCount as a number, not a string', async () => {
+    await notifications.updateLiveActivities(['token-u5'], { groupName: 'G', callType: 'scheduled', participantCount: 3 });
+    const [, payload] = mockSendApnsRaw.mock.calls[0];
+    expect(typeof payload.aps['content-state'].participantCount).toBe('number');
+  });
+
+  it('returns stale tokens for BadDeviceToken/Unregistered without failing the others', async () => {
+    mockSendApnsRaw
+      .mockResolvedValueOnce({ ok: false, status: 410, reason: 'Unregistered' })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    const result = await notifications.updateLiveActivities(
+      ['token-bad', 'token-good'],
+      { groupName: 'G', callType: 'scheduled', participantCount: 1 },
+    );
+    expect(result.stale).toEqual(['token-bad']);
+    expect(result.success).toBe(1);
+    expect(result.failure).toBe(1);
+  });
+
+  it('returns zeroed results and logs STUB when APNs is unconfigured', async () => {
+    const apnsMock = jest.requireMock('../services/apns') as { isApnsConfigured: () => boolean };
+    const orig = apnsMock.isApnsConfigured;
+    apnsMock.isApnsConfigured = () => false;
+    try {
+      const result = await notifications.updateLiveActivities(['token-stub'], { groupName: 'G', callType: 'scheduled' });
+      expect(result).toEqual({ success: 0, failure: 0, stale: [] });
+    } finally {
+      apnsMock.isApnsConfigured = orig;
+    }
+  });
+});
+
+// ─── endLiveActivities ────────────────────────────────────────────────────────
+
+describe('endLiveActivities', () => {
+  it('sends event: end with a dismissal-date derived from dismissAt', async () => {
+    const dismissAt = new Date(Date.now() + 5000);
+    await notifications.endLiveActivities(
+      ['token-e1'],
+      { groupName: 'G', callType: 'spontaneous', participantCount: 0 },
+      dismissAt,
+    );
+    const [, payload] = mockSendApnsRaw.mock.calls[0];
+    expect(payload.aps.event).toBe('end');
+    expect(payload.aps['dismissal-date']).toBe(Math.floor(dismissAt.getTime() / 1000));
+  });
+});
+
+// ─── sendExpoData ─────────────────────────────────────────────────────────────
+
+describe('sendExpoData', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('chunks above 100 tokens into two requests', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ data: Array(100).fill({ status: 'ok' }) }),
+    } as any);
+    const tokens = Array.from({ length: 150 }, (_, i) => `ExponentPushToken[${i}]`);
+
+    await notifications.sendExpoData(tokens, { type: 'call_presence' });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts a top-level errors response as failures', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ errors: [{ message: 'bad request' }] }),
+    } as any);
+    const tokens = ['ExponentPushToken[a]', 'ExponentPushToken[b]'];
+
+    const result = await notifications.sendExpoData(tokens, { type: 'call_presence' });
+
+    expect(result.failure).toBe(tokens.length);
+    expect(result.success).toBe(0);
+  });
+
+  it('returns zeroed results without calling fetch for an empty token list', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const result = await notifications.sendExpoData([], { type: 'call_presence' });
+    expect(result).toEqual({ success: 0, failure: 0 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+});
+
 // ─── POST /me/devices/register-live-activity ─────────────────────────────────
 
 describe('POST /me/devices/register-live-activity', () => {
@@ -515,6 +628,27 @@ describe('POST /me/calls/live-activity-token', () => {
       where: { call_id: call.id, push_token: 'activity-push-token-6' },
     });
     expect(row?.user_id).toBe(member.id);
+  });
+
+  it('seeds the newly registered token with the current participant count [fix 3]', async () => {
+    const { member, call } = await setupGroupAndCall('la_seed');
+    await prisma.callParticipant.create({
+      data: { call_id: call.id, user_id: member.id, joined_at: new Date() },
+    });
+    const token = createAccessToken(member.id);
+
+    await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'seed-activity-token' });
+
+    // The seed fires fire-and-forget after the response; give it a tick to land.
+    await new Promise(r => setTimeout(r, 50));
+
+    const call_ = mockSendApnsRaw.mock.calls.find(([t]) => t === 'seed-activity-token');
+    expect(call_).toBeDefined();
+    const [, payload] = call_!;
+    expect(payload.aps['content-state'].participantCount).toBe(1);
   });
 
   it('returns 409 and writes nothing for a call that is not active', async () => {

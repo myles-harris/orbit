@@ -3,6 +3,7 @@ import { requireJwt } from '../util/requireJwt.js';
 import { dailyVideo, buildRoomName } from '../services/dailyVideo.js';
 import { prisma } from '../db/prisma.js';
 import { notifications } from '../services/notifications.js';
+import { broadcastCallPresence, SPONTANEOUS_TTL_MS } from '../services/callPresence.js';
 
 export const callsRouter = Router();
 
@@ -121,7 +122,8 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
       await notifications.startLiveActivities(
         ptsTokens,
         { callId: call.id, groupId },
-        { groupName: group.name, callType: 'spontaneous' },
+        { groupName: group.name, callType: 'spontaneous', participantCount: 0 },
+        new Date(startedAt.getTime() + SPONTANEOUS_TTL_MS),
       );
     }
 
@@ -337,6 +339,7 @@ callsRouter.post('/:id/calls/:callId/join-token', requireJwt, async (req, res) =
         last_seen_at: new Date(),
       }
     });
+    broadcastCallPresence(callId);
 
     // Generate Daily.co meeting token
     const token = await dailyVideo.createMeetingToken(call.room_name, userId, call.ends_at ?? undefined);
@@ -380,6 +383,7 @@ callsRouter.post('/:id/calls/:callId/leave', requireJwt, async (req, res) => {
         where: { id: participant.id },
         data: { left_at: new Date() }
       });
+      broadcastCallPresence(callId);
 
       console.log(`[leave-call] User ${userId} left call ${callId}`);
 

@@ -24,7 +24,11 @@ jest.mock('../services/notifications', () => ({
     sendPushTokens: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
     sendToBuckets: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
     startLiveActivities: jest.fn().mockResolvedValue([]),
+    updateLiveActivities: jest.fn().mockResolvedValue({ success: 0, failure: 0, stale: [] }),
+    endLiveActivities: jest.fn().mockResolvedValue(undefined),
+    sendExpoData: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
   },
+  INVITE_PUSH: { channelId: 'invites', soundName: 'default' },
 }));
 
 jest.mock('../services/twilioVerify', () => ({
@@ -49,6 +53,8 @@ jest.mock('../services/scheduler', () => ({
 
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import express from 'express';
+import { createHmac } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { app } from '../app.js';
 import { scheduler } from '../services/scheduler.js';
@@ -1893,6 +1899,25 @@ describe('Calls endpoints', () => {
       expect(participant).not.toBeNull();
       expect(participant!.last_seen_at).not.toBeNull();
     });
+
+    it('triggers a presence broadcast after the debounce window', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callLiveActivityToken.create({
+        data: { call_id: call.id, user_id: user.id, push_token: 'join-presence-token' },
+      });
+
+      const { notifications: mockNotifications } = jest.requireMock('../services/notifications');
+      mockNotifications.updateLiveActivities.mockClear();
+
+      await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/join-token`)
+        .set('Authorization', `Bearer ${token}`);
+
+      await new Promise(r => setTimeout(r, 1100));
+      expect(mockNotifications.updateLiveActivities).toHaveBeenCalled();
+    });
   });
 
   describe('POST /groups/:id/calls/:callId/leave', () => {
@@ -1941,6 +1966,28 @@ describe('Calls endpoints', () => {
         .set('Authorization', `Bearer ${token}`);
 
       expect(res.status).toBe(200);
+    });
+
+    it('triggers a presence broadcast after the debounce window', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
+      });
+      await prisma.callLiveActivityToken.create({
+        data: { call_id: call.id, user_id: user.id, push_token: 'leave-presence-token' },
+      });
+
+      const { notifications: mockNotifications } = jest.requireMock('../services/notifications');
+      mockNotifications.updateLiveActivities.mockClear();
+
+      await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/leave`)
+        .set('Authorization', `Bearer ${token}`);
+
+      await new Promise(r => setTimeout(r, 1100));
+      expect(mockNotifications.updateLiveActivities).toHaveBeenCalled();
     });
   });
 
@@ -2293,6 +2340,110 @@ describe('Svc endpoints', () => {
       const still = await prisma.callSession.findUnique({ where: { id: call.id } });
       expect(still?.status).toBe('active');
       expect(mockScheduler.closeCall).not.toHaveBeenCalled();
+    });
+
+    it('triggers a presence broadcast on participant-left', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
+      });
+      await prisma.callLiveActivityToken.create({
+        data: { call_id: call.id, user_id: user.id, push_token: 'webhook-presence-token' },
+      });
+
+      const { notifications: mockNotifications } = jest.requireMock('../services/notifications');
+      mockNotifications.updateLiveActivities.mockClear();
+
+      await request(app)
+        .post('/svc/daily/webhook')
+        .send({ type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } });
+
+      await new Promise(r => setTimeout(r, 1100));
+      expect(mockNotifications.updateLiveActivities).toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /svc/daily/webhook — signature verification', () => {
+    const secret = Buffer.from('test-daily-webhook-secret').toString('base64');
+
+    function sign(timestamp: string, rawBody: string) {
+      const key = Buffer.from(secret, 'base64');
+      return createHmac('sha256', key).update(`${timestamp}.${rawBody}`).digest('base64');
+    }
+
+    async function buildAppWithSecret() {
+      let testApp!: express.Express;
+      await jest.isolateModulesAsync(async () => {
+        process.env.DAILY_WEBHOOK_SECRET = secret;
+        const { svcRouter } = await import('../routes/svc.js');
+        testApp = express();
+        testApp.use(express.json({
+          verify: (req: any, _res, buf: Buffer) => { req.rawBody = buf; },
+        }));
+        testApp.use('/svc', svcRouter);
+      });
+      return testApp;
+    }
+
+    afterEach(() => {
+      delete process.env.DAILY_WEBHOOK_SECRET;
+    });
+
+    it('accepts a request with a valid signature', async () => {
+      const testApp = await buildAppWithSecret();
+      const body = JSON.stringify({ type: 'participant-left', properties: {} });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+
+      const res = await request(testApp)
+        .post('/svc/daily/webhook')
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', timestamp)
+        .set('X-Webhook-Signature', sign(timestamp, body))
+        .send(body);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects a request with a missing signature', async () => {
+      const testApp = await buildAppWithSecret();
+
+      const res = await request(testApp)
+        .post('/svc/daily/webhook')
+        .send({ type: 'participant-left', properties: {} });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects a request with an invalid signature', async () => {
+      const testApp = await buildAppWithSecret();
+      const body = JSON.stringify({ type: 'participant-left', properties: {} });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+
+      const res = await request(testApp)
+        .post('/svc/daily/webhook')
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', timestamp)
+        .set('X-Webhook-Signature', 'not-the-right-signature')
+        .send(body);
+
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects a request with a stale timestamp', async () => {
+      const testApp = await buildAppWithSecret();
+      const body = JSON.stringify({ type: 'participant-left', properties: {} });
+      const staleTimestamp = String(Math.floor(Date.now() / 1000) - 600);
+
+      const res = await request(testApp)
+        .post('/svc/daily/webhook')
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', staleTimestamp)
+        .set('X-Webhook-Signature', sign(staleTimestamp, body))
+        .send(body);
+
+      expect(res.status).toBe(401);
     });
   });
 

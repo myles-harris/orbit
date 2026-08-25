@@ -11,7 +11,12 @@ import usersRouter from './routes/users.js';
 
 export const app = express();
 app.use(cors());
-app.use(express.json({ limit: '4mb' }));
+app.use(express.json({
+  limit: '4mb',
+  // Preserves the exact bytes Daily signed so the webhook route can verify the HMAC
+  // against them; JSON.stringify(req.body) is not guaranteed to reproduce the original.
+  verify: (req: any, _res, buf) => { req.rawBody = buf; },
+}));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
