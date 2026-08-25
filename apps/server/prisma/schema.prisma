@@ -107,7 +107,6 @@ model CallSession {
   ended_at              DateTime?  @db.Timestamptz(6)
   room_name             String?
   room_url              String?
-  live_activity_tokens  Json?
 
   // Relations
   group                     Group                   @relation(fields: [group_id], references: [id], onDelete: Cascade)
