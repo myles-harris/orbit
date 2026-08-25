@@ -25,10 +25,9 @@ public class CallLiveActivityModule: Module {
       self.lastPtsToken
     }
 
-    // True if a Live Activity already exists for the given callId.
-    // Used in App.tsx to skip a duplicate client-side start when push-to-start fired.
-    AsyncFunction("hasActivityForCall") { (callId: String) -> Bool in
-      Activity<CallActivityAttributes>.activities.contains { $0.attributes.callId == callId }
+    AsyncFunction("activityIdForCall") { (callId: String) -> String? in
+      Activity<CallActivityAttributes>.activities
+        .first { $0.attributes.callId == callId }?.id
     }
 
     AsyncFunction("startActivityAsync") { (callId: String, groupId: String, state: [String: Any]) -> String? in
@@ -36,8 +35,10 @@ public class CallLiveActivityModule: Module {
       let groupName = state["groupName"] as? String ?? ""
       let callType = state["callType"] as? String ?? "spontaneous"
       let endsAtMs = state["endsAt"] as? Double
+      let participantCount = state["participantCount"] as? Int
       let contentState = CallActivityAttributes.CallState(
-        groupName: groupName, callType: callType, endsAtMs: endsAtMs)
+        groupName: groupName, callType: callType, endsAtMs: endsAtMs,
+        participantCount: participantCount)
       let attributes = CallActivityAttributes(callId: callId, groupId: groupId)
       let endsAt = endsAtMs.map { Date(timeIntervalSince1970: $0 / 1000) }
       do {
@@ -70,6 +71,16 @@ public class CallLiveActivityModule: Module {
     /// End ALL call activities — safety net for stale activities after crashes.
     AsyncFunction("endAllActivitiesAsync") {
       for activity in Activity<CallActivityAttributes>.activities {
+        await activity.end(nil, dismissalPolicy: .immediate)
+      }
+    }
+
+    /// End only activities whose callId is not in the supplied list.
+    /// Used on launch to clear orphans without killing a still-running call.
+    AsyncFunction("endActivitiesExceptAsync") { (callIds: [String]) in
+      let keep = Set(callIds)
+      for activity in Activity<CallActivityAttributes>.activities
+      where !keep.contains(activity.attributes.callId) {
         await activity.end(nil, dismissalPolicy: .immediate)
       }
     }

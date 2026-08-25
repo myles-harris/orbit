@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import {
   View,
   Text,
@@ -15,6 +15,7 @@ const bgGradient = require('../../assets/background-gradient-4.jpeg');
 import { ApiClient } from '@orbit/shared';
 import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../context/AuthContext';
+import { setAccessToken } from '../utils/apiClient';
 import { API_URL } from '../config';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
@@ -65,7 +66,7 @@ export default function AuthScreen() {
         setStep('username');
       } else {
         const r = response as { access_token: string; refresh_token: string };
-        await SecureStore.setItemAsync('access_token', r.access_token);
+        await setAccessToken(r.access_token);
         if (r.refresh_token) {
           await SecureStore.setItemAsync('refresh_token', r.refresh_token);
         }
@@ -89,7 +90,7 @@ export default function AuthScreen() {
           time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }
       );
-      await SecureStore.setItemAsync('access_token', response.access_token);
+      await setAccessToken(response.access_token);
       if (response.refresh_token) {
         await SecureStore.setItemAsync('refresh_token', response.refresh_token);
       }

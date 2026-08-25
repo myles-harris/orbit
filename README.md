@@ -1,57 +1,84 @@
-# orbit
-mobile app for staying connected
-Orbit — Orbit Mobile App (Monorepo)
+# Orbit
 
-Overview
-Orbit is a mobile-first group video calling app (Orbit) built as a monorepo:
-- apps/server: Node.js + Express API (PERN backend) with scheduling worker
-- apps/mobile: React Native (Expo) client for iOS/Android
-- packages/shared: Shared DTOs and lightweight API client
+Mobile app for staying connected.
 
-Key Integrations (stubs provided)
-- Twilio Verify (OTP) and Twilio Programmable Video
-- Push Notifications: FCM (Android) and APNs (iOS)
-- PostgreSQL via Prisma ORM
+If you're not great at making the time to catch up with your people,
 
-Getting Started
-1) Copy env template:
-   cp .env.example .env
+Orbit will make it for you.
 
-2) Server:
-   - Install deps: (from repo root) npm install (uses workspaces)
-   - Run dev server: npm run dev -w apps/server
+## Join the beta
 
-3) Mobile (Expo):
-   - Install deps: npm install -w apps/mobile
-   - Start app: npm run start -w apps/mobile
+Orbit is in iOS beta. From your iPhone:
 
-Structure
-- apps/server: Express app, REST endpoints, Prisma schema, worker cron
-- apps/mobile: Expo app, auth flow (phone/OTP), groups, call screen
-- packages/shared: DTOs, API types, minimal fetch client
+1. Install [TestFlight](https://apps.apple.com/us/app/testflight/id899247664)
+2. [Join the Orbit beta](https://testflight.apple.com/join/Vh3vUD4Y)
 
-PRD Coverage (MVP skeleton)
-- Auth: phone + OTP, JWT issuance (server), persisted on device
-- Groups: create/join/leave, cadence config, owner/member roles
-- Calls: call-now, current, history, Twilio token endpoint
-- Scheduling: backend-only randomization; worker triggers activation
-- Notifications: push adapters (FCM/APNs) only (no SMS invites)
-- Offline Mode: AsyncStorage for auth, user, groups, call state
+Requires iOS 17.2 or later. Orbit needs camera, microphone, and notification access for calls to work.
 
-Monorepo Scripts (root)
-- npm run dev:server — start backend in dev
-- npm run start:mobile — start Expo bundler
+Both links need to open on the iPhone you'll be testing with — if you're on desktop, open this page on your phone.
 
-Environments
-See .env.example for all variables required across services. Configure values for local development before running.
+Feedback: use **Send Beta Feedback** in TestFlight, or open an issue here.
 
-CI/CD
-- GitHub Actions templates (build/test placeholders)
-- Expo EAS or Fastlane can be wired to release pipelines (not committed)
+Android beta is not yet available.
 
-Security Notes
-- Never commit .env files or credentials
-- JWT short-lived, refresh tokens supported (skeleton provided)
+## Stack
 
-License
+- **`apps/server`** — Node.js + Express API, BullMQ/Redis scheduling worker, Prisma ORM (PostgreSQL)
+- **`apps/mobile`** — React Native (Expo) client for iOS/Android
+- **`packages/shared`** — Shared DTOs and lightweight API client
+
+## Key integrations
+
+- **Video calls** — Daily.co (`@daily-co/react-native-daily-js`)
+- **Auth** — Twilio Verify (OTP), JWT (short-lived + refresh)
+- **Push notifications** — FCM (Android) and APNs (iOS), including Live Activities
+- **Background jobs** — BullMQ + Redis for call scheduling and activation
+
+## Getting started
+
+```bash
+# 1. Install deps (from repo root — uses workspaces)
+npm install
+
+# 2. Copy env template and fill in values
+cp apps/server/.env.example apps/server/.env
+
+# 3. Start backend
+npm run dev:server
+
+# 4. Start mobile bundler
+npm run start:mobile
+```
+
+See [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md) for full environment setup (Redis, PostgreSQL, APNs, FCM).
+
+## Monorepo scripts
+
+| Script | What it does |
+|---|---|
+| `npm run dev:server` | Start backend in watch mode |
+| `npm run start:mobile` | Start Expo bundler |
+| `npm test` | Run server test suite |
+| `npm run build` | Compile server + typecheck mobile |
+
+## Structure
+
+```
+apps/
+  server/     Express app, REST endpoints, Prisma schema, BullMQ worker
+  mobile/     Expo app — auth, groups, call screen, notifications
+packages/
+  shared/     DTOs, API types, minimal fetch client
+docs/         Setup guides, APNS config, PRD
+design/       Prototype assets
+```
+
+## CI/CD
+
+- GitHub Actions runs `npm test -w apps/server` and `tsc --noEmit` on mobile on every push
+- Production deploys to Railway via `Dockerfile`
+- Mobile builds via EAS (`eas build`)
+
+## License
+
 Proprietary — All rights reserved.

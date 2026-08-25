@@ -17,6 +17,7 @@ export declare class ApiClient {
             id: string;
             username: string;
             has_avatar: boolean;
+            avatar_updated_at: string | null;
             status: 'member' | 'invited' | null;
         }>;
     }>;
@@ -53,6 +54,7 @@ export declare class ApiClient {
     }>;
     uploadAvatar(data: string, mimeType: string): Promise<{
         ok: boolean;
+        avatar_updated_at: string;
     }>;
     deleteAvatar(): Promise<{
         ok: boolean;

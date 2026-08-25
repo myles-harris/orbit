@@ -14,7 +14,7 @@ jest.mock('../services/notifications', () => ({
   notifications: {
     sendPushTokens: jest.fn().mockResolvedValue({ success: 1, failure: 0 }),
     sendToBuckets: jest.fn().mockResolvedValue({ success: 1, failure: 0 }),
-    startLiveActivities: jest.fn().mockResolvedValue(undefined),
+    startLiveActivities: jest.fn().mockResolvedValue([]),
   },
 }));
 
@@ -22,6 +22,7 @@ import { PrismaClient } from '@prisma/client';
 import { scheduler } from '../services/scheduler.js';
 import { dailyVideo } from '../services/dailyVideo.js';
 import { notifications } from '../services/notifications.js';
+import { schedulerQueue } from '../queue/schedulerQueue.js';
 import {
   calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, wallTimeToUtc, SCHEDULE_TZ,
   dayKeyForDate, dayKey, shuffle,
@@ -250,6 +251,132 @@ describe('scheduler.activateDueCalls', () => {
 
     expect(updatedSpontaneous!.status).toBe('ended');
     expect(updatedScheduled!.status).toBe('active');
+  });
+});
+
+// ─── activateCall: per-device Live Activity coverage ───────────────────────
+
+describe('scheduler.activateCall Live Activity coverage', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('suppresses the banner for a device whose Live Activity was delivered', async () => {
+    const user = await createTestUser();
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'ios-device-1', platform: 'ios', live_activity_pts_token: 'pts-1' },
+    });
+    const group = await createTestGroup(user.id);
+    await createScheduledCall(group.id);
+
+    (notifications.startLiveActivities as jest.Mock).mockResolvedValueOnce(['pts-1']);
+
+    await scheduler.activateDueCalls();
+
+    expect(notifications.sendToBuckets).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the banner when the Live Activity push is not accepted', async () => {
+    const user = await createTestUser();
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'ios-device-2', platform: 'ios', live_activity_pts_token: 'pts-2' },
+    });
+    const group = await createTestGroup(user.id);
+    await createScheduledCall(group.id);
+
+    (notifications.startLiveActivities as jest.Mock).mockResolvedValueOnce([]);
+
+    await scheduler.activateDueCalls();
+
+    expect(notifications.sendToBuckets).toHaveBeenCalledTimes(1);
+    const [members] = (notifications.sendToBuckets as jest.Mock).mock.calls[0];
+    const tokens = members.flatMap((m: any) => m.user.devices.map((d: any) => d.token));
+    expect(tokens).toContain('ios-device-2');
+  });
+
+  it('sends the banner only to the uncovered device when a member has two devices', async () => {
+    const user = await createTestUser();
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'ios-covered', platform: 'ios', live_activity_pts_token: 'pts-3' },
+    });
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'android-uncovered', platform: 'android' },
+    });
+    const group = await createTestGroup(user.id);
+    await createScheduledCall(group.id);
+
+    (notifications.startLiveActivities as jest.Mock).mockResolvedValueOnce(['pts-3']);
+
+    await scheduler.activateDueCalls();
+
+    expect(notifications.sendToBuckets).toHaveBeenCalledTimes(1);
+    const [members] = (notifications.sendToBuckets as jest.Mock).mock.calls[0];
+    const tokens = members.flatMap((m: any) => m.user.devices.map((d: any) => d.token));
+    expect(tokens).toEqual(['android-uncovered']);
+  });
+
+  it('does not call startLiveActivities and banners everyone when no device has a PTS token', async () => {
+    const user = await createTestUser();
+    await prisma.pushDevice.create({
+      data: { user_id: user.id, token: 'plain-ios-device', platform: 'ios' },
+    });
+    const group = await createTestGroup(user.id);
+    await createScheduledCall(group.id);
+
+    await scheduler.activateDueCalls();
+
+    expect(notifications.startLiveActivities).not.toHaveBeenCalled();
+    expect(notifications.sendToBuckets).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── activateCall: Live Activity TTL end-job scheduling ───────────────────
+
+describe('scheduler.activateCall Live Activity end-job scheduling', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('schedules the end-live-activities job at ends_at for a scheduled call', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await createScheduledCall(group.id);
+
+    await scheduler.activateDueCalls();
+
+    expect(schedulerQueue.add).toHaveBeenCalledTimes(1);
+    const [name, data, opts] = (schedulerQueue.add as jest.Mock).mock.calls[0];
+    expect(name).toBe('end-live-activities');
+    expect(data).toEqual({ callId: call.id });
+    expect(opts.jobId).toBe(`end-la-${call.id}`);
+    expect(opts.delay).toBeGreaterThan(0);
+    expect(opts.delay).toBeLessThanOrEqual(call.ends_at!.getTime() - Date.now() + 1000);
+  });
+
+  it('[fix 12] schedules nothing and warns when a scheduled call has no ends_at', async () => {
+    // Calls activateCall directly: a null ends_at fails activateDueCalls' own
+    // `ends_at: { gt: now }` due-call filter (NULL > now is never true in SQL),
+    // so the sweep never reaches this call at all. This targets the
+    // scheduleLiveActivityEnd guard inside activateCall in isolation.
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'scheduled',
+        call_type: 'scheduled',
+        scheduled_at: new Date(Date.now() - 30_000),
+        ends_at: null,
+        room_name: `test-room-${group.id}`,
+      },
+    });
+
+    await scheduler.activateCall(call.id);
+
+    expect(schedulerQueue.add).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(call.id));
+    warnSpy.mockRestore();
   });
 });
 

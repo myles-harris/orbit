@@ -1,7 +1,6 @@
-import React from 'react';
 import { StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
-import { createStackNavigator } from '@react-navigation/stack';
+import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { navigationRef } from './navigationRef';
@@ -96,6 +95,7 @@ const linking = {
   config: {
     screens: {
       JoinInvite: 'invite/:code',
+      GroupDetail: 'group/:groupId',
     },
   },
 };
@@ -135,7 +135,20 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
             <Stack.Screen
               name="Call"
               component={CallScreen}
-              options={{ headerShown: false, presentation: 'modal' }}
+              options={{
+                headerShown: false,
+                // The default iOS modal presentation insets the card by the status-bar
+                // height, rounds the top corners, and exposes the screen underneath,
+                // roughly 69pt of lost video on a notched device. forVerticalIOS keeps
+                // the slide-up entrance with none of the inset.
+                ...TransitionPresets.ModalSlideFromBottomIOS,
+                // Leave is the only exit from a call. Must follow the spread above, which
+                // sets gestureDirection but not gestureEnabled.
+                gestureEnabled: false,
+                // Hold current behaviour: the modal presentation did not detach the screen
+                // below, and this change should not silently start doing so.
+                detachPreviousScreen: false,
+              }}
             />
             <Stack.Screen
               name="InviteUser"

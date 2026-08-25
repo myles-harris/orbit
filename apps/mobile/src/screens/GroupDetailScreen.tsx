@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import {
   View,
   Text,
@@ -12,21 +12,30 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
-import { parseApiError, formatViewerWindow } from '@orbit/shared';
-import * as Localization from 'expo-localization';
+import { parseApiError } from '@orbit/shared';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
-import { getGroupColorIndex, setGroupColorIndex, defaultPaletteIndex, CARD_PALETTES } from '../utils/groupColors';
 import { UserAvatar } from '../components/UserAvatar';
 
 type GroupDetailRouteProp = RouteProp<RootStackParamList, 'GroupDetail'>;
 type GroupDetailNavigationProp = StackNavigationProp<RootStackParamList, 'GroupDetail'>;
 
-function MemberAvatar({ userId, username, hasAvatar, isOwner, colors }: { userId: string; username: string; hasAvatar: boolean; isOwner: boolean; colors: any }) {
+function MemberAvatar({ userId, username, hasAvatar, isOwner, colors, avatarUpdatedAt }: {
+  userId: string; username: string; hasAvatar: boolean; isOwner: boolean; colors: any;
+  avatarUpdatedAt?: string | null;
+}) {
   return (
     <View style={{ marginRight: spacing.md }}>
-      <UserAvatar userId={userId} username={username} hasAvatar={hasAvatar} size={40} colors={colors} isOwner={isOwner} />
+      <UserAvatar
+        userId={userId}
+        username={username}
+        hasAvatar={hasAvatar}
+        size={40}
+        colors={colors}
+        isOwner={isOwner}
+        avatarUpdatedAt={avatarUpdatedAt}
+      />
     </View>
   );
 }
@@ -41,10 +50,6 @@ export default function GroupDetailScreen() {
   const [group, setGroup] = useState<any>(null);
   const [currentCall, setCurrentCall] = useState<any>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  const [viewerTz, setViewerTz] = useState<string>(
-    Localization.getCalendars()[0]?.timeZone ?? 'UTC'
-  );
-  const [paletteIndex, setPaletteIndex] = useState<number | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadGroupDetails = async () => {
@@ -53,22 +58,14 @@ export default function GroupDetailScreen() {
       const client = await createAuthenticatedApiClient();
       const userInfo = await client.get<any>('/me');
       setCurrentUserId(userInfo.id);
-      if (userInfo.time_zone) setViewerTz(userInfo.time_zone);
       const groupData = await client.get<any>(`/groups/${groupId}`);
       setGroup(groupData);
       const callData = await client.get<{ current: any }>(`/groups/${groupId}/calls/current`);
       setCurrentCall(callData.current);
-      const saved = await getGroupColorIndex(groupId);
-      setPaletteIndex(saved);
     } catch (error) {
       console.error('Failed to load group:', error);
       setLoadError('Could not load group details.');
     }
-  };
-
-  const pickColor = async (index: number) => {
-    setPaletteIndex(index);
-    await setGroupColorIndex(groupId, index);
   };
 
   useEffect(() => {
@@ -140,7 +137,6 @@ export default function GroupDetailScreen() {
   };
 
   const isOwner = group?.owner_id === currentUserId;
-  const resolvedPaletteIndex = paletteIndex ?? (group ? defaultPaletteIndex(group.name) : 0);
 
   if (!group) {
     if (loadError) {
@@ -160,58 +156,17 @@ export default function GroupDetailScreen() {
     );
   }
 
-  const getCadenceText = () => {
-    if (group.cadence === 'daily') return 'Daily calls';
-    return `${group.weekly_frequency} calls/week`;
-  };
-
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
       {/* Header card */}
       <View style={styles.headerCard}>
-        <View style={styles.groupIconContainer}>
-          <Text style={styles.groupIconText}>
-            {group.name.trim().charAt(0).toUpperCase()}
-          </Text>
-        </View>
         <Text style={styles.groupName}>{group.name}</Text>
-        <View style={styles.infoRow}>
-          <View style={styles.infoBadge}>
-            <Text style={styles.infoBadgeText}>{getCadenceText()}</Text>
+        {group.is_muted && (
+          <View style={styles.mutedBadge}>
+            <Ionicons name="volume-mute" size={12} color={colors.textSecondary} />
+            <Text style={styles.mutedBadgeText}>Muted</Text>
           </View>
-          <View style={styles.infoBadge}>
-            <Text style={styles.infoBadgeText}>{group.call_duration_minutes} min</Text>
-          </View>
-          {group.call_window_start != null && group.call_window_end != null && group.time_zone && (
-            <View style={styles.infoBadge}>
-              <Text style={styles.infoBadgeText}>
-                {formatViewerWindow(group.call_window_start, group.call_window_end, group.time_zone, viewerTz)}
-              </Text>
-            </View>
-          )}
-          {group.is_muted && (
-            <View style={styles.mutedBadge}>
-              <Ionicons name="volume-mute" size={12} color={colors.textSecondary} />
-              <Text style={styles.mutedBadgeText}>Muted</Text>
-            </View>
-          )}
-        </View>
-
-        <View style={styles.colorPickerRow}>
-          {CARD_PALETTES.map((palette, index) => {
-            const isSelected = index === resolvedPaletteIndex;
-            return (
-              <TouchableOpacity
-                key={index}
-                style={[styles.colorSwatch, { backgroundColor: palette.bg }, isSelected && styles.colorSwatchSelected]}
-                onPress={() => pickColor(index)}
-                activeOpacity={0.7}
-              >
-                {isSelected && <Ionicons name="checkmark" size={12} color={palette.text} />}
-              </TouchableOpacity>
-            );
-          })}
-        </View>
+        )}
       </View>
 
       {/* Call action */}
@@ -260,7 +215,14 @@ export default function GroupDetailScreen() {
                 key={member.user_id}
                 style={[styles.memberRow, isLast && styles.memberRowLast]}
               >
-                <MemberAvatar userId={member.user_id} username={member.username} hasAvatar={member.has_avatar ?? false} isOwner={isMemberOwner} colors={colors} />
+                <MemberAvatar
+                  userId={member.user_id}
+                  username={member.username}
+                  hasAvatar={member.has_avatar ?? false}
+                  avatarUpdatedAt={member.avatar_updated_at ?? null}
+                  isOwner={isMemberOwner}
+                  colors={colors}
+                />
                 <View style={styles.memberInfo}>
                   <Text style={styles.memberName}>{member.username}</Text>
                   {isMemberOwner && (
@@ -295,45 +257,20 @@ function makeStyles(colors: any, typography: any, shadow: any) {
       backgroundColor: colors.surface,
       margin: spacing.xl,
       borderRadius: radius.xl,
-      padding: spacing.xxl,
+      paddingVertical: spacing.xl,
+      paddingHorizontal: spacing.xxl,
       alignItems: 'center',
       ...shadow.sm,
     },
-    groupIconContainer: {
-      width: 72, height: 72, borderRadius: radius.xl,
-      backgroundColor: colors.primary,
-      justifyContent: 'center', alignItems: 'center',
-      marginBottom: spacing.lg,
-      ...shadow.lg,
-    },
-    groupIconText: { fontSize: 32, fontWeight: '700', color: '#fff' },
-    groupName: { ...typography.h3, marginBottom: spacing.md, textAlign: 'center' },
-    infoRow: { flexDirection: 'row', gap: spacing.sm },
-    infoBadge: {
-      backgroundColor: colors.primaryLighter,
-      paddingHorizontal: spacing.md,
-      paddingVertical: spacing.xs,
-      borderRadius: radius.full,
-    },
-    infoBadgeText: { ...typography.captionMedium, color: colors.primary, fontWeight: '600' },
+    groupName: { ...typography.h3, textAlign: 'center' },
     mutedBadge: {
       flexDirection: 'row', alignItems: 'center', gap: 4,
       backgroundColor: colors.background,
       paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
       borderRadius: radius.full,
+      marginTop: spacing.md,
     },
     mutedBadgeText: { ...typography.captionMedium, color: colors.textSecondary, fontWeight: '600' },
-    colorPickerRow: {
-      flexDirection: 'row', gap: spacing.sm, marginTop: spacing.lg,
-      flexWrap: 'wrap', justifyContent: 'center',
-    },
-    colorSwatch: {
-      width: 28, height: 28, borderRadius: radius.full,
-      justifyContent: 'center', alignItems: 'center',
-    },
-    colorSwatchSelected: {
-      borderWidth: 2, borderColor: colors.text,
-    },
     callSection: { marginHorizontal: spacing.xl, marginBottom: spacing.xl },
     activeCallCard: {
       backgroundColor: colors.success,

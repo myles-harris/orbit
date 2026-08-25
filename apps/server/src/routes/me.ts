@@ -1,24 +1,49 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
 import { scheduler } from '../services/scheduler.js';
 import { dailyVideo } from '../services/dailyVideo.js';
+import { broadcastCallPresence, sendPresenceToToken } from '../services/callPresence.js';
 
 export const meRouter = Router();
 
-function serializeUser(user: {
-  id: string; phone: string; username: string; time_zone: string;
-  avatar: Buffer | null; avatar_mime_type: string | null; avatar_updated_at: Date | null;
-  notify_sound: boolean; notify_vibrate: boolean; notify_break_focus: boolean;
+// Every scalar the client needs — deliberately excludes `avatar`, which is a
+// multi-megabyte BYTEA. `has_avatar` derives from `avatar_updated_at`; the two
+// columns are written together at every call site and the invariant is enforced
+// by the `user_avatar_consistency` CHECK constraint.
+const USER_PUBLIC_SELECT = {
+  id: true,
+  phone: true,
+  username: true,
+  time_zone: true,
+  avatar_updated_at: true,
+  notify_sound: true,
+  notify_vibrate: true,
+  notify_break_focus: true,
+  created_at: true,
+} satisfies Prisma.UserSelect;
+
+type PublicUser = {
+  id: string;
+  phone: string;
+  username: string;
+  time_zone: string;
+  avatar_updated_at: Date | null;
+  notify_sound: boolean;
+  notify_vibrate: boolean;
+  notify_break_focus: boolean;
   created_at: Date;
-}) {
+};
+
+function serializeUser(user: PublicUser) {
   return {
     id: user.id,
     phone: user.phone,
     username: user.username,
     time_zone: user.time_zone,
-    has_avatar: user.avatar !== null,
+    has_avatar: user.avatar_updated_at !== null,
     avatar_updated_at: user.avatar_updated_at?.toISOString() ?? null,
     notify_sound: user.notify_sound,
     notify_vibrate: user.notify_vibrate,
@@ -30,7 +55,7 @@ function serializeUser(user: {
 meRouter.get('/', requireJwt, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
-    const user = await prisma.user.findUnique({ where: { id: userId } });
+    const user = await prisma.user.findUnique({ where: { id: userId }, select: USER_PUBLIC_SELECT });
     if (!user) return res.status(404).json({ error: 'not_found' });
     res.json(serializeUser(user));
   } catch (error) {
@@ -54,7 +79,7 @@ meRouter.patch('/', requireJwt, async (req, res) => {
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   try {
     const userId = (req as any).userId as string;
-    const user = await prisma.user.update({ where: { id: userId }, data: parsed.data });
+    const user = await prisma.user.update({ where: { id: userId }, data: parsed.data, select: USER_PUBLIC_SELECT });
     res.json(serializeUser(user));
   } catch (error) {
     console.error('[PATCH /me] Error:', error);
@@ -62,7 +87,7 @@ meRouter.patch('/', requireJwt, async (req, res) => {
   }
 });
 
-const AVATAR_MAX_BYTES = 200 * 1024; // 200 KB
+const AVATAR_MAX_BYTES = 2 * 1024 * 1024; // 2 MB — keep in sync with the boundary tests in api.test.ts
 
 // Magic bytes for accepted image types
 const MAGIC_BYTES: Array<{ mime: string; check: (b: Buffer) => boolean }> = [
@@ -91,6 +116,7 @@ meRouter.put('/avatar', requireJwt, async (req, res) => {
     await prisma.user.update({
       where: { id: userId },
       data: { avatar: buf, avatar_mime_type: parsed.data.mime_type, avatar_updated_at: now },
+      select: { id: true },
     });
     res.json({ ok: true, avatar_updated_at: now.toISOString() });
   } catch (error) {
@@ -102,7 +128,11 @@ meRouter.put('/avatar', requireJwt, async (req, res) => {
 meRouter.delete('/avatar', requireJwt, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
-    await prisma.user.update({ where: { id: userId }, data: { avatar: null, avatar_mime_type: null, avatar_updated_at: null } });
+    await prisma.user.update({
+      where: { id: userId },
+      data: { avatar: null, avatar_mime_type: null, avatar_updated_at: null },
+      select: { id: true },
+    });
     res.json({ ok: true });
   } catch (error) {
     console.error('[DELETE /me/avatar] Error:', error);
@@ -139,13 +169,90 @@ meRouter.post('/devices/register-live-activity', requireJwt, async (req, res) =>
   try {
     const userId = (req as any).userId as string;
     // Scope the update by user_id so users cannot overwrite each other's tokens.
-    await prisma.pushDevice.updateMany({
+    const result = await prisma.pushDevice.updateMany({
       where: { token: parsed.data.device_token, user_id: userId },
       data: { live_activity_pts_token: parsed.data.pts_token, pts_updated_at: new Date() },
     });
+
+    if (result.count === 0) {
+      console.warn(`[POST /me/devices/register-live-activity] No device row for user ${userId}, PTS token dropped`);
+      return res.status(404).json({ error: 'device_not_registered' });
+    }
+
     res.json({ ok: true });
   } catch (error) {
     console.error('[POST /me/devices/register-live-activity] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+const activityTokenSchema = z.object({
+  call_id: z.string().uuid(),
+  push_token: z.string().min(1),
+});
+
+/**
+ * Per-activity Live Activity push token. Distinct from the push-to-start token on
+ * PushDevice: this one addresses ONE running activity and is what update/end pushes
+ * target.
+ */
+meRouter.post('/calls/live-activity-token', requireJwt, async (req, res) => {
+  const parsed = activityTokenSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  try {
+    const userId = (req as any).userId as string;
+    const { call_id, push_token } = parsed.data;
+
+    const call = await prisma.callSession.findUnique({
+      where: { id: call_id },
+      select: { group_id: true, status: true },
+    });
+    if (!call) return res.status(404).json({ error: 'call_not_found' });
+    if (call.status !== 'active') return res.status(409).json({ error: 'call_not_active' });
+
+    // Authorization: caller must be a member of the group that owns this call, not
+    // necessarily a CallParticipant. Every non-muted group member gets a Live Activity
+    // whether or not they've joined (see scheduler.ts's startLiveActivities call, which
+    // targets all members' push-to-start tokens, not participants') — the surface exists
+    // to tell people a call is happening. Narrowing this to CallParticipant would break
+    // that for anyone who hasn't opened the call yet.
+    const membership = await prisma.groupMember.findFirst({
+      where: { group_id: call.group_id, user_id: userId },
+      select: { id: true },
+    });
+    if (!membership) return res.status(403).json({ error: 'not_a_member' });
+
+    // Ownership is never reassigned. The unique key is (call_id, push_token), so without
+    // this check any group member who learns another member's activity token could POST
+    // it and take over the row. user_id is load-bearing at stage 8: it drives the mute
+    // filter on fan-out.
+    const existing = await prisma.callLiveActivityToken.findUnique({
+      where: { call_id_push_token: { call_id, push_token } },
+      select: { user_id: true },
+    });
+    if (existing && existing.user_id !== userId) {
+      console.warn(`[presence] Activity token reassignment refused for call ${call_id}`);
+      return res.status(409).json({ error: 'token_owned_by_another_user' });
+    }
+
+    await prisma.callLiveActivityToken.upsert({
+      where: { call_id_push_token: { call_id, push_token } },
+      create: { call_id, user_id: userId, push_token },
+      update: {},
+    });
+
+    res.json({ ok: true });
+
+    // [fix 3] Seed this activity with the current count. Broadcasts only fire on a
+    // count CHANGE, so a token that registers mid-call would otherwise render whatever
+    // push-to-start seeded, forever, on a call where the count never changes again.
+    // This is the normal path if stage 0's spike 2 came back negative.
+    // (call.status is already guaranteed 'active' by the check at line 211 above —
+    // sendPresenceToToken re-checks it fresh itself, so no re-check is needed here.)
+    void sendPresenceToToken(call_id, push_token).catch(err =>
+      console.error(`[presence] Targeted seed failed for call ${call_id}:`, err));
+  } catch (error) {
+    console.error('[POST /me/calls/live-activity-token] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });
@@ -190,6 +297,7 @@ meRouter.post('/calls/leave', requireJwt, async (req, res) => {
         where: { id: participant.id },
         data: { left_at: new Date() },
       });
+      broadcastCallPresence(participant.call_id);
 
       console.log(`[POST /me/calls/leave] marked participant ${participant.id} as left (call=${participant.call_id}, type=${participant.call.call_type}, status=${participant.call.status})`);
 
@@ -219,6 +327,28 @@ meRouter.post('/calls/leave', requireJwt, async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     console.error('[POST /me/calls/leave] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+/**
+ * Active calls across all of the user's groups. The client uses this to reconcile
+ * iOS Live Activities on launch: any activity whose callId is absent here is
+ * orphaned (crash, force-quit) and safe to end.
+ */
+meRouter.get('/calls/active', requireJwt, async (req, res) => {
+  try {
+    const userId = (req as any).userId as string;
+    const calls = await prisma.callSession.findMany({
+      where: {
+        status: 'active',
+        group: { members: { some: { user_id: userId } } },
+      },
+      select: { id: true },
+    });
+    res.json({ callIds: calls.map((c) => c.id) });
+  } catch (error) {
+    console.error('[GET /me/calls/active] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });

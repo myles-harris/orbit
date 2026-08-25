@@ -1,21 +1,38 @@
 import { Platform } from 'react-native';
 
 type CallNotificationModuleType = {
-  postOngoingCall(groupName: string, callId: string, groupId: string, endsAtMs: number | null): void;
+  postOngoingCall(
+    groupName: string,
+    callId: string,
+    groupId: string,
+    endsAtMs: number | null,
+    participantCount: number | null,
+    ongoing: boolean,
+    timeoutAtMs: number | null,
+  ): void;
   cancelOngoingCall(): void;
 };
 
-let CallNotification: CallNotificationModuleType | null = null;
+const noop: CallNotificationModuleType = {
+  postOngoingCall: () => {},
+  cancelOngoingCall: () => {},
+};
+
+let CallNotification: CallNotificationModuleType = noop;
 
 if (Platform.OS === 'android') {
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { requireNativeModule } = require('expo-modules-core');
-  const Native = requireNativeModule('CallNotification');
-  CallNotification = {
-    postOngoingCall: (groupName, callId, groupId, endsAtMs) =>
-      Native.postOngoingCall(groupName, callId, groupId, endsAtMs),
-    cancelOngoingCall: () => Native.cancelOngoingCall(),
-  };
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { requireNativeModule } = require('expo-modules-core');
+    const Native = requireNativeModule('CallNotification');
+    CallNotification = {
+      postOngoingCall: (groupName, callId, groupId, endsAtMs, participantCount, ongoing, timeoutAtMs) =>
+        Native.postOngoingCall(groupName, callId, groupId, endsAtMs, participantCount, ongoing, timeoutAtMs),
+      cancelOngoingCall: () => Native.cancelOngoingCall(),
+    };
+  } catch (e) {
+    console.warn('[CallNotification] native module unavailable', e);
+  }
 }
 
 export default CallNotification;

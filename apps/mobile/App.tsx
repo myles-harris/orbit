@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState, Platform } from 'react-native';
-import { CallLiveActivity, addPushToStartTokenListener } from './modules/call-live-activity';
+import { CallLiveActivity, addPushToStartTokenListener, addActivityPushTokenListener } from './modules/call-live-activity';
 import CallNotification from './modules/call-notification';
 import * as Haptics from 'expo-haptics';
 import { StatusBar } from 'expo-status-bar';
@@ -23,7 +23,10 @@ import {
 import { Chango_400Regular } from '@expo-google-fonts/chango';
 import AppNavigator from './src/navigation/AppNavigator';
 import { ApiClient } from '@orbit/shared';
+import type { UserDTO } from '@orbit/shared';
 import { AuthProvider, useAuth } from './src/context/AuthContext';
+import { createAuthenticatedApiClient } from './src/utils/apiClient';
+import { DEFAULT_CALL_PREFS, readCachedCallPrefs, syncCallChannel } from './src/utils/notificationChannels';
 import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { ThemeProvider, useTheme } from './src/context/ThemeContext';
 import { TutorialProvider } from './src/context/TutorialContext';
@@ -60,9 +63,20 @@ function AppContent() {
 
   // Track active call presence state
   const liveActivityIdRef = useRef<string | null>(null);
+  // callIds started locally this session. The reconcile fetch below can be in flight
+  // for several hundred ms; if a push arrives and starts an activity for a call the
+  // fetch's snapshot predates, this set keeps it out of the destructive sweep.
+  const startedCallIdsRef = useRef<Set<string>>(new Set());
+  const pushTokenRef = useRef<string | null>(null);
+  const ptsTokenRef = useRef<string | null>(null);
+  const ptsSentRef = useRef<string | null>(null);
+  const ptsInFlightRef = useRef(false);
 
   // Android: ensure the ongoing call notification channel exists (used by CallNotificationHelper).
-  // The notification preference-specific channels are created lazily in SettingsScreen.
+  // Must match CallNotificationHelper.ensureChannel — Android locks sound/importance at
+  // creation, so if these two definitions ever diverge AND the Kotlin path can run first,
+  // the divergence becomes permanent for that install.
+  // The notification preference-specific channels are synced from syncCallChannelFromServer.
   useEffect(() => {
     if (Platform.OS === 'android') {
       Notifications.setNotificationChannelAsync('call-ongoing', {
@@ -71,12 +85,49 @@ function AppContent() {
         sound: null,
         enableVibrate: false,
       });
+      Notifications.setNotificationChannelAsync('invites', {
+        name: 'Invitations',
+        importance: Notifications.AndroidImportance.DEFAULT,
+        // Default system sound, no DND bypass, no call tone — an invite is not a call.
+      });
+    }
+  }, []);
+
+  // Android: the calls-* channel is what carries the tone, MAX importance and DND bypass.
+  // Without it expo-notifications falls back to its own default-sound channel, so both the
+  // tone and the user's mute preference are lost. Sync from cached prefs first so an
+  // offline launch still lands on the right channel, then reconcile with the server.
+  // syncCallChannel serializes concurrent callers internally (this fires from two different
+  // effects below plus SettingsScreen's manual toggles), so overlapping invocations here are
+  // safe — they queue rather than racing each other's channel create/delete.
+  const syncCallChannelFromServer = useCallback(async () => {
+    if (Platform.OS !== 'android') return;
+
+    const cached = await readCachedCallPrefs();
+    try {
+      await syncCallChannel(cached ?? DEFAULT_CALL_PREFS);
+    } catch (e) {
+      console.warn('[channels] cached sync failed:', e);
+    }
+
+    try {
+      const client = await createAuthenticatedApiClient();
+      const me = await client.get<UserDTO>('/me');
+      await syncCallChannel({
+        sound: me.notify_sound,
+        vibrate: me.notify_vibrate,
+        breakFocus: me.notify_break_focus,
+      });
+    } catch (e) {
+      // Cached channel stays in place; retried on next launch/foreground.
+      console.warn('[channels] pref sync failed:', e);
     }
   }, []);
 
   useEffect(() => {
     if (isAuthenticated) {
       setupPushNotifications();
+      syncCallChannelFromServer();
     }
   }, [isAuthenticated]);
 
@@ -118,39 +169,95 @@ function AppContent() {
     seedTimezone();
   }, [isAuthenticated]);
 
-  // Sweep any stale Live Activities left over from a previous session/crash
+  // Reconcile Live Activities against server truth on launch: end orphans left by a
+  // crash or force-quit, but never touch an activity for a call that is still active.
+  // On failure we deliberately do nothing: a stale activity is a far smaller defect
+  // than destroying the countdown for a call in progress.
   useEffect(() => {
-    if (isAuthenticated && Platform.OS === 'ios' && CallLiveActivity) {
-      CallLiveActivity.endAllActivitiesAsync().catch(() => {});
-    }
+    if (!isAuthenticated || Platform.OS !== 'ios' || !CallLiveActivity) return;
+    (async () => {
+      try {
+        const client = await createAuthenticatedApiClient();
+        const { callIds } = await client.get<{ callIds: string[] }>('/me/calls/active');
+        // Union with locally-started calls: startActivityAsync is a fast, same-process
+        // native call, so any call started while this fetch was in flight is already in
+        // startedCallIdsRef by the time we get here, even though the fetch's snapshot
+        // predates it.
+        const keep = new Set([...callIds, ...startedCallIdsRef.current]);
+        await CallLiveActivity!.endActivitiesExceptAsync([...keep]);
+      } catch (e) {
+        console.warn('[presence] Live Activity reconcile skipped:', e);
+      }
+    })();
   }, [isAuthenticated]);
+
+  // The PTS token and the Expo push token arrive from independent async sources.
+  // Whichever lands second triggers the upload; either alone is not enough because
+  // the server keys the PTS token onto an existing PushDevice row.
+  const flushPtsRegistration = useCallback(async () => {
+    const device_token = pushTokenRef.current;
+    const pts_token = ptsTokenRef.current;
+    if (!device_token || !pts_token) return;
+
+    const pair = `${device_token}:${pts_token}`;
+    if (ptsSentRef.current === pair || ptsInFlightRef.current) return;
+
+    ptsInFlightRef.current = true;
+    try {
+      const client = await createAuthenticatedApiClient();
+      await client.post('/me/devices/register-live-activity', { device_token, pts_token });
+      ptsSentRef.current = pair;
+    } catch (e) {
+      // Includes 404 device_not_registered, which means the register-push POST has not
+      // landed yet. Deliberately does NOT set ptsSentRef, so step (d)'s flush after a
+      // successful register-push retries the pair without waiting for a relaunch.
+      console.warn('[presence] PTS registration failed:', e);
+    } finally {
+      ptsInFlightRef.current = false;
+    }
+  }, []);
 
   // Register the push-to-start token (iOS 17.2+) so the server can start a Live Activity
   // on a locked or force-quit device without the app running first.
   useEffect(() => {
     if (!isAuthenticated || Platform.OS !== 'ios' || !CallLiveActivity) return;
 
-    const registerPtsToken = async (token: string) => {
-      try {
-        const deviceToken = await SecureStore.getItemAsync('push_token');
-        if (!deviceToken) return;
-        const accessToken = await SecureStore.getItemAsync('access_token');
-        if (!accessToken) return;
-        const client = new ApiClient(API_URL, () => accessToken);
-        await client.post('/me/devices/register-live-activity', {
-          device_token: deviceToken,
-          pts_token: token,
-        });
-      } catch { /* best-effort */ }
-    };
-
-    // Pull in case a token was issued before JS subscribed (cold-start race).
-    CallLiveActivity.getPushToStartTokenAsync().then((token) => {
-      if (token) registerPtsToken(token);
+    // Seed the device token from a previous session so pairing can complete immediately.
+    SecureStore.getItemAsync('push_token').then((t) => {
+      if (t && !pushTokenRef.current) {
+        pushTokenRef.current = t;
+        flushPtsRegistration();
+      }
     }).catch(() => {});
 
-    // Subscribe to future rotations.
-    const sub = addPushToStartTokenListener(({ token }) => registerPtsToken(token));
+    // Catch a token issued before JS subscribed (cold-start race).
+    CallLiveActivity.getPushToStartTokenAsync().then((token) => {
+      if (token) {
+        ptsTokenRef.current = token;
+        flushPtsRegistration();
+      }
+    }).catch(() => {});
+
+    const sub = addPushToStartTokenListener(({ token }) => {
+      ptsTokenRef.current = token;
+      flushPtsRegistration();
+    });
+    return () => sub.remove();
+  }, [isAuthenticated, flushPtsRegistration]);
+
+  // Per-activity push tokens. Emitted for every activity including push-to-start ones,
+  // but only while this process is alive. See stage 0, spike 2.
+  useEffect(() => {
+    if (!isAuthenticated || Platform.OS !== 'ios' || !CallLiveActivity) return;
+    const sub = addActivityPushTokenListener(async ({ callId, token }) => {
+      try {
+        const client = await createAuthenticatedApiClient();
+        await client.post('/me/calls/live-activity-token', {
+          call_id: callId,
+          push_token: token,
+        });
+      } catch { /* best-effort; retried on next token rotation */ }
+    });
     return () => sub.remove();
   }, [isAuthenticated]);
 
@@ -161,6 +268,7 @@ function AppContent() {
     const subscription = AppState.addEventListener('change', (nextState) => {
       if (appState.current.match(/inactive|background/) && nextState === 'active') {
         setupPushNotifications();
+        syncCallChannelFromServer();
       }
       appState.current = nextState;
     });
@@ -181,14 +289,16 @@ function AppContent() {
       CallNotification.postOngoingCall(
         groupName, callId, groupId,
         endsAt ? new Date(endsAt).getTime() : null,
+        null, true, null,
       );
     }
 
     // iOS: start a Live Activity (requires native module + Xcode setup).
     // Skip if push-to-start already started one for this callId so we don't create a duplicate.
     if (Platform.OS === 'ios' && CallLiveActivity) {
-      const alreadyStarted = await CallLiveActivity.hasActivityForCall(callId).catch(() => false);
-      if (alreadyStarted) return;
+      startedCallIdsRef.current.add(callId);
+      const existingId = await CallLiveActivity.activityIdForCall(callId).catch(() => null);
+      if (existingId) { liveActivityIdRef.current = existingId; return; }
 
       // End any previous Live Activity first
       if (liveActivityIdRef.current) {
@@ -240,7 +350,13 @@ function AppContent() {
           token: pushToken,
           platform: Platform.OS as 'ios' | 'android',
         });
+        // Order matters: the server keys the PTS token onto an existing PushDevice row,
+        // so pushTokenRef must not be populated until register-push has succeeded.
+        // Setting it earlier lets flushPtsRegistration fire against a row that does not
+        // exist yet and burn its one attempt on a 404.
+        pushTokenRef.current = pushToken;
         await SecureStore.setItemAsync('push_token', pushToken);
+        flushPtsRegistration();
         console.log('Push token registered with backend');
       }
     } catch (error) {

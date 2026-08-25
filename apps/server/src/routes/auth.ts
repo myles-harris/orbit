@@ -30,7 +30,10 @@ authRouter.post('/verify-otp', async (req, res) => {
     const verified = await twilioVerify.verifyOtp(phone, code);
     if (!verified) return res.status(401).json({ error: 'invalid_code' });
 
-    const existing = await prisma.user.findUnique({ where: { phone } });
+    const existing = await prisma.user.findUnique({
+      where: { phone },
+      select: { id: true, phone: true, username: true, time_zone: true, created_at: true, avatar_updated_at: true },
+    });
 
     if (!existing) {
       // New user — issue a short-lived signup token; account created after username is chosen
@@ -39,7 +42,7 @@ authRouter.post('/verify-otp', async (req, res) => {
     }
 
     const tokens = issueAccessAndRefreshTokens({ userId: existing.id });
-    res.json({ user: { id: existing.id, phone: existing.phone, username: existing.username, time_zone: existing.time_zone, created_at: existing.created_at, has_avatar: existing.avatar !== null }, is_new_user: false, ...tokens });
+    res.json({ user: { id: existing.id, phone: existing.phone, username: existing.username, time_zone: existing.time_zone, created_at: existing.created_at, has_avatar: existing.avatar_updated_at !== null }, is_new_user: false, ...tokens });
   } catch (error) {
     console.error('[verify-otp] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
@@ -71,7 +74,7 @@ authRouter.post('/complete-signup', async (req, res) => {
   }
 
   try {
-    const existing = await prisma.user.findUnique({ where: { username } });
+    const existing = await prisma.user.findUnique({ where: { username }, select: { id: true } });
     if (existing) return res.status(409).json({ error: 'username_taken' });
 
     const user = await prisma.user.create({ data: { phone, username, time_zone: seedTimezone } });
@@ -101,7 +104,7 @@ authRouter.post('/refresh', async (req, res) => {
     }
 
     // Verify user still exists
-    const user = await prisma.user.findUnique({ where: { id: decoded.sub } });
+    const user = await prisma.user.findUnique({ where: { id: decoded.sub }, select: { id: true } });
     if (!user) return res.status(401).json({ error: 'user_not_found' });
 
     const tokens = issueAccessAndRefreshTokens({ userId: user.id });

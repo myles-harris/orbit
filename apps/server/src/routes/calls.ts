@@ -3,6 +3,8 @@ import { requireJwt } from '../util/requireJwt.js';
 import { dailyVideo, buildRoomName } from '../services/dailyVideo.js';
 import { prisma } from '../db/prisma.js';
 import { notifications } from '../services/notifications.js';
+import { broadcastCallPresence, expiryFor, SPONTANEOUS_TTL_MS } from '../services/callPresence.js';
+import { scheduleLiveActivityEnd } from '../queue/schedulerQueue.js';
 
 export const callsRouter = Router();
 
@@ -121,9 +123,16 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
       await notifications.startLiveActivities(
         ptsTokens,
         { callId: call.id, groupId },
-        { groupName: group.name, callType: 'spontaneous' },
+        { groupName: group.name, callType: 'spontaneous', participantCount: 0 },
+        new Date(startedAt.getTime() + SPONTANEOUS_TTL_MS),
       );
     }
+
+    // [fix 12] expiryFor returns null when a scheduled call has no ends_at (reachable
+    // via the DEV routes at calls.ts:552 and :622). Skip rather than assert non-null.
+    const expiry = expiryFor(call);
+    if (expiry) await scheduleLiveActivityEnd(call.id, expiry);
+    else console.warn(`[presence] No expiry anchor for call ${call.id}, no end job scheduled`);
 
     console.log(`[call-now] User ${userId} started spontaneous call ${call.id} for group ${groupId} (${otherMembers.length} other member(s))`);
 
@@ -337,6 +346,7 @@ callsRouter.post('/:id/calls/:callId/join-token', requireJwt, async (req, res) =
         last_seen_at: new Date(),
       }
     });
+    broadcastCallPresence(callId);
 
     // Generate Daily.co meeting token
     const token = await dailyVideo.createMeetingToken(call.room_name, userId, call.ends_at ?? undefined);
@@ -380,6 +390,7 @@ callsRouter.post('/:id/calls/:callId/leave', requireJwt, async (req, res) => {
         where: { id: participant.id },
         data: { left_at: new Date() }
       });
+      broadcastCallPresence(callId);
 
       console.log(`[leave-call] User ${userId} left call ${callId}`);
 

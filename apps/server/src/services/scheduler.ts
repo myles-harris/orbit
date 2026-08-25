@@ -1,12 +1,13 @@
-import { PrismaClient, Cadence, CallStatus } from '@prisma/client';
+import { Cadence } from '@prisma/client';
+import { prisma } from '../db/prisma.js';
 import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
+import { broadcastCallPresence, forgetCallPresence, expiryFor } from './callPresence.js';
+import { scheduleLiveActivityEnd } from '../queue/schedulerQueue.js';
 import { SCHEDULE_TZ, calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, dayKeyForDate, dayKey, shuffle, wallTimeToUtc } from '../util/scheduleTime.js';
 
 /** A participant is stale after this long with no heartbeat (client beats every 10s). */
 const HEARTBEAT_STALE_MS = 90 * 1000;
-
-const prisma = new PrismaClient();
 
 /**
  * Scheduler service for managing random call times
@@ -358,34 +359,75 @@ export const scheduler = {
         endsAt: call.ends_at?.toISOString() ?? '',
       };
 
-      await notifications.sendToBuckets(
-        group.members,
-        `${group.name} is calling!`,
-        'Tap to join the scheduled call',
-        callData,
-      );
+      const ptsByToken = new Map<string, string>();
+      for (const m of group.members as any[]) {
+        if (m.is_muted) continue;
+        for (const d of m.user.devices) {
+          if (d.platform === 'ios' && d.live_activity_pts_token) {
+            ptsByToken.set(d.live_activity_pts_token, d.token);
+          }
+        }
+      }
 
-      // iOS 17.2+: start Live Activity on locked/force-quit devices via push-to-start.
-      const ptsTokens = group.members
-        .filter((m: any) => !m.is_muted)
-        .flatMap((m: any) =>
-          m.user.devices
-            .filter((d: any) => d.platform === 'ios' && d.live_activity_pts_token)
-            .map((d: any) => d.live_activity_pts_token as string)
-        );
-
-      if (ptsTokens.length > 0) {
-        await notifications.startLiveActivities(
-          ptsTokens,
+      let delivered = new Set<string>();
+      if (ptsByToken.size > 0) {
+        const ok = await notifications.startLiveActivities(
+          [...ptsByToken.keys()],
           { callId, groupId: group.id },
           {
             groupName: group.name,
             callType: 'scheduled',
             endsAtMs: call.ends_at ? call.ends_at.getTime() : undefined,
+            participantCount: 0,
           },
           call.ends_at ?? undefined,
         );
+        delivered = new Set(ok);
+      } else {
+        console.log(`[scheduler] No Live Activity PTS tokens for group ${group.id}, locked-device countdown will not appear`);
       }
+
+      // Coverage is per DEVICE, not per member: sendToBuckets delivers to every token a
+      // member owns, so a member-level filter would send the banner to the same iPhone
+      // that just received a Live Activity whenever the member has any second device.
+      const deliveredDeviceTokens = new Set<string>();
+      for (const pts of delivered) {
+        const deviceToken = ptsByToken.get(pts);
+        if (deviceToken) deliveredDeviceTokens.add(deviceToken);
+      }
+
+      const uncovered = (group.members as any[])
+        .map((m) => ({
+          ...m,
+          user: {
+            ...m.user,
+            devices: m.user.devices.filter((d: any) => !deliveredDeviceTokens.has(d.token)),
+          },
+        }))
+        .filter((m) => m.user.devices.length > 0);
+
+      if (uncovered.length > 0) {
+        await notifications.sendToBuckets(
+          uncovered,
+          `${group.name} is calling!`,
+          'Tap to join the scheduled call',
+          callData,
+        );
+      }
+
+      console.log(
+        `[scheduler] call ${callId}: live activity ${delivered.size}/${ptsByToken.size} device(s), ` +
+        `alert push to ${uncovered.length}/${group.members.length} member(s)`
+      );
+
+      // [fix 12] expiryFor returns null when a scheduled call has no ends_at (reachable
+      // via the DEV routes at calls.ts:552 and :622). Skip rather than assert non-null.
+      // Note: `call` still holds the pre-activation started_at (the status: 'active'
+      // update above is not reflected back), but expiryFor only reads ends_at for
+      // scheduled calls, so that staleness is harmless here.
+      const expiry = expiryFor(call);
+      if (expiry) await scheduleLiveActivityEnd(call.id, expiry);
+      else console.warn(`[presence] No expiry anchor for call ${call.id}, no end job scheduled`);
 
       console.log(`[scheduler] Activated scheduled call ${callId} for group ${group.name}`);
     } catch (error) {
@@ -470,6 +512,7 @@ export const scheduler = {
           where: { id: participant.id },
           data: { left_at: new Date() },
         });
+        broadcastCallPresence(participant.call_id);
 
         console.log(`[scheduler] Pruned stale participant ${participant.user_id} from call ${participant.call_id}`);
 
@@ -535,6 +578,7 @@ export const scheduler = {
       });
 
       console.log(`[scheduler] Closed call ${callId}`);
+      forgetCallPresence(callId);
     } catch (error) {
       console.error(`[scheduler] Error closing call ${callId}:`, error);
     }

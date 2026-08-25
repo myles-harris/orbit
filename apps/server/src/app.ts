@@ -11,7 +11,12 @@ import usersRouter from './routes/users.js';
 
 export const app = express();
 app.use(cors());
-app.use(express.json({ limit: '4mb' }));
+app.use(express.json({
+  limit: '4mb',
+  // Preserves the exact bytes Daily signed so the webhook route can verify the HMAC
+  // against them; JSON.stringify(req.body) is not guaranteed to reproduce the original.
+  verify: (req: any, _res, buf) => { req.rawBody = buf; },
+}));
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
@@ -24,8 +29,11 @@ app.use('/groups', groupsRouter);
 app.use('/svc', svcRouter);
 app.use('/groups', callsRouter); // calls endpoints nested under /groups/:id
 
-app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('[unhandled-error]', err);
   if (res.headersSent) return;
+  if (err?.type === 'entity.too.large' || err?.status === 413 || err?.statusCode === 413) {
+    return res.status(413).json({ error: 'payload_too_large' });
+  }
   res.status(500).json({ error: 'internal_server_error' });
 });

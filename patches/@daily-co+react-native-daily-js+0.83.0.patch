@@ -1,0 +1,43 @@
+diff --git a/node_modules/@daily-co/react-native-daily-js/dist/index.js b/node_modules/@daily-co/react-native-daily-js/dist/index.js
+index 4d8afc1..360692d 100644
+--- a/node_modules/@daily-co/react-native-daily-js/dist/index.js
++++ b/node_modules/@daily-co/react-native-daily-js/dist/index.js
+@@ -67,9 +67,35 @@ function setupEventListeners() {
+         var wasActive = previousState === 'active';
+         var isActive = appState === 'active';
+         if (wasActive !== isActive) {
+-            appStateChangeListeners.forEach(function (listener) {
+-                return listener(isActive ? 'active' : 'inactive');
+-            });
++            // Orbit: intentionally NOT notifying the call machine of foreground/
++            // background transitions.
++            //
++            // The call machine uses this signal to auto-mute the local camera when the
++            // app backgrounds (see the comment above this listener). That default is
++            // correct for an app whose camera iOS would suspend anyway — but Orbit
++            // enables multitasking camera access on the capture session
++            // (VideoCaptureController.m, single-cam path), so the camera legitimately
++            // keeps producing frames while backgrounded.
++            //
++            // With the auto-mute in place two things break:
++            //   1. Solo Picture-in-Picture renders black. The PiP sample-buffer view
++            //      buffers nothing before PiP goes active, so the local camera is the
++            //      only possible source of content and muting it leaves an empty layer.
++            //   2. Remote participants lose our video the moment we background, which
++            //      contradicts the intent documented in CallScreen's AppState handler.
++            //
++            // The 'destroyed' notification above is deliberately left intact — this
++            // only suppresses the active/inactive transition.
++            //
++            // Verified on iPhone 11 Pro / A13: with this suppressed, capture continues
++            // in the background with no AVCaptureSessionInterruptionReason
++            // VideoDeviceNotAvailableInBackground.
++            var ORBIT_SUPPRESS_APP_STATE_AUTOMUTE = true;
++            if (!ORBIT_SUPPRESS_APP_STATE_AUTOMUTE) {
++                appStateChangeListeners.forEach(function (listener) {
++                    return listener(isActive ? 'active' : 'inactive');
++                });
++            }
+         }
+     });
+     if (react_native_1.Platform.OS === 'ios') {

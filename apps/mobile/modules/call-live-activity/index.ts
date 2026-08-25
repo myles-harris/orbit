@@ -5,6 +5,7 @@ export interface CallActivityState {
   callType: 'spontaneous' | 'scheduled';
   /** Epoch milliseconds. Only set for scheduled calls. */
   endsAt?: number;
+  participantCount?: number;
 }
 
 type CallLiveActivityModuleType = {
@@ -12,7 +13,8 @@ type CallLiveActivityModuleType = {
   endActivityAsync(activityId: string): Promise<void>;
   endAllActivitiesAsync(): Promise<void>;
   getPushToStartTokenAsync(): Promise<string | null>;
-  hasActivityForCall(callId: string): Promise<boolean>;
+  activityIdForCall(callId: string): Promise<string | null>;
+  endActivitiesExceptAsync(callIds: string[]): Promise<void>;
 };
 
 let CallLiveActivity: CallLiveActivityModuleType | null = null;
@@ -30,7 +32,8 @@ if (Platform.OS === 'ios') {
       endActivityAsync: (activityId) => NativeRaw.endActivityAsync(activityId),
       endAllActivitiesAsync: () => NativeRaw.endAllActivitiesAsync(),
       getPushToStartTokenAsync: () => NativeRaw.getPushToStartTokenAsync(),
-      hasActivityForCall: (callId) => NativeRaw.hasActivityForCall(callId),
+      activityIdForCall: (callId) => NativeRaw.activityIdForCall(callId),
+      endActivitiesExceptAsync: (callIds) => NativeRaw.endActivitiesExceptAsync(callIds),
     };
   } catch {
     // Native module not available: simulator, or not yet built

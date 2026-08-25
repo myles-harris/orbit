@@ -4,3 +4,5 @@ apps/mobile
 .env
 .DS_Store
 **/.DS_Store
+**/ios
+design

@@ -19,6 +19,7 @@ module.exports = {
     },
   },
   globalSetup: '<rootDir>/src/__tests__/globalSetup.cjs',
+  setupFiles: ['<rootDir>/src/__tests__/loadTestEnv.cjs'],
   setupFilesAfterEnv: ['<rootDir>/src/__tests__/setup.ts'],
   testMatch: ['<rootDir>/src/__tests__/**/*.test.ts'],
 };

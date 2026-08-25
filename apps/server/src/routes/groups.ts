@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
-import { notifications } from '../services/notifications.js';
+import { notifications, INVITE_PUSH } from '../services/notifications.js';
 import { scheduler } from '../services/scheduler.js';
 import { calendarDateInTz, addDays, dayBoundsUtc } from '../util/scheduleTime.js';
 
@@ -119,7 +119,7 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
     const grp = await prisma.group.findUnique({
       where: { id: req.params.id },
       include: {
-        members: { include: { user: { select: { id: true, username: true, avatar: true, avatar_updated_at: true } } } },
+        members: { include: { user: { select: { id: true, username: true, avatar_updated_at: true } } } },
         calls: { orderBy: { started_at: 'desc' }, take: 1 },
       },
     });
@@ -141,7 +141,7 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
       members: grp.members.map((m: any) => ({
         user_id: m.user_id,
         username: m.user.username,
-        has_avatar: m.user.avatar !== null,
+        has_avatar: m.user.avatar_updated_at !== null,
         avatar_updated_at: m.user.avatar_updated_at?.toISOString() ?? null,
         role: m.user_id === grp.owner_id ? 'owner' : 'member',
       })),
@@ -809,7 +809,8 @@ groupsRouter.post('/:id/invite-user', requireJwt, async (req, res) => {
           type: 'invitation_received',
           inviteId: invite.id,
           groupId: groupId
-        }
+        },
+        INVITE_PUSH,
       );
     }
 

@@ -27,7 +27,7 @@ jest.mock('twilio', () => jest.fn(() => ({})));
 // eslint-disable-next-line import/first
 import request from 'supertest';
 import { PrismaClient } from '@prisma/client';
-import { notifications, callChannelId } from '../services/notifications.js';
+import { notifications, callChannelId, CALL_SOUND_IOS, INVITE_PUSH } from '../services/notifications.js';
 import type { PushOptions } from '../services/notifications.js';
 import { app } from '../app.js';
 import { createTestUser, createAccessToken } from './helpers/auth.js';
@@ -94,6 +94,13 @@ describe('sendApns', () => {
     expect(payload.aps.sound).toBeUndefined();
   });
 
+  it('defaults iOS sound to the call tone and lets presets override it', async () => {
+    await notifications.sendApns(['token-e'], 'T', 'B', {});
+    expect(mockSendApnsRaw.mock.calls[0][1].aps.sound).toBe(CALL_SOUND_IOS);
+    await notifications.sendApns(['token-f'], 'T', 'B', {}, INVITE_PUSH);
+    expect(mockSendApnsRaw.mock.calls[1][1].aps.sound).toBe('default');
+  });
+
   it('stub returns failure count equal to token count when unconfigured', async () => {
     const apnsMock = jest.requireMock('../services/apns') as { isApnsConfigured: () => boolean };
     const orig = apnsMock.isApnsConfigured;
@@ -137,6 +144,11 @@ describe('sendFcm', () => {
     await notifications.sendFcm(['fcm-token-4'], 'T', 'B', {}, opts);
     const [msg] = mockFcmSend.mock.calls[0];
     expect(msg.data.channelId).toBe(callChannelId(opts));
+  });
+
+  it('honours an explicit channelId override', async () => {
+    await notifications.sendFcm(['fcm-token-5'], 'T', 'B', {}, INVITE_PUSH);
+    expect(mockFcmSend.mock.calls[0][0].data.channelId).toBe('invites');
   });
 });
 
@@ -260,6 +272,157 @@ describe('startLiveActivities', () => {
     expect(payload.aps.timestamp).toBeGreaterThanOrEqual(before);
     expect(payload.aps.timestamp).toBeLessThanOrEqual(after);
   });
+
+  it('returns the tokens APNs accepted', async () => {
+    mockSendApnsRaw.mockResolvedValueOnce({ ok: true, status: 200 });
+    const result = await notifications.startLiveActivities(
+      ['pts-token-6'],
+      { callId: 'c', groupId: 'g' },
+      { groupName: 'T', callType: 'scheduled' },
+    );
+    expect(result).toEqual(['pts-token-6']);
+  });
+
+  it('excludes a rejected token from the returned array without failing the others', async () => {
+    mockSendApnsRaw
+      .mockResolvedValueOnce({ ok: false, status: 410, reason: 'Unregistered' })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    const result = await notifications.startLiveActivities(
+      ['pts-bad', 'pts-good'],
+      { callId: 'c', groupId: 'g' },
+      { groupName: 'T', callType: 'scheduled' },
+    );
+    expect(result).toEqual(['pts-good']);
+  });
+
+  it('returns [] and logs STUB when APNs is unconfigured', async () => {
+    const apnsMock = jest.requireMock('../services/apns') as { isApnsConfigured: () => boolean };
+    const orig = apnsMock.isApnsConfigured;
+    apnsMock.isApnsConfigured = () => false;
+    try {
+      const result = await notifications.startLiveActivities(
+        ['pts-token-7'],
+        { callId: 'c', groupId: 'g' },
+        { groupName: 'T', callType: 'scheduled' },
+      );
+      expect(result).toEqual([]);
+    } finally {
+      apnsMock.isApnsConfigured = orig;
+    }
+  });
+});
+
+// ─── updateLiveActivities ─────────────────────────────────────────────────────
+
+describe('updateLiveActivities', () => {
+  it('sends event: update', async () => {
+    await notifications.updateLiveActivities(['token-u1'], { groupName: 'G', callType: 'scheduled', participantCount: 2 });
+    const [, payload] = mockSendApnsRaw.mock.calls[0];
+    expect(payload.aps.event).toBe('update');
+  });
+
+  it('carries no alert key', async () => {
+    await notifications.updateLiveActivities(['token-u2'], { groupName: 'G', callType: 'scheduled', participantCount: 1 });
+    const [, payload] = mockSendApnsRaw.mock.calls[0];
+    expect(payload.aps.alert).toBeUndefined();
+  });
+
+  it('sends at priority 5', async () => {
+    await notifications.updateLiveActivities(['token-u3'], { groupName: 'G', callType: 'scheduled', participantCount: 1 });
+    const [, , headers] = mockSendApnsRaw.mock.calls[0];
+    expect(headers.priority).toBe(5);
+  });
+
+  it('uses the liveactivity topic suffix', async () => {
+    await notifications.updateLiveActivities(['token-u4'], { groupName: 'G', callType: 'scheduled', participantCount: 1 });
+    const [, , headers] = mockSendApnsRaw.mock.calls[0];
+    expect(headers.topic).toBe('com.mylesharris.orbit.push-type.liveactivity');
+  });
+
+  it('sends participantCount as a number, not a string', async () => {
+    await notifications.updateLiveActivities(['token-u5'], { groupName: 'G', callType: 'scheduled', participantCount: 3 });
+    const [, payload] = mockSendApnsRaw.mock.calls[0];
+    expect(typeof payload.aps['content-state'].participantCount).toBe('number');
+  });
+
+  it('returns stale tokens for BadDeviceToken/Unregistered without failing the others', async () => {
+    mockSendApnsRaw
+      .mockResolvedValueOnce({ ok: false, status: 410, reason: 'Unregistered' })
+      .mockResolvedValueOnce({ ok: true, status: 200 });
+    const result = await notifications.updateLiveActivities(
+      ['token-bad', 'token-good'],
+      { groupName: 'G', callType: 'scheduled', participantCount: 1 },
+    );
+    expect(result.stale).toEqual(['token-bad']);
+    expect(result.success).toBe(1);
+    expect(result.failure).toBe(1);
+  });
+
+  it('returns zeroed results and logs STUB when APNs is unconfigured', async () => {
+    const apnsMock = jest.requireMock('../services/apns') as { isApnsConfigured: () => boolean };
+    const orig = apnsMock.isApnsConfigured;
+    apnsMock.isApnsConfigured = () => false;
+    try {
+      const result = await notifications.updateLiveActivities(['token-stub'], { groupName: 'G', callType: 'scheduled' });
+      expect(result).toEqual({ success: 0, failure: 0, stale: [] });
+    } finally {
+      apnsMock.isApnsConfigured = orig;
+    }
+  });
+});
+
+// ─── endLiveActivities ────────────────────────────────────────────────────────
+
+describe('endLiveActivities', () => {
+  it('sends event: end with a dismissal-date derived from dismissAt', async () => {
+    const dismissAt = new Date(Date.now() + 5000);
+    await notifications.endLiveActivities(
+      ['token-e1'],
+      { groupName: 'G', callType: 'spontaneous', participantCount: 0 },
+      dismissAt,
+    );
+    const [, payload] = mockSendApnsRaw.mock.calls[0];
+    expect(payload.aps.event).toBe('end');
+    expect(payload.aps['dismissal-date']).toBe(Math.floor(dismissAt.getTime() / 1000));
+  });
+});
+
+// ─── sendExpoData ─────────────────────────────────────────────────────────────
+
+describe('sendExpoData', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('chunks above 100 tokens into two requests', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ data: Array(100).fill({ status: 'ok' }) }),
+    } as any);
+    const tokens = Array.from({ length: 150 }, (_, i) => `ExponentPushToken[${i}]`);
+
+    await notifications.sendExpoData(tokens, { type: 'call_presence' });
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('counts a top-level errors response as failures', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ errors: [{ message: 'bad request' }] }),
+    } as any);
+    const tokens = ['ExponentPushToken[a]', 'ExponentPushToken[b]'];
+
+    const result = await notifications.sendExpoData(tokens, { type: 'call_presence' });
+
+    expect(result.failure).toBe(tokens.length);
+    expect(result.success).toBe(0);
+  });
+
+  it('returns zeroed results without calling fetch for an empty token list', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const result = await notifications.sendExpoData([], { type: 'call_presence' });
+    expect(result).toEqual({ success: 0, failure: 0 });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 });
 
 // ─── POST /me/devices/register-live-activity ─────────────────────────────────
@@ -309,6 +472,290 @@ describe('POST /me/devices/register-live-activity', () => {
       .set('Authorization', `Bearer ${userAToken}`)
       .send({ device_token: 'device-token-a' });
     expect(res.status).toBe(400);
+  });
+
+  it('returns 404 when no device row matches the token', async () => {
+    const res = await request(app)
+      .post('/me/devices/register-live-activity')
+      .set('Authorization', `Bearer ${userAToken}`)
+      .send({ device_token: 'no-such-device-token', pts_token: 'pts-hex-token' });
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('device_not_registered');
+  });
+
+  it('returns 404 when the device token belongs to a different user (scoped update is a no-op)', async () => {
+    const res = await request(app)
+      .post('/me/devices/register-live-activity')
+      .set('Authorization', `Bearer ${userAToken}`)
+      .send({ device_token: 'device-token-b', pts_token: 'attacker-token' });
+    expect(res.status).toBe(404);
+  });
+});
+
+// ─── POST /me/calls/live-activity-token ──────────────────────────────────────
+
+describe('POST /me/calls/live-activity-token', () => {
+  const setupGroupAndCall = async (usernamePrefix: string) => {
+    const member = await createTestUser({ username: `${usernamePrefix}_member` });
+    const group = await prisma.group.create({
+      data: { name: 'LA Token Group', cadence: 'daily', call_duration_minutes: 30, owner_id: member.id },
+    });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: member.id, role: 'owner' },
+    });
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'spontaneous',
+        room_name: `la-token-room-${group.id}`,
+      },
+    });
+    return { member, group, call };
+  };
+
+  it('stores the token for a member of the call\'s group', async () => {
+    const { member, call } = await setupGroupAndCall('la_store');
+    const token = createAccessToken(member.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-1' });
+
+    expect(res.status).toBe(200);
+    const row = await prisma.callLiveActivityToken.findFirst({
+      where: { call_id: call.id, push_token: 'activity-push-token-1' },
+    });
+    expect(row?.user_id).toBe(member.id);
+  });
+
+  it('upserts rather than duplicating on repeat POST', async () => {
+    const { member, call } = await setupGroupAndCall('la_upsert');
+    const token = createAccessToken(member.id);
+
+    for (let i = 0; i < 2; i++) {
+      const res = await request(app)
+        .post('/me/calls/live-activity-token')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ call_id: call.id, push_token: 'activity-push-token-2' });
+      expect(res.status).toBe(200);
+    }
+
+    const rows = await prisma.callLiveActivityToken.findMany({
+      where: { call_id: call.id, push_token: 'activity-push-token-2' },
+    });
+    expect(rows.length).toBe(1);
+  });
+
+  it('returns 403 for a non-member', async () => {
+    const { call } = await setupGroupAndCall('la_nonmember');
+    const outsider = await createTestUser({ username: 'la_outsider' });
+    const token = createAccessToken(outsider.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-3' });
+
+    expect(res.status).toBe(403);
+    const row = await prisma.callLiveActivityToken.findFirst({
+      where: { call_id: call.id, push_token: 'activity-push-token-3' },
+    });
+    expect(row).toBeNull();
+  });
+
+  it('returns 404 for an unknown call_id', async () => {
+    const user = await createTestUser({ username: 'la_unknown_call' });
+    const token = createAccessToken(user.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: '00000000-0000-0000-0000-000000000000', push_token: 'activity-push-token-4' });
+
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 for a missing push_token', async () => {
+    const { member, call } = await setupGroupAndCall('la_missing_token');
+    const token = createAccessToken(member.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('cascade-deletes when the call is deleted', async () => {
+    const { member, call } = await setupGroupAndCall('la_cascade');
+    const token = createAccessToken(member.id);
+
+    await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-5' });
+
+    await prisma.callSession.delete({ where: { id: call.id } });
+
+    const rows = await prisma.callLiveActivityToken.findMany({ where: { call_id: call.id } });
+    expect(rows.length).toBe(0);
+  });
+
+  it('returns 409 and leaves ownership unchanged when a different member POSTs an existing token', async () => {
+    const { member, group, call } = await setupGroupAndCall('la_reassign');
+    const otherMember = await createTestUser({ username: 'la_reassign_other' });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: otherMember.id, role: 'member' },
+    });
+    const ownerToken = createAccessToken(member.id);
+    const otherToken = createAccessToken(otherMember.id);
+
+    await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-6' });
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${otherToken}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-6' });
+
+    expect(res.status).toBe(409);
+    const row = await prisma.callLiveActivityToken.findFirst({
+      where: { call_id: call.id, push_token: 'activity-push-token-6' },
+    });
+    expect(row?.user_id).toBe(member.id);
+  });
+
+  it('seeds the newly registered token with the current participant count [fix 3]', async () => {
+    const { member, call } = await setupGroupAndCall('la_seed');
+    await prisma.callParticipant.create({
+      data: { call_id: call.id, user_id: member.id, joined_at: new Date() },
+    });
+    const token = createAccessToken(member.id);
+
+    await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'seed-activity-token' });
+
+    // The seed fires fire-and-forget after the response; give it a tick to land.
+    await new Promise(r => setTimeout(r, 50));
+
+    const call_ = mockSendApnsRaw.mock.calls.find(([t]) => t === 'seed-activity-token');
+    expect(call_).toBeDefined();
+    const [, payload] = call_!;
+    expect(payload.aps['content-state'].participantCount).toBe(1);
+  });
+
+  it('returns 409 and writes nothing for a call that is not active', async () => {
+    const member = await createTestUser({ username: 'la_inactive_member' });
+    const group = await prisma.group.create({
+      data: { name: 'LA Inactive Group', cadence: 'daily', call_duration_minutes: 30, owner_id: member.id },
+    });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: member.id, role: 'owner' },
+    });
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'ended',
+        call_type: 'spontaneous',
+        room_name: `la-inactive-room-${group.id}`,
+      },
+    });
+    const token = createAccessToken(member.id);
+
+    const res = await request(app)
+      .post('/me/calls/live-activity-token')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ call_id: call.id, push_token: 'activity-push-token-7' });
+
+    expect(res.status).toBe(409);
+    const row = await prisma.callLiveActivityToken.findFirst({
+      where: { call_id: call.id, push_token: 'activity-push-token-7' },
+    });
+    expect(row).toBeNull();
+  });
+});
+
+// ─── GET /me/calls/active ──────────────────────────────────────────────────
+
+describe('GET /me/calls/active', () => {
+  it('returns an empty list when the user has no active calls', async () => {
+    const user = await createTestUser({ username: 'active_calls_none' });
+    const token = createAccessToken(user.id);
+
+    const res = await request(app)
+      .get('/me/calls/active')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.callIds).toEqual([]);
+  });
+
+  it('returns the call id for an active call in one of the user\'s groups', async () => {
+    const user = await createTestUser({ username: 'active_calls_member' });
+    const token = createAccessToken(user.id);
+
+    const group = await prisma.group.create({
+      data: { name: 'Active Calls Group', cadence: 'daily', call_duration_minutes: 30, owner_id: user.id },
+    });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: user.id, role: 'owner' },
+    });
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'scheduled',
+        room_name: `active-calls-room-${group.id}`,
+      },
+    });
+
+    const res = await request(app)
+      .get('/me/calls/active')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.callIds).toEqual([call.id]);
+  });
+
+  it('does not include an active call from a group the user does not belong to', async () => {
+    const owner = await prisma.user.create({
+      data: {
+        phone: `+1555${Math.floor(1000000 + Math.random() * 9000000)}`,
+        username: `active_calls_owner_${Math.random().toString(36).slice(2, 8)}`,
+        time_zone: 'UTC',
+      },
+    });
+    const group = await prisma.group.create({
+      data: { name: 'Other Group', cadence: 'daily', call_duration_minutes: 30, owner_id: owner.id },
+    });
+    await prisma.groupMember.create({
+      data: { group_id: group.id, user_id: owner.id, role: 'owner' },
+    });
+    await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'scheduled',
+        room_name: `other-group-room-${group.id}`,
+      },
+    });
+
+    const outsider = await createTestUser({ username: 'active_calls_outsider' });
+    const token = createAccessToken(outsider.id);
+
+    const res = await request(app)
+      .get('/me/calls/active')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.callIds).toEqual([]);
   });
 });
 

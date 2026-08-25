@@ -23,8 +23,12 @@ jest.mock('../services/notifications', () => ({
   notifications: {
     sendPushTokens: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
     sendToBuckets: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
-    startLiveActivities: jest.fn().mockResolvedValue(undefined),
+    startLiveActivities: jest.fn().mockResolvedValue([]),
+    updateLiveActivities: jest.fn().mockResolvedValue({ success: 0, failure: 0, stale: [] }),
+    endLiveActivities: jest.fn().mockResolvedValue(undefined),
+    sendExpoData: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
   },
+  INVITE_PUSH: { channelId: 'invites', soundName: 'default' },
 }));
 
 jest.mock('../services/twilioVerify', () => ({
@@ -49,13 +53,15 @@ jest.mock('../services/scheduler', () => ({
 
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
+import express from 'express';
+import { createHmac } from 'node:crypto';
 import { PrismaClient } from '@prisma/client';
 import { app } from '../app.js';
 import { scheduler } from '../services/scheduler.js';
+import { schedulerQueue } from '../queue/schedulerQueue.js';
 import {
   createTestUser,
   createTestUserWithToken,
-  createAccessToken,
   createRefreshToken,
 } from './helpers/auth.js';
 
@@ -392,6 +398,20 @@ describe('Me endpoints', () => {
     // 1x1 PNG in base64 (smallest valid PNG)
     const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 
+    /** Minimal structurally-valid JPEG: SOI + APP0/JFIF header, padded to `bytes`. */
+    const jpegOfSize = (bytes: number) => {
+      const header = Buffer.from([
+        0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01,
+      ]);
+      return Buffer.concat([header, Buffer.alloc(Math.max(0, bytes - header.length))]);
+    };
+
+    const putAvatar = (token: string, buf: Buffer, mime = 'image/jpeg') =>
+      request(app)
+        .put('/me/avatar')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ data: buf.toString('base64'), mime_type: mime });
+
     it('returns has_avatar: false for a new user', async () => {
       const { token } = await createTestUserWithToken();
       const res = await request(app).get('/me').set('Authorization', `Bearer ${token}`);
@@ -452,18 +472,63 @@ describe('Me endpoints', () => {
       expect(res.status).toBe(400);
     });
 
-    it('PUT /me/avatar rejects a payload exceeding 2 MB', async () => {
+    it('PUT /me/avatar rejects a payload exceeding the 2 MB cap', async () => {
       const { token } = await createTestUserWithToken();
-      const bigData = Buffer.alloc(2.1 * 1024 * 1024).toString('base64');
-      const res = await request(app)
-        .put('/me/avatar')
-        .set('Authorization', `Bearer ${token}`)
-        .send({ data: bigData, mime_type: 'image/jpeg' });
+      const res = await putAvatar(token, jpegOfSize(2 * 1024 * 1024 + 1));
       expect(res.status).toBe(400);
       expect(res.body.error).toBe('avatar_too_large');
     });
 
-    it('GET /users/search includes has_avatar', async () => {
+    it('PUT /me/avatar accepts a 300 KB image (regression: cap was 200 KB)', async () => {
+      const { token } = await createTestUserWithToken();
+      const res = await putAvatar(token, jpegOfSize(300 * 1024));
+      expect(res.status).toBe(200);
+      expect(res.body.avatar_updated_at).toEqual(expect.any(String));
+    });
+
+    it('PUT /me/avatar accepts an image just under the 2 MB cap', async () => {
+      const { token } = await createTestUserWithToken();
+      expect((await putAvatar(token, jpegOfSize(2 * 1024 * 1024 - 1))).status).toBe(200);
+    });
+
+    it('GET /me never returns the avatar blob', async () => {
+      const { token } = await createTestUserWithToken();
+      await request(app).put('/me/avatar').set('Authorization', `Bearer ${token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/png' });
+
+      const res = await request(app).get('/me').set('Authorization', `Bearer ${token}`);
+      expect(res.status).toBe(200);
+      expect(res.body).not.toHaveProperty('avatar');
+      expect(res.body.has_avatar).toBe(true);
+      expect(res.body.avatar_updated_at).toEqual(expect.any(String));
+    });
+
+    it('GET /users/:id/avatar is immutable-cacheable when versioned and 304s on ETag', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const upload = await request(app).put('/me/avatar').set('Authorization', `Bearer ${token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/png' });
+      const version = new Date(upload.body.avatar_updated_at).getTime();
+
+      const versioned = await request(app)
+        .get(`/users/${user.id}/avatar?v=${version}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(versioned.status).toBe(200);
+      expect(versioned.headers['cache-control']).toContain('immutable');
+      expect(versioned.headers['etag']).toBe(`"${version}"`);
+
+      const unversioned = await request(app)
+        .get(`/users/${user.id}/avatar`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(unversioned.headers['cache-control']).not.toContain('immutable');
+
+      const conditional = await request(app)
+        .get(`/users/${user.id}/avatar?v=${version}`)
+        .set('Authorization', `Bearer ${token}`)
+        .set('If-None-Match', `"${version}"`);
+      expect(conditional.status).toBe(304);
+    });
+
+    it('GET /users/search includes has_avatar and no avatar blob', async () => {
       const { token } = await createTestUserWithToken({ username: 'searcher_ws2' });
       const { user: target } = await createTestUserWithToken({ username: 'target_ws2' });
 
@@ -474,6 +539,7 @@ describe('Me endpoints', () => {
       const found = res.body.users.find((u: any) => u.id === target.id);
       expect(found).toBeDefined();
       expect(found.has_avatar).toBe(false);
+      expect(found).not.toHaveProperty('avatar');
     });
   });
 
@@ -1662,6 +1728,25 @@ describe('Calls endpoints', () => {
 
       expect(res.status).toBe(403);
     });
+
+    it('schedules the end-live-activities job at started_at + 1h (SPONTANEOUS_TTL_MS)', async () => {
+      (schedulerQueue.add as jest.Mock).mockClear();
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/call-now`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(schedulerQueue.add).toHaveBeenCalledTimes(1);
+      const [name, data, opts] = (schedulerQueue.add as jest.Mock).mock.calls[0];
+      expect(name).toBe('end-live-activities');
+      expect(data).toEqual({ callId: res.body.id });
+      expect(opts.jobId).toBe(`end-la-${res.body.id}`);
+      expect(opts.delay).toBeGreaterThan(60 * 60_000 - 5000);
+      expect(opts.delay).toBeLessThanOrEqual(60 * 60_000);
+    });
   });
 
   describe('GET /groups/:id/calls/current', () => {
@@ -1834,6 +1919,25 @@ describe('Calls endpoints', () => {
       expect(participant).not.toBeNull();
       expect(participant!.last_seen_at).not.toBeNull();
     });
+
+    it('triggers a presence broadcast after the debounce window', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callLiveActivityToken.create({
+        data: { call_id: call.id, user_id: user.id, push_token: 'join-presence-token' },
+      });
+
+      const { notifications: mockNotifications } = jest.requireMock('../services/notifications');
+      mockNotifications.updateLiveActivities.mockClear();
+
+      await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/join-token`)
+        .set('Authorization', `Bearer ${token}`);
+
+      await new Promise(r => setTimeout(r, 1100));
+      expect(mockNotifications.updateLiveActivities).toHaveBeenCalled();
+    });
   });
 
   describe('POST /groups/:id/calls/:callId/leave', () => {
@@ -1882,6 +1986,28 @@ describe('Calls endpoints', () => {
         .set('Authorization', `Bearer ${token}`);
 
       expect(res.status).toBe(200);
+    });
+
+    it('triggers a presence broadcast after the debounce window', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
+      });
+      await prisma.callLiveActivityToken.create({
+        data: { call_id: call.id, user_id: user.id, push_token: 'leave-presence-token' },
+      });
+
+      const { notifications: mockNotifications } = jest.requireMock('../services/notifications');
+      mockNotifications.updateLiveActivities.mockClear();
+
+      await request(app)
+        .post(`/groups/${group.id}/calls/${call.id}/leave`)
+        .set('Authorization', `Bearer ${token}`);
+
+      await new Promise(r => setTimeout(r, 1100));
+      expect(mockNotifications.updateLiveActivities).toHaveBeenCalled();
     });
   });
 
@@ -2235,6 +2361,110 @@ describe('Svc endpoints', () => {
       expect(still?.status).toBe('active');
       expect(mockScheduler.closeCall).not.toHaveBeenCalled();
     });
+
+    it('triggers a presence broadcast on participant-left', async () => {
+      const { user, token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({
+        data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
+      });
+      await prisma.callLiveActivityToken.create({
+        data: { call_id: call.id, user_id: user.id, push_token: 'webhook-presence-token' },
+      });
+
+      const { notifications: mockNotifications } = jest.requireMock('../services/notifications');
+      mockNotifications.updateLiveActivities.mockClear();
+
+      await request(app)
+        .post('/svc/daily/webhook')
+        .send({ type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } });
+
+      await new Promise(r => setTimeout(r, 1100));
+      expect(mockNotifications.updateLiveActivities).toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /svc/daily/webhook — signature verification', () => {
+    const secret = Buffer.from('test-daily-webhook-secret').toString('base64');
+
+    function sign(timestamp: string, rawBody: string) {
+      const key = Buffer.from(secret, 'base64');
+      return createHmac('sha256', key).update(`${timestamp}.${rawBody}`).digest('base64');
+    }
+
+    async function buildAppWithSecret() {
+      let testApp!: express.Express;
+      await jest.isolateModulesAsync(async () => {
+        process.env.DAILY_WEBHOOK_SECRET = secret;
+        const { svcRouter } = await import('../routes/svc.js');
+        testApp = express();
+        testApp.use(express.json({
+          verify: (req: any, _res, buf: Buffer) => { req.rawBody = buf; },
+        }));
+        testApp.use('/svc', svcRouter);
+      });
+      return testApp;
+    }
+
+    afterEach(() => {
+      delete process.env.DAILY_WEBHOOK_SECRET;
+    });
+
+    it('accepts a request with a valid signature', async () => {
+      const testApp = await buildAppWithSecret();
+      const body = JSON.stringify({ type: 'participant-left', properties: {} });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+
+      const res = await request(testApp)
+        .post('/svc/daily/webhook')
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', timestamp)
+        .set('X-Webhook-Signature', sign(timestamp, body))
+        .send(body);
+
+      expect(res.status).toBe(200);
+    });
+
+    it('rejects a request with a missing signature', async () => {
+      const testApp = await buildAppWithSecret();
+
+      const res = await request(testApp)
+        .post('/svc/daily/webhook')
+        .send({ type: 'participant-left', properties: {} });
+
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects a request with an invalid signature', async () => {
+      const testApp = await buildAppWithSecret();
+      const body = JSON.stringify({ type: 'participant-left', properties: {} });
+      const timestamp = String(Math.floor(Date.now() / 1000));
+
+      const res = await request(testApp)
+        .post('/svc/daily/webhook')
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', timestamp)
+        .set('X-Webhook-Signature', 'not-the-right-signature')
+        .send(body);
+
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects a request with a stale timestamp', async () => {
+      const testApp = await buildAppWithSecret();
+      const body = JSON.stringify({ type: 'participant-left', properties: {} });
+      const staleTimestamp = String(Math.floor(Date.now() / 1000) - 600);
+
+      const res = await request(testApp)
+        .post('/svc/daily/webhook')
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', staleTimestamp)
+        .set('X-Webhook-Signature', sign(staleTimestamp, body))
+        .send(body);
+
+      expect(res.status).toBe(401);
+    });
   });
 
   describe('GET /svc/groups/:groupId/upcoming', () => {
@@ -2279,6 +2509,18 @@ describe('Svc endpoints', () => {
       const res = await request(app).get('/svc/groups/00000000-0000-0000-0000-000000000000/upcoming');
       expect(res.status).toBe(404);
     });
+  });
+});
+
+describe('Error handling', () => {
+  it('returns 413, not 500, for a body over the express.json limit', async () => {
+    const { token } = await createTestUserWithToken();
+    const res = await request(app)
+      .put('/me/avatar')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ data: 'A'.repeat(5 * 1024 * 1024), mime_type: 'image/jpeg' });
+    expect(res.status).toBe(413);
+    expect(res.body.error).toBe('payload_too_large');
   });
 });
 

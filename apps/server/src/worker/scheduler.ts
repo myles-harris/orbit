@@ -2,6 +2,7 @@ import { Worker, Job } from 'bullmq';
 import { connection } from '../queue/connection.js';
 import { registerSchedulerJobs } from '../queue/schedulerQueue.js';
 import { scheduler } from '../services/scheduler.js';
+import { endLiveActivitiesForCall } from '../services/callPresence.js';
 
 const SCHEDULER_ENABLED = process.env.SCHEDULER_ENABLED === 'true';
 
@@ -15,6 +16,8 @@ export async function processJob(job: Job) {
       return scheduler.closeExpiredCalls();
     case 'prune-stale-participants':
       return scheduler.pruneStaleParticipants();
+    case 'end-live-activities':
+      return endLiveActivitiesForCall(job.data.callId as string);
     default:
       throw new Error(`[scheduler-worker] Unknown job: ${job.name}`);
   }
