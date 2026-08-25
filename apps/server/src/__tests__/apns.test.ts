@@ -47,7 +47,14 @@ describe('sendApnsRaw timeout [A7]', () => {
 
     // apns.ts connects to Apple's real host; redirect it to the local h2c server
     // that never responds, regardless of the authority it was asked to connect to.
-    jest.spyOn(http2, 'connect').mockImplementation(() => http2.connect(`http://localhost:${port}`));
+    // Capture the real connect first — calling http2.connect from inside its own
+    // mock implementation would recurse into the mock itself.
+    const realConnect = http2.connect.bind(http2);
+    let clientSession: http2.ClientHttp2Session | undefined;
+    jest.spyOn(http2, 'connect').mockImplementation(() => {
+      clientSession = realConnect(`http://localhost:${port}`);
+      return clientSession;
+    });
 
     const { sendApnsRaw } = await import('../services/apns.js');
 
@@ -56,5 +63,10 @@ describe('sendApnsRaw timeout [A7]', () => {
 
     expect(Date.now() - start).toBeLessThan(800);
     expect(result).toEqual({ ok: false, status: 0, reason: 'timeout' });
+
+    // apns.ts never closes the session it opens (by design — it's reused across
+    // sends in production). Left open here, the server's afterAll close() would
+    // hang waiting for this connection to drain.
+    clientSession?.destroy();
   });
 });
