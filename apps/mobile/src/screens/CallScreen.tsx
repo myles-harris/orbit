@@ -310,9 +310,13 @@ export default function CallScreen() {
 
   const endCall = async (expired = false) => {
     // Leave first: the user tapped Leave and expects the camera off immediately.
-    // The server learns about it either from this POST, from Daily's
-    // participant-left webhook, or from pruneStaleParticipants within 90s.
-    if (callObjectRef.current) await callObjectRef.current.leave();
+    // Guarded so a leave() rejection (e.g. the call object already torn down)
+    // can't skip the backend notification below — that must fire regardless.
+    try {
+      if (callObjectRef.current) await callObjectRef.current.leave();
+    } catch (error) {
+      console.error('Failed to leave Daily call locally:', error);
+    }
     try {
       const client = await createAuthenticatedApiClient();
       if (expired) {

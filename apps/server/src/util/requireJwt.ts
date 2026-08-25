@@ -22,7 +22,6 @@ export function requireJwt(req: Request, res: Response, next: NextFunction) {
 
   console.log('[requireJwt] Token extracted:', {
     tokenPreview: `${token.substring(0, 20)}...`,
-    jwtSecret: process.env.JWT_SECRET ? 'set' : 'using default "dev"',
   });
 
   let userId: string;

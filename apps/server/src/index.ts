@@ -36,10 +36,15 @@ app.use('/admin/queues', (req, res, next) => {
     return res.status(503).json({ error: 'admin_disabled' });
   }
   const token = req.headers['x-admin-token'];
-  if (typeof token !== 'string' || token.length !== ADMIN_TOKEN.length) {
+  if (typeof token !== 'string') {
     return res.status(401).json({ error: 'Unauthorized' });
   }
-  if (!timingSafeEqual(Buffer.from(token), Buffer.from(ADMIN_TOKEN))) {
+  // Compare byte length, not JS string .length (UTF-16 code units) — a multi-byte
+  // header value can match ADMIN_TOKEN's .length while differing in Buffer length,
+  // which would make timingSafeEqual throw a RangeError instead of returning false.
+  const tokenBuf = Buffer.from(token);
+  const adminTokenBuf = Buffer.from(ADMIN_TOKEN);
+  if (tokenBuf.length !== adminTokenBuf.length || !timingSafeEqual(tokenBuf, adminTokenBuf)) {
     return res.status(401).json({ error: 'Unauthorized' });
   }
   next();
@@ -55,12 +60,18 @@ async function shutdown(signal: string) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`[shutdown] ${signal} received, draining...`);
-  server.close(() => console.log('[shutdown] HTTP server closed'));
   const timer = setTimeout(() => {
     console.error('[shutdown] Drain timed out, forcing exit');
     process.exit(1);
   }, 10_000);
   try {
+    // Actually wait for in-flight requests to finish before tearing down Prisma/
+    // BullMQ — server.close() only stops accepting new connections, its callback
+    // is what signals every existing connection has closed.
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+    console.log('[shutdown] HTTP server closed');
     await stopSchedulerWorker();
     await schedulerQueue.close();
     await prisma.$disconnect();

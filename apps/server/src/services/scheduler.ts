@@ -479,11 +479,18 @@ export const scheduler = {
         select: { id: true },
       });
       // closeCall swallows its own errors, so reaping concurrently is safe and keeps
-      // a large batch from taking N times a single close's latency.
-      await Promise.all(orphans.map(o => {
-        console.warn(`[scheduler] Reaping never-joined spontaneous call ${o.id}`);
-        return this.closeCall(o.id);
-      }));
+      // a large batch from taking N times a single close's latency. Bounded to match
+      // the CONCURRENCY pattern used elsewhere for fan-out (notifications.ts), so an
+      // outage that strands many orphans at once can't burst past Daily's or the DB
+      // pool's concurrent-request limits.
+      const REAP_CONCURRENCY = 10;
+      for (let i = 0; i < orphans.length; i += REAP_CONCURRENCY) {
+        const slice = orphans.slice(i, i + REAP_CONCURRENCY);
+        await Promise.all(slice.map(o => {
+          console.warn(`[scheduler] Reaping never-joined spontaneous call ${o.id}`);
+          return this.closeCall(o.id);
+        }));
+      }
 
       // Find all active SCHEDULED calls that ended more than 15 seconds ago.
       // The 15s grace period lets clients leave via their countdown timer before
@@ -584,8 +591,26 @@ export const scheduler = {
         return;
       }
 
+      // Atomic claim: only the caller that flips status 'active' -> 'ended' proceeds.
+      // Two callers can legitimately race here — e.g. Daily's participant-left webhook
+      // and the client's own /leave request, since CallScreen now calls Daily's
+      // leave() before notifying the backend — and without this guard both would
+      // delete the room and re-run the Live Activity/Android push teardown below,
+      // double-firing user-visible notifications. Doing this before the room delete
+      // also keeps the original ordering the inline call sites had (mark ended, then
+      // tear down the room) rather than the reverse, which would let a join-token
+      // request in between see a still-'active' row for a room that's already gone.
+      const claimed = await prisma.callSession.updateMany({
+        where: { id: callId, status: 'active' },
+        data: { status: 'ended', ended_at: new Date() },
+      });
+      if (claimed.count === 0) {
+        console.log(`[scheduler] Call ${callId} already closed by a concurrent request, skipping`);
+        return;
+      }
+
       // Best-effort room deletion — don't let a Daily.co failure prevent the
-      // call from being marked ended in the DB.
+      // call from staying marked ended in the DB.
       if (call.room_name) {
         try {
           await dailyVideo.deleteRoom(call.room_name);
@@ -594,26 +619,21 @@ export const scheduler = {
         }
       }
 
-      // Update call status to ended
-      await prisma.callSession.update({
-        where: { id: callId },
-        data: {
-          status: 'ended',
-          ended_at: new Date()
-        }
-      });
-
       // Tear down the live surfaces now rather than waiting for the delayed end job,
       // which for a spontaneous call is armed at started_at + 1h. The two touch
       // unrelated backends (Postgres+push vs. the BullMQ/Redis job) so they run
-      // concurrently; cancelLiveActivityEnd is best-effort — the job is idempotent,
-      // so a failure there costs nothing but a stale delayed entry.
-      await Promise.all([
+      // concurrently; allSettled (not all) so a failure in either still lets
+      // forgetCallPresence below run instead of leaking that call's presence state.
+      const [endResult, cancelResult] = await Promise.allSettled([
         endLiveActivitiesForCall(callId),
-        cancelLiveActivityEnd(callId).catch(err => {
-          console.error(`[scheduler] Could not cancel end job for call ${callId} (continuing):`, err);
-        }),
+        cancelLiveActivityEnd(callId),
       ]);
+      if (endResult.status === 'rejected') {
+        console.error(`[scheduler] Could not end Live Activities for call ${callId} (continuing):`, endResult.reason);
+      }
+      if (cancelResult.status === 'rejected') {
+        console.error(`[scheduler] Could not cancel end job for call ${callId} (continuing):`, cancelResult.reason);
+      }
 
       console.log(`[scheduler] Closed call ${callId}`);
       forgetCallPresence(callId);

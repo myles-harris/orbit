@@ -6,10 +6,18 @@ import { endLiveActivitiesForCall } from '../services/callPresence.js';
 
 const rawSchedulerFlag = process.env.SCHEDULER_ENABLED;
 if (rawSchedulerFlag !== 'true' && rawSchedulerFlag !== 'false') {
-  throw new Error(
+  const msg =
     `SCHEDULER_ENABLED must be exactly "true" or "false" (got ${JSON.stringify(rawSchedulerFlag)}). ` +
-    'Unset means no scheduled calls activate and no Live Activity end jobs run.',
-  );
+    'Unset means no scheduled calls activate and no Live Activity end jobs run.';
+  // Matches util/env.ts's PRODUCTION_REQUIRED policy for this same variable: fatal
+  // in production, a loud warning everywhere else. A hard crash in every environment
+  // (including a fresh non-production Railway service or a local run) would fire
+  // during module evaluation, before validateEnv() or the uncaughtException handler
+  // in index.ts even run.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(msg);
+  }
+  console.warn(`[scheduler-worker] ${msg}`);
 }
 const SCHEDULER_ENABLED = rawSchedulerFlag === 'true';
 

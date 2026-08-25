@@ -101,7 +101,14 @@ object CallNotificationHelper {
     NotificationManagerCompat.from(context).notify(NOTIFICATION_ID, builder.build())
   }
 
-  fun cancel(context: Context) {
+  // callId null means an unconditional local cancel — the JS bridge's
+  // cancelOngoingCall(), for the user explicitly leaving/ending a call on this
+  // device. Non-null scopes it to a push-driven call_ended event, matching post()'s
+  // own lastCountCallId check: NOTIFICATION_ID is shared across every call this
+  // device might be on, so an end-of-call push for a call OTHER than the one
+  // currently displayed must not dismiss it.
+  fun cancel(context: Context, callId: String? = null) {
+    if (callId != null && callId != lastCountCallId) return
     NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
     // Null, not 0, or the conflation returns on the second call in a session.
     lastKnownCount = null

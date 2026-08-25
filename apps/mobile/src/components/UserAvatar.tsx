@@ -59,10 +59,17 @@ export function UserAvatar({
         // in-memory cache in the meantime without this component knowing.
         onError={async () => {
           if (attempt > 0) { setLoadFailed(true); return; }
-          setAttempt(1);
+          // Don't bump `attempt` (which remounts the Image via `key`) until the fresh
+          // token is in hand — bumping it first would remount immediately with the
+          // still-stale `token` state, fail again, and arm loadFailed before the
+          // fetched token could ever be applied.
           const fresh = await getAccessToken();
-          if (fresh && fresh !== token) setToken(fresh);
-          else setLoadFailed(true);
+          if (fresh && fresh !== token) {
+            setAttempt(1);
+            setToken(fresh);
+          } else {
+            setLoadFailed(true);
+          }
         }}
       />
     );
