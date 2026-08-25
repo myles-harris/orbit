@@ -21,6 +21,7 @@ export const SPONTANEOUS_TTL_MS = 60 * 60 * 1000;
 
 const pending = new Map<string, NodeJS.Timeout>();
 const lastCount = new Map<string, number>();
+const inFlight = new Set<string>();
 
 export function expiryFor(call: {
   call_type: string;
@@ -41,8 +42,16 @@ export function broadcastCallPresence(callId: string): void {
   if (existing) clearTimeout(existing);
   pending.set(callId, setTimeout(() => {
     pending.delete(callId);
-    void runBroadcast(callId).catch(err =>
-      console.error(`[presence] Broadcast failed for call ${callId}:`, err));
+    if (inFlight.has(callId)) {
+      // A run is still awaiting APNs. Re-arm rather than racing it — the trailing
+      // debounce means the newer count is the one that must land last.
+      broadcastCallPresence(callId);
+      return;
+    }
+    inFlight.add(callId);
+    void runBroadcast(callId)
+      .catch(err => console.error(`[presence] Broadcast failed for call ${callId}:`, err))
+      .finally(() => inFlight.delete(callId));
   }, DEBOUNCE_MS));
 }
 
@@ -128,26 +137,35 @@ async function runBroadcast(callId: string): Promise<void> {
 
     // Android: data-only push, split by whether the recipient is in the call. A
     // participant's card stays ongoing, a non-participant's must be dismissible.
-    const inCallIds = new Set(inCall.map(p => p.user_id));
-    const base: Record<string, string> = {
-      type: 'call_presence',
-      callId,
-      groupId: call.group_id,
-      groupName: group.name,
-      count: String(count),
-      ...(call.ends_at ? { endsAtMs: String(call.ends_at.getTime()) } : {}),
-      ...(expiry ? { timeoutAtMs: String(expiry.getTime()) } : {}),
-    };
+    //
+    // Skipped once the call is actually ended: endLiveActivitiesForCall (scheduler.ts
+    // closeCall) already sent call_ended and CallNotificationHelper.cancel()'d the
+    // notification by the time this debounced broadcast — deliberately left armed by
+    // forgetCallPresence, see its own comment — fires a moment later. Resending
+    // call_presence here would re-post the just-cancelled card with a stale "ongoing"
+    // state and undo the cancellation.
+    if (!call.ended_at) {
+      const inCallIds = new Set(inCall.map(p => p.user_id));
+      const base: Record<string, string> = {
+        type: 'call_presence',
+        callId,
+        groupId: call.group_id,
+        groupName: group.name,
+        count: String(count),
+        ...(call.ends_at ? { endsAtMs: String(call.ends_at.getTime()) } : {}),
+        ...(expiry ? { timeoutAtMs: String(expiry.getTime()) } : {}),
+      };
 
-    // The two buckets target disjoint token sets, so send them concurrently.
-    await Promise.all([true, false].map(ongoing => {
-      const tokens = group.members
-        .filter(m => !m.is_muted && inCallIds.has(m.user_id) === ongoing)
-        .flatMap(m => m.user.devices.filter(d => d.platform === 'android').map(d => d.token));
-      return tokens.length > 0
-        ? notifications.sendExpoData(tokens, { ...base, ongoing: String(ongoing) })
-        : undefined;
-    }));
+      // The two buckets target disjoint token sets, so send them concurrently.
+      await Promise.all([true, false].map(ongoing => {
+        const tokens = group.members
+          .filter(m => !m.is_muted && inCallIds.has(m.user_id) === ongoing)
+          .flatMap(m => m.user.devices.filter(d => d.platform === 'android').map(d => d.token));
+        return tokens.length > 0
+          ? notifications.sendExpoData(tokens, { ...base, ongoing: String(ongoing) })
+          : undefined;
+      }));
+    }
 
     console.log(`[presence] Call ${callId} -> ${count} in call; ${iosTokens.length} iOS token(s)`);
   } catch (err) {
@@ -216,7 +234,10 @@ export async function endLiveActivitiesForCall(callId: string): Promise<void> {
 
   const [tokens, group, count] = await Promise.all([
     prisma.callLiveActivityToken.findMany({ where: { call_id: callId }, select: { push_token: true } }),
-    prisma.group.findUnique({ where: { id: call.group_id }, select: { name: true } }),
+    prisma.group.findUnique({
+      where: { id: call.group_id },
+      include: { members: { include: { user: { select: { id: true, devices: true } } } } },
+    }),
     prisma.callParticipant.count({ where: { call_id: callId, left_at: null } }),
   ]);
 
@@ -226,6 +247,27 @@ export async function endLiveActivitiesForCall(callId: string): Promise<void> {
       buildState(group.name, call, count),
       new Date(),
     );
+  }
+
+  // Android has no push-driven Live Activity equivalent — CallNotificationHelper anchors
+  // its ongoing notification's dismissal on timeoutAtMs/endsAtMs, which for a spontaneous
+  // call is up to an hour away. This data push lets OrbitFirebaseMessagingService cancel
+  // it immediately, the Android counterpart to the iOS end push above.
+  if (group) {
+    // Muted members never received call_started or call_presence for this call in the
+    // first place (both are filtered on !m.is_muted elsewhere in this file and in
+    // scheduler.ts/calls.ts), so they have nothing to cancel — filtered here to match
+    // every other push path in this file, not because sending it would itself be unsafe.
+    const androidTokens = group.members
+      .filter(m => !m.is_muted)
+      .flatMap(m => m.user.devices.filter(d => d.platform === 'android').map(d => d.token));
+    if (androidTokens.length > 0) {
+      await notifications.sendExpoData(androidTokens, {
+        type: 'call_ended',
+        callId,
+        groupId: call.group_id,
+      });
+    }
   }
 
   await prisma.callLiveActivityToken.deleteMany({ where: { call_id: callId } });
@@ -238,4 +280,5 @@ export function resetCallPresenceState(): void {
   for (const t of pending.values()) clearTimeout(t);
   pending.clear();
   lastCount.clear();
+  inFlight.clear();
 }

@@ -2,8 +2,8 @@ import { Cadence } from '@prisma/client';
 import { prisma } from '../db/prisma.js';
 import { dailyVideo, buildRoomName } from './dailyVideo.js';
 import { notifications } from './notifications.js';
-import { broadcastCallPresence, forgetCallPresence, expiryFor } from './callPresence.js';
-import { scheduleLiveActivityEnd } from '../queue/schedulerQueue.js';
+import { broadcastCallPresence, forgetCallPresence, expiryFor, endLiveActivitiesForCall } from './callPresence.js';
+import { scheduleLiveActivityEnd, cancelLiveActivityEnd } from '../queue/schedulerQueue.js';
 import { SCHEDULE_TZ, calendarDateInTz, addDays, randomTimeInWindow, dayBoundsUtc, dayKeyForDate, dayKey, shuffle, wallTimeToUtc } from '../util/scheduleTime.js';
 
 /** A participant is stale after this long with no heartbeat (client beats every 10s). */
@@ -328,15 +328,7 @@ export const scheduler = {
       });
 
       if (activeSpontaneousCall) {
-        await prisma.callSession.update({
-          where: { id: activeSpontaneousCall.id },
-          data: { status: 'ended', ended_at: new Date() },
-        });
-
-        if (activeSpontaneousCall.room_name) {
-          await dailyVideo.deleteRoom(activeSpontaneousCall.room_name);
-        }
-
+        await this.closeCall(activeSpontaneousCall.id);
         console.log(`[scheduler] Closed spontaneous call ${activeSpontaneousCall.id} to make way for scheduled call`);
       }
 
@@ -426,8 +418,19 @@ export const scheduler = {
       // update above is not reflected back), but expiryFor only reads ends_at for
       // scheduled calls, so that staleness is harmless here.
       const expiry = expiryFor(call);
-      if (expiry) await scheduleLiveActivityEnd(call.id, expiry);
-      else console.warn(`[presence] No expiry anchor for call ${call.id}, no end job scheduled`);
+      if (expiry) {
+        // Best-effort, matching calls.ts's call-now route: a Redis blip here must not
+        // abort an activation that has already sent pushes and flipped status to
+        // 'active' — the outer catch below rethrows, which would release the claim
+        // back to 'scheduled' and retry the whole activation (re-sending every push).
+        try {
+          await scheduleLiveActivityEnd(call.id, expiry);
+        } catch (err) {
+          console.error(`[scheduler] Could not schedule LA end for call ${call.id} (continuing):`, err);
+        }
+      } else {
+        console.warn(`[presence] No expiry anchor for call ${call.id}, no end job scheduled`);
+      }
 
       console.log(`[scheduler] Activated scheduled call ${callId} for group ${group.name}`);
     } catch (error) {
@@ -457,6 +460,36 @@ export const scheduler = {
       });
       if (swept.count > 0) {
         console.warn(`[scheduler] Swept ${swept.count} zombie scheduled call(s) that were never activated`);
+      }
+
+      // Reap spontaneous calls that were created but never joined. The creator only gets
+      // a CallParticipant row from POST /calls/:callId/join-token (calls.ts:339-347), so a
+      // failure between callSession.create and the response leaves an 'active' call with
+      // zero participants. pruneStaleParticipants only closes spontaneous calls while
+      // pruning an existing participant, and this sweep's other branches filter on
+      // call_type: 'scheduled' — so nothing else reaps these.
+      const ORPHAN_AFTER_MS = 5 * 60 * 1000;
+      const orphans = await prisma.callSession.findMany({
+        where: {
+          status: 'active',
+          call_type: 'spontaneous',
+          started_at: { lt: new Date(now.getTime() - ORPHAN_AFTER_MS) },
+          participants: { none: { left_at: null } },
+        },
+        select: { id: true },
+      });
+      // closeCall swallows its own errors, so reaping concurrently is safe and keeps
+      // a large batch from taking N times a single close's latency. Bounded to match
+      // the CONCURRENCY pattern used elsewhere for fan-out (notifications.ts), so an
+      // outage that strands many orphans at once can't burst past Daily's or the DB
+      // pool's concurrent-request limits.
+      const REAP_CONCURRENCY = 10;
+      for (let i = 0; i < orphans.length; i += REAP_CONCURRENCY) {
+        const slice = orphans.slice(i, i + REAP_CONCURRENCY);
+        await Promise.all(slice.map(o => {
+          console.warn(`[scheduler] Reaping never-joined spontaneous call ${o.id}`);
+          return this.closeCall(o.id);
+        }));
       }
 
       // Find all active SCHEDULED calls that ended more than 15 seconds ago.
@@ -558,8 +591,26 @@ export const scheduler = {
         return;
       }
 
+      // Atomic claim: only the caller that flips status 'active' -> 'ended' proceeds.
+      // Two callers can legitimately race here — e.g. Daily's participant-left webhook
+      // and the client's own /leave request, since CallScreen now calls Daily's
+      // leave() before notifying the backend — and without this guard both would
+      // delete the room and re-run the Live Activity/Android push teardown below,
+      // double-firing user-visible notifications. Doing this before the room delete
+      // also keeps the original ordering the inline call sites had (mark ended, then
+      // tear down the room) rather than the reverse, which would let a join-token
+      // request in between see a still-'active' row for a room that's already gone.
+      const claimed = await prisma.callSession.updateMany({
+        where: { id: callId, status: 'active' },
+        data: { status: 'ended', ended_at: new Date() },
+      });
+      if (claimed.count === 0) {
+        console.log(`[scheduler] Call ${callId} already closed by a concurrent request, skipping`);
+        return;
+      }
+
       // Best-effort room deletion — don't let a Daily.co failure prevent the
-      // call from being marked ended in the DB.
+      // call from staying marked ended in the DB.
       if (call.room_name) {
         try {
           await dailyVideo.deleteRoom(call.room_name);
@@ -568,14 +619,21 @@ export const scheduler = {
         }
       }
 
-      // Update call status to ended
-      await prisma.callSession.update({
-        where: { id: callId },
-        data: {
-          status: 'ended',
-          ended_at: new Date()
-        }
-      });
+      // Tear down the live surfaces now rather than waiting for the delayed end job,
+      // which for a spontaneous call is armed at started_at + 1h. The two touch
+      // unrelated backends (Postgres+push vs. the BullMQ/Redis job) so they run
+      // concurrently; allSettled (not all) so a failure in either still lets
+      // forgetCallPresence below run instead of leaking that call's presence state.
+      const [endResult, cancelResult] = await Promise.allSettled([
+        endLiveActivitiesForCall(callId),
+        cancelLiveActivityEnd(callId),
+      ]);
+      if (endResult.status === 'rejected') {
+        console.error(`[scheduler] Could not end Live Activities for call ${callId} (continuing):`, endResult.reason);
+      }
+      if (cancelResult.status === 'rejected') {
+        console.error(`[scheduler] Could not cancel end job for call ${callId} (continuing):`, cancelResult.reason);
+      }
 
       console.log(`[scheduler] Closed call ${callId}`);
       forgetCallPresence(callId);

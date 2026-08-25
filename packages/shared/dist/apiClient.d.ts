@@ -5,7 +5,9 @@ export declare class ApiClient {
     private getToken;
     private fetcher;
     private onUnauthorized?;
-    constructor(baseUrl: string, getToken: () => string | null, fetcher?: Fetcher, onUnauthorized?: OnUnauthorized);
+    private timeoutMs;
+    constructor(baseUrl: string, getToken: () => string | null, fetcher?: Fetcher, onUnauthorized?: OnUnauthorized, timeoutMs?: number);
+    private fetchWithTimeout;
     request<T>(method: string, path: string, body?: unknown): Promise<T>;
     get<T>(path: string): Promise<T>;
     post<T>(path: string, body?: unknown): Promise<T>;

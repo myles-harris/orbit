@@ -8,6 +8,7 @@ import { groupsRouter } from './routes/groups.js';
 import { callsRouter } from './routes/calls.js';
 import { svcRouter } from './routes/svc.js';
 import usersRouter from './routes/users.js';
+import { prisma } from './db/prisma.js';
 
 export const app = express();
 app.use(cors());
@@ -18,8 +19,14 @@ app.use(express.json({
   verify: (req: any, _res, buf) => { req.rawBody = buf; },
 }));
 
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok' });
+app.get('/health', async (_req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+  } catch (err) {
+    console.error('[health] database unreachable:', err);
+    return res.status(503).json({ status: 'degraded', db: false });
+  }
+  res.json({ status: 'ok', db: true });
 });
 
 app.use('/auth', authRouter);

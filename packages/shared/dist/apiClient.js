@@ -3,11 +3,23 @@ export class ApiClient {
     getToken;
     fetcher;
     onUnauthorized;
-    constructor(baseUrl, getToken, fetcher, onUnauthorized) {
+    timeoutMs;
+    constructor(baseUrl, getToken, fetcher, onUnauthorized, timeoutMs = 15000) {
         this.baseUrl = baseUrl.replace(/\/$/, '');
         this.getToken = getToken;
         this.fetcher = fetcher || fetch;
         this.onUnauthorized = onUnauthorized;
+        this.timeoutMs = timeoutMs;
+    }
+    async fetchWithTimeout(url, init) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+        try {
+            return await this.fetcher(url, { ...init, signal: controller.signal });
+        }
+        finally {
+            clearTimeout(timer);
+        }
     }
     async request(method, path, body) {
         const headers = { 'Content-Type': 'application/json' };
@@ -21,7 +33,7 @@ export class ApiClient {
         });
         if (token)
             headers['Authorization'] = `Bearer ${token}`;
-        const res = await this.fetcher(`${this.baseUrl}${path}`, {
+        const res = await this.fetchWithTimeout(`${this.baseUrl}${path}`, {
             method,
             headers,
             body: body ? JSON.stringify(body) : undefined,
@@ -36,7 +48,7 @@ export class ApiClient {
             const newToken = await this.onUnauthorized();
             if (newToken) {
                 const retryHeaders = { ...headers, Authorization: `Bearer ${newToken}` };
-                const retryRes = await this.fetcher(`${this.baseUrl}${path}`, {
+                const retryRes = await this.fetchWithTimeout(`${this.baseUrl}${path}`, {
                     method,
                     headers: retryHeaders,
                     body: body ? JSON.stringify(body) : undefined,

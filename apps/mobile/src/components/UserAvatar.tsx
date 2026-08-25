@@ -24,6 +24,7 @@ export function UserAvatar({
   // first paint instead of flashing initials while the keychain read resolves.
   const [token, setToken] = useState<string | null>(() => peekAccessToken());
   const [loadFailed, setLoadFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   const borderRadius = size >= 60 ? radius.xl : radius.md;
   const bgColor = isOwner ? colors.primary : colors.primaryLight;
   const textColor = isOwner ? '#fff' : colors.primary;
@@ -37,7 +38,7 @@ export function UserAvatar({
     return () => { active = false; };
   }, [hasAvatar, token]);
 
-  useEffect(() => { setLoadFailed(false); }, [userId, avatarUpdatedAt]);
+  useEffect(() => { setLoadFailed(false); setAttempt(0); }, [userId, avatarUpdatedAt]);
 
   if (previewUri) {
     return <Image source={{ uri: previewUri }} style={dimensions} resizeMode="cover" />;
@@ -48,12 +49,28 @@ export function UserAvatar({
     const uri = `${API_URL}/users/${userId}/avatar${version ? `?v=${version}` : ''}`;
     return (
       <Image
+        key={`avatar-${attempt}`}
         source={{ uri, headers: { Authorization: `Bearer ${token}` } }}
         style={dimensions}
         resizeMode="cover"
         // The token captured at mount is valid for 15 minutes. A screen left open
-        // longer can 401 on a fresh fetch; fall back to initials rather than a blank box.
-        onError={() => setLoadFailed(true)}
+        // longer can 401 on a fresh fetch — retry once with a freshly read token
+        // before falling back to initials, since a refresh may have landed in the
+        // in-memory cache in the meantime without this component knowing.
+        onError={async () => {
+          if (attempt > 0) { setLoadFailed(true); return; }
+          // Don't bump `attempt` (which remounts the Image via `key`) until the fresh
+          // token is in hand — bumping it first would remount immediately with the
+          // still-stale `token` state, fail again, and arm loadFailed before the
+          // fetched token could ever be applied.
+          const fresh = await getAccessToken();
+          if (fresh && fresh !== token) {
+            setAttempt(1);
+            setToken(fresh);
+          } else {
+            setLoadFailed(true);
+          }
+        }}
       />
     );
   }

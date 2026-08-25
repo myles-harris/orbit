@@ -4,7 +4,29 @@ import { registerSchedulerJobs } from '../queue/schedulerQueue.js';
 import { scheduler } from '../services/scheduler.js';
 import { endLiveActivitiesForCall } from '../services/callPresence.js';
 
-const SCHEDULER_ENABLED = process.env.SCHEDULER_ENABLED === 'true';
+const rawSchedulerFlag = process.env.SCHEDULER_ENABLED;
+if (rawSchedulerFlag !== 'true' && rawSchedulerFlag !== 'false') {
+  const msg =
+    `SCHEDULER_ENABLED must be exactly "true" or "false" (got ${JSON.stringify(rawSchedulerFlag)}). ` +
+    'Unset means no scheduled calls activate and no Live Activity end jobs run.';
+  // Matches util/env.ts's PRODUCTION_REQUIRED policy for this same variable: fatal
+  // in production, a loud warning everywhere else. A hard crash in every environment
+  // (including a fresh non-production Railway service or a local run) would fire
+  // during module evaluation, before validateEnv() or the uncaughtException handler
+  // in index.ts even run.
+  if (process.env.NODE_ENV === 'production') {
+    throw new Error(msg);
+  }
+  console.warn(`[scheduler-worker] ${msg}`);
+}
+const SCHEDULER_ENABLED = rawSchedulerFlag === 'true';
+
+export let workerReady = false;
+
+let worker: Worker | null = null;
+export async function stopSchedulerWorker(): Promise<void> {
+  if (worker) { await worker.close(); worker = null; }
+}
 
 export async function processJob(job: Job) {
   switch (job.name) {
@@ -27,7 +49,7 @@ if (SCHEDULER_ENABLED) {
   void (async () => {
     console.log('[scheduler-worker] Starting...');
 
-    const worker = new Worker('scheduler', processJob, {
+    worker = new Worker('scheduler', processJob, {
       connection,
       concurrency: 1,
     });
@@ -42,6 +64,7 @@ if (SCHEDULER_ENABLED) {
 
     await registerSchedulerJobs();
 
+    workerReady = true;
     console.log('[scheduler-worker] Started successfully');
   })();
 } else {

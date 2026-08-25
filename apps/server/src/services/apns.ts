@@ -11,6 +11,8 @@ export const BUNDLE = process.env.APNS_BUNDLE_ID || 'com.mylesharris.orbit';
 // Railway (and most secret dashboards) store multi-line PEM with literal \n.
 const KEY = (process.env.APNS_KEY_CONTENT ?? '').replace(/\\n/g, '\n');
 
+const APNS_TIMEOUT_MS = Number(process.env.APNS_TIMEOUT_MS) || 5000;
+
 let cachedToken: { value: string; issuedAt: number } | null = null;
 
 /** APNs provider JWT — valid 60 min; must not be regenerated more than once per 20 min. */
@@ -82,15 +84,23 @@ export async function sendApnsRaw(
 
     let status = 0;
     let raw = '';
+    let settled = false;
+    const done = (r: ApnsResult) => { if (!settled) { settled = true; resolve(r); } };
+
+    req.setTimeout(APNS_TIMEOUT_MS, () => {
+      done({ ok: false, status: 0, reason: 'timeout' });
+      req.close(http2.constants.NGHTTP2_CANCEL);
+    });
+
     req.on('response', (res) => { status = Number(res[':status']); });
     req.on('data', (c: Buffer) => { raw += c.toString(); });
     req.on('end', () => {
-      if (status === 200) return resolve({ ok: true, status });
+      if (status === 200) return done({ ok: true, status });
       let reason: string | undefined;
       try { reason = JSON.parse(raw).reason; } catch { /* non-JSON body */ }
-      resolve({ ok: false, status, reason });
+      done({ ok: false, status, reason });
     });
-    req.on('error', (e) => resolve({ ok: false, status: 0, reason: String(e) }));
+    req.on('error', (e) => done({ ok: false, status: 0, reason: String(e) }));
     req.end(body);
   });
 }

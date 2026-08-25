@@ -425,6 +425,55 @@ describe('sendExpoData', () => {
   });
 });
 
+// ─── sendExpo [A9] ────────────────────────────────────────────────────────────
+
+describe('sendExpo', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('chunks above 100 tokens into multiple requests', async () => {
+    const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ data: Array(100).fill({ status: 'ok' }) }),
+    } as any);
+    const tokens = Array.from({ length: 201 }, (_, i) => `ExponentPushToken[${i}]`);
+
+    await notifications.sendExpo(tokens, 'title', 'body');
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it('counts a top-level errors response as failures rather than silently dropping it', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      json: jest.fn().mockResolvedValue({ errors: [{ message: 'bad request' }] }),
+    } as any);
+    const tokens = ['ExponentPushToken[a]', 'ExponentPushToken[b]'];
+
+    const result = await notifications.sendExpo(tokens, 'title', 'body');
+
+    expect(result.failure).toBe(tokens.length);
+    expect(result.success).toBe(0);
+  });
+
+  it('prunes a token whose receipt reports DeviceNotRegistered', async () => {
+    const staleToken = 'ExponentPushToken[stale]';
+    const user = await createTestUser();
+    await prisma.pushDevice.create({ data: { user_id: user.id, token: staleToken, platform: 'ios' } });
+
+    jest.spyOn(global, 'fetch').mockResolvedValue({
+      json: jest.fn().mockResolvedValue({
+        data: [{ status: 'error', details: { error: 'DeviceNotRegistered' } }],
+      }),
+    } as any);
+
+    const result = await notifications.sendExpo([staleToken], 'title', 'body');
+
+    expect(result.failure).toBe(1);
+    const remaining = await prisma.pushDevice.findUnique({ where: { token: staleToken } });
+    expect(remaining).toBeNull();
+  });
+});
+
 // ─── POST /me/devices/register-live-activity ─────────────────────────────────
 
 describe('POST /me/devices/register-live-activity', () => {

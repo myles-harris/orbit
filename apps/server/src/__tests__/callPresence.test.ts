@@ -18,6 +18,9 @@ import {
   broadcastCallPresence, sendPresenceToToken, forgetCallPresence, endLiveActivitiesForCall,
 } from '../services/callPresence.js';
 import { notifications } from '../services/notifications.js';
+// Not mocked in this file: dailyVideo stubs itself with no DAILY_API_KEY set, and
+// its own dependency on notifications.js picks up the jest.mock above.
+import { scheduler } from '../services/scheduler.js';
 
 const mockUpdate = notifications.updateLiveActivities as jest.Mock;
 const mockEnd = notifications.endLiveActivities as jest.Mock;
@@ -283,6 +286,34 @@ describe('broadcastCallPresence', () => {
     await wait(DEBOUNCE_WAIT_MS);
     expect(mockUpdate).toHaveBeenCalledTimes(2);
   });
+
+  it('re-arms rather than racing an in-flight broadcast, so the last count still wins [A11]', async () => {
+    const owner = await makeUser('inflight1');
+    const other = await makeUser('inflight2');
+    const group = await makeGroupWithOwner(owner.id);
+    await addMember(group.id, other.id);
+    const call = await makeCall(group.id);
+    const p1 = await joinCall(call.id, owner.id);
+    await joinCall(call.id, other.id);
+    await addActivityToken(call.id, owner.id, 'ios-tok-inflight');
+
+    // First run's fan-out hangs for 1.5s — long enough to still be in flight when a
+    // second, later-count broadcast's debounce fires.
+    mockUpdate.mockImplementationOnce(() => new Promise(resolve =>
+      setTimeout(() => resolve({ success: 1, failure: 0, stale: [] }), 1500)));
+
+    broadcastCallPresence(call.id); // count 2 when this run starts ~1s from now
+    await wait(1100); // the first run has started and is mid-flight (APNs still pending)
+
+    await leaveCall(p1.id); // true count is now 1
+    broadcastCallPresence(call.id); // debounce fires while run #1 is still in flight
+
+    await wait(2700); // covers: re-arm wait + run #1 finishing (~2.5s) + run #2 firing
+
+    expect(mockUpdate).toHaveBeenCalledTimes(2);
+    const lastCall = mockUpdate.mock.calls[mockUpdate.mock.calls.length - 1];
+    expect(lastCall[1].participantCount).toBe(1);
+  });
 });
 
 describe('sendPresenceToToken', () => {
@@ -400,5 +431,23 @@ describe('endLiveActivitiesForCall', () => {
   it('forgets an already-gone call without erroring', async () => {
     await expect(endLiveActivitiesForCall('00000000-0000-0000-0000-000000000000')).resolves.toBeUndefined();
     expect(mockEnd).not.toHaveBeenCalled();
+  });
+});
+
+describe('scheduler.closeCall [A6]', () => {
+  it('ends Live Activities immediately rather than waiting for the delayed end job', async () => {
+    const owner = await makeUser('closecall1');
+    const group = await makeGroupWithOwner(owner.id);
+    const call = await makeCall(group.id, { callType: 'spontaneous' });
+    await addActivityToken(call.id, owner.id, 'ios-tok-closecall');
+
+    await scheduler.closeCall(call.id);
+
+    expect(mockEnd).toHaveBeenCalledTimes(1);
+    const remaining = await prisma.callLiveActivityToken.count({ where: { call_id: call.id } });
+    expect(remaining).toBe(0);
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('ended');
   });
 });
