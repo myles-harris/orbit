@@ -12,6 +12,18 @@ export function buildRoomName(groupId: string, date: Date): string {
   return `${ROOM_ENV_PREFIX}${groupId}_${date.toISOString().replace(/[:.]/g, '-')}`;
 }
 
+const DAILY_TIMEOUT_MS = Number(process.env.DAILY_TIMEOUT_MS) || 8000;
+
+async function dailyFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), DAILY_TIMEOUT_MS);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 interface DailyRoomProperties {
   max_participants?: number;
   enable_screenshare?: boolean;
@@ -47,7 +59,7 @@ export const dailyVideo = {
         properties.exp = Math.floor(expiresAt.getTime() / 1000);
       }
 
-      const response = await fetch('https://api.daily.co/v1/rooms', {
+      const response = await dailyFetch('https://api.daily.co/v1/rooms', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -66,7 +78,7 @@ export const dailyVideo = {
         // Retry-safe: if the room already exists (e.g. a previous activation attempt
         // created it before failing), fetch and reuse it instead of failing forever.
         if (response.status === 400 && errorText.includes('already exists')) {
-          const existing = await fetch(`https://api.daily.co/v1/rooms/${roomName}`, {
+          const existing = await dailyFetch(`https://api.daily.co/v1/rooms/${roomName}`, {
             headers: { 'Authorization': `Bearer ${DAILY_API_KEY}` },
           });
           if (existing.ok) {
@@ -113,7 +125,7 @@ export const dailyVideo = {
         properties.exp = Math.floor(expiresAt.getTime() / 1000);
       }
 
-      const response = await fetch('https://api.daily.co/v1/meeting-tokens', {
+      const response = await dailyFetch('https://api.daily.co/v1/meeting-tokens', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -148,7 +160,7 @@ export const dailyVideo = {
     }
 
     try {
-      const response = await fetch(`https://api.daily.co/v1/rooms/${roomName}`, {
+      const response = await dailyFetch(`https://api.daily.co/v1/rooms/${roomName}`, {
         headers: {
           'Authorization': `Bearer ${DAILY_API_KEY}`,
         },
@@ -169,7 +181,7 @@ export const dailyVideo = {
     if (!DAILY_API_KEY) return null;
 
     try {
-      const response = await fetch(`https://api.daily.co/v1/rooms/${roomName}/presence`, {
+      const response = await dailyFetch(`https://api.daily.co/v1/rooms/${roomName}/presence`, {
         headers: { 'Authorization': `Bearer ${DAILY_API_KEY}` },
       });
       if (!response.ok) return null;
@@ -191,7 +203,7 @@ export const dailyVideo = {
     }
 
     try {
-      const response = await fetch(`https://api.daily.co/v1/rooms/${roomName}`, {
+      const response = await dailyFetch(`https://api.daily.co/v1/rooms/${roomName}`, {
         method: 'DELETE',
         headers: {
           'Authorization': `Bearer ${DAILY_API_KEY}`,

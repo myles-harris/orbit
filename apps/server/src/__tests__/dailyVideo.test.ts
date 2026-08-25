@@ -50,4 +50,27 @@ describe('dailyVideo.createRoom (idempotent)', () => {
 
     await expect(dailyVideo.createRoom('missing-room')).rejects.toThrow('Failed to create video room');
   });
+
+  it('[A13] rejects within DAILY_TIMEOUT_MS instead of hanging when the Daily API never responds', async () => {
+    process.env.DAILY_API_KEY = 'test_key';
+    process.env.DAILY_TIMEOUT_MS = '200';
+    jest.resetModules();
+    const { dailyVideo } = await import('../services/dailyVideo.js');
+
+    // Mirrors real fetch's AbortController contract: the promise only settles once
+    // the signal this module passes in is aborted.
+    jest.spyOn(global, 'fetch').mockImplementation((_url: any, init: any) =>
+      new Promise((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted.', 'AbortError'));
+        });
+      }) as any,
+    );
+
+    const start = Date.now();
+    await expect(dailyVideo.createRoom('hung-room')).rejects.toThrow('Failed to create video room');
+    expect(Date.now() - start).toBeLessThan(1000);
+
+    delete process.env.DAILY_TIMEOUT_MS;
+  });
 });

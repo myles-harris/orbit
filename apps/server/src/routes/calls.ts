@@ -5,6 +5,7 @@ import { prisma } from '../db/prisma.js';
 import { notifications } from '../services/notifications.js';
 import { broadcastCallPresence, expiryFor, SPONTANEOUS_TTL_MS } from '../services/callPresence.js';
 import { scheduleLiveActivityEnd } from '../queue/schedulerQueue.js';
+import { scheduler } from '../services/scheduler.js';
 
 export const callsRouter = Router();
 
@@ -128,11 +129,19 @@ callsRouter.post('/:id/call-now', requireJwt, async (req, res) => {
       );
     }
 
-    // [fix 12] expiryFor returns null when a scheduled call has no ends_at (reachable
-    // via the DEV routes at calls.ts:552 and :622). Skip rather than assert non-null.
     const expiry = expiryFor(call);
-    if (expiry) await scheduleLiveActivityEnd(call.id, expiry);
-    else console.warn(`[presence] No expiry anchor for call ${call.id}, no end job scheduled`);
+    if (expiry) {
+      // The live surface is best-effort. The call row is already committed above;
+      // letting a Redis failure throw here 500s the request and strands an active
+      // call with zero participants that nothing will ever reap.
+      try {
+        await scheduleLiveActivityEnd(call.id, expiry);
+      } catch (err) {
+        console.error(`[call-now] Could not schedule LA end for call ${call.id} (continuing):`, err);
+      }
+    } else {
+      console.warn(`[presence] No expiry anchor for call ${call.id}, no end job scheduled`);
+    }
 
     console.log(`[call-now] User ${userId} started spontaneous call ${call.id} for group ${groupId} (${otherMembers.length} other member(s))`);
 
@@ -407,20 +416,7 @@ callsRouter.post('/:id/calls/:callId/leave', requireJwt, async (req, res) => {
       });
 
       if (call && call.call_type === 'spontaneous' && call.participants.length === 0) {
-        // All participants have left - close the spontaneous call
-        await prisma.callSession.update({
-          where: { id: callId },
-          data: {
-            status: 'ended',
-            ended_at: new Date()
-          }
-        });
-
-        // Delete the Daily.co room
-        if (call.room_name) {
-          await dailyVideo.deleteRoom(call.room_name);
-        }
-
+        await scheduler.closeCall(callId);
         console.log(`[leave-call] Spontaneous call ${callId} closed - all participants left`);
       }
     }

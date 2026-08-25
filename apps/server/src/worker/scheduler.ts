@@ -4,7 +4,21 @@ import { registerSchedulerJobs } from '../queue/schedulerQueue.js';
 import { scheduler } from '../services/scheduler.js';
 import { endLiveActivitiesForCall } from '../services/callPresence.js';
 
-const SCHEDULER_ENABLED = process.env.SCHEDULER_ENABLED === 'true';
+const rawSchedulerFlag = process.env.SCHEDULER_ENABLED;
+if (rawSchedulerFlag !== 'true' && rawSchedulerFlag !== 'false') {
+  throw new Error(
+    `SCHEDULER_ENABLED must be exactly "true" or "false" (got ${JSON.stringify(rawSchedulerFlag)}). ` +
+    'Unset means no scheduled calls activate and no Live Activity end jobs run.',
+  );
+}
+const SCHEDULER_ENABLED = rawSchedulerFlag === 'true';
+
+export let workerReady = false;
+
+let worker: Worker | null = null;
+export async function stopSchedulerWorker(): Promise<void> {
+  if (worker) { await worker.close(); worker = null; }
+}
 
 export async function processJob(job: Job) {
   switch (job.name) {
@@ -27,7 +41,7 @@ if (SCHEDULER_ENABLED) {
   void (async () => {
     console.log('[scheduler-worker] Starting...');
 
-    const worker = new Worker('scheduler', processJob, {
+    worker = new Worker('scheduler', processJob, {
       connection,
       concurrency: 1,
     });
@@ -42,6 +56,7 @@ if (SCHEDULER_ENABLED) {
 
     await registerSchedulerJobs();
 
+    workerReady = true;
     console.log('[scheduler-worker] Started successfully');
   })();
 } else {

@@ -4,6 +4,7 @@ import jwt from 'jsonwebtoken';
 import { issueAccessAndRefreshTokens } from '../services/jwt.js';
 import { twilioVerify } from '../services/twilioVerify.js';
 import { prisma } from '../db/prisma.js';
+import { JWT_SECRET, REFRESH_TOKEN_SECRET } from '../util/env.js';
 
 export const authRouter = Router();
 
@@ -37,7 +38,7 @@ authRouter.post('/verify-otp', async (req, res) => {
 
     if (!existing) {
       // New user — issue a short-lived signup token; account created after username is chosen
-      const signup_token = jwt.sign({ type: 'signup', phone }, process.env.JWT_SECRET || 'dev', { expiresIn: 600 });
+      const signup_token = jwt.sign({ type: 'signup', phone }, JWT_SECRET, { expiresIn: 600 });
       return res.json({ is_new_user: true, signup_token });
     }
 
@@ -61,7 +62,7 @@ authRouter.post('/complete-signup', async (req, res) => {
 
   let phone: string;
   try {
-    const decoded = jwt.verify(signup_token, process.env.JWT_SECRET || 'dev') as jwt.JwtPayload;
+    const decoded = jwt.verify(signup_token, JWT_SECRET) as jwt.JwtPayload;
     if (decoded.type !== 'signup' || !decoded.phone) return res.status(401).json({ error: 'invalid_token' });
     phone = decoded.phone;
   } catch {
@@ -96,7 +97,7 @@ authRouter.post('/refresh', async (req, res) => {
   try {
     const decoded = jwt.verify(
       refresh_token,
-      process.env.REFRESH_TOKEN_SECRET || 'dev_refresh'
+      REFRESH_TOKEN_SECRET
     ) as jwt.JwtPayload;
 
     if (decoded.type !== 'refresh' || !decoded.sub) {

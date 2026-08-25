@@ -47,6 +47,7 @@ class OrbitFirebaseMessagingService : ExpoFirebaseMessagingService() {
           endsAtMs, count, ongoing, timeoutAt,
         )
       }
+      "call_ended" -> CallNotificationHelper.cancel(applicationContext)
     }
   }
 }

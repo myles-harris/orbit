@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken';
 import { Request, Response, NextFunction } from 'express';
 import { prisma } from '../db/prisma.js';
+import { JWT_SECRET } from './env.js';
 
 export function requireJwt(req: Request, res: Response, next: NextFunction) {
   const header = req.headers.authorization;
@@ -26,7 +27,7 @@ export function requireJwt(req: Request, res: Response, next: NextFunction) {
 
   let userId: string;
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'dev');
+    const decoded = jwt.verify(token, JWT_SECRET);
     userId = (decoded as any).sub;
     console.log('[requireJwt] Token verified successfully:', { userId });
   } catch (error) {

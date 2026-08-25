@@ -15,6 +15,9 @@ jest.mock('../services/notifications', () => ({
     sendPushTokens: jest.fn().mockResolvedValue({ success: 1, failure: 0 }),
     sendToBuckets: jest.fn().mockResolvedValue({ success: 1, failure: 0 }),
     startLiveActivities: jest.fn().mockResolvedValue([]),
+    updateLiveActivities: jest.fn().mockResolvedValue({ success: 0, failure: 0, stale: [] }),
+    endLiveActivities: jest.fn().mockResolvedValue(undefined),
+    sendExpoData: jest.fn().mockResolvedValue({ success: 0, failure: 0 }),
   },
 }));
 
@@ -330,6 +333,39 @@ describe('scheduler.activateCall Live Activity coverage', () => {
   });
 });
 
+// ─── activateCall: preemption [A5] ─────────────────────────────────────────
+
+describe('scheduler.activateCall preemption', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('still activates the scheduled call when closing the preempted spontaneous call fails at Daily', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const spontaneous = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'spontaneous',
+        started_at: new Date(),
+        room_name: `spontaneous-room-${group.id}`,
+      },
+    });
+    const scheduledCall = await createScheduledCall(group.id);
+
+    (dailyVideo.deleteRoom as jest.Mock).mockRejectedValueOnce(new Error('Daily API down'));
+
+    await scheduler.activateCall(scheduledCall.id);
+
+    const updatedScheduled = await prisma.callSession.findUnique({ where: { id: scheduledCall.id } });
+    expect(updatedScheduled!.status).toBe('active');
+
+    const updatedSpontaneous = await prisma.callSession.findUnique({ where: { id: spontaneous.id } });
+    expect(updatedSpontaneous!.status).toBe('ended');
+  });
+});
+
 // ─── activateCall: Live Activity TTL end-job scheduling ───────────────────
 
 describe('scheduler.activateCall Live Activity end-job scheduling', () => {
@@ -440,6 +476,70 @@ describe('scheduler.closeExpiredCalls', () => {
         room_name: 'test-room',
         ends_at: new Date(now.getTime() + 10 * 60_000),
       },
+    });
+
+    await scheduler.closeExpiredCalls();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('active');
+  });
+});
+
+// ─── closeExpiredCalls: orphan reaper [A8] ─────────────────────────────────
+
+describe('scheduler.closeExpiredCalls orphan reaper', () => {
+  it('closes a spontaneous call that was created but never joined after 5+ minutes', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'spontaneous',
+        started_at: new Date(Date.now() - 6 * 60_000),
+        room_name: `orphan-room-${group.id}`,
+      },
+    });
+
+    await scheduler.closeExpiredCalls();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('ended');
+  });
+
+  it('does not touch a never-joined spontaneous call younger than the orphan window', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'spontaneous',
+        started_at: new Date(Date.now() - 2 * 60_000),
+        room_name: `orphan-room-young-${group.id}`,
+      },
+    });
+
+    await scheduler.closeExpiredCalls();
+
+    const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
+    expect(updated!.status).toBe('active');
+  });
+
+  it('does not touch a spontaneous call that already has an active participant', async () => {
+    const user = await createTestUser();
+    const group = await createTestGroup(user.id);
+    const call = await prisma.callSession.create({
+      data: {
+        group_id: group.id,
+        status: 'active',
+        call_type: 'spontaneous',
+        started_at: new Date(Date.now() - 6 * 60_000),
+        room_name: `orphan-room-joined-${group.id}`,
+      },
+    });
+    await prisma.callParticipant.create({
+      data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
     });
 
     await scheduler.closeExpiredCalls();

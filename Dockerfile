@@ -26,6 +26,10 @@ RUN npx prisma generate --schema=apps/server/prisma/schema.prisma
 # Compile server TypeScript
 RUN npm run build -w apps/server
 
+# Set only after the build: `npm ci` and `tsc` need devDependencies, and
+# NODE_ENV=production makes npm skip them.
+ENV NODE_ENV=production
+
 EXPOSE 4000
 
 CMD ["sh", "-c", "npx prisma migrate deploy --schema=apps/server/prisma/schema.prisma && node apps/server/dist/index.js"]

@@ -38,6 +38,8 @@ jobs:
       REDIS_URL: redis://localhost:6379
       JWT_SECRET: test-secret
       REFRESH_TOKEN_SECRET: test-refresh-secret
+      DAILY_WEBHOOK_SECRET: b3JiaXQtdGVzdC13ZWJob29rLXNlY3JldA==
+      SCHEDULER_ENABLED: 'false'
       NODE_ENV: test
     steps:
       - uses: actions/checkout@v4

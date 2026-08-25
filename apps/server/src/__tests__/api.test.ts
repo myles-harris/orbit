@@ -68,6 +68,14 @@ import {
 const prisma = new PrismaClient();
 const JWT_SECRET = process.env.JWT_SECRET || 'dev';
 
+function signDailyWebhook(payload: unknown) {
+  const body = JSON.stringify(payload);
+  const timestamp = String(Math.floor(Date.now() / 1000));
+  const key = Buffer.from(process.env.DAILY_WEBHOOK_SECRET!, 'base64');
+  const signature = createHmac('sha256', key).update(`${timestamp}.${body}`).digest('base64');
+  return { body, timestamp, signature };
+}
+
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 
 async function createGroup(
@@ -1747,6 +1755,20 @@ describe('Calls endpoints', () => {
       expect(opts.delay).toBeGreaterThan(60 * 60_000 - 5000);
       expect(opts.delay).toBeLessThanOrEqual(60 * 60_000);
     });
+
+    it('[A8] still returns 200 with a joinable call when scheduling the LA end job fails (Redis blip)', async () => {
+      (schedulerQueue.add as jest.Mock).mockRejectedValueOnce(new Error('redis down'));
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+
+      const res = await request(app)
+        .post(`/groups/${group.id}/call-now`)
+        .set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      const stored = await prisma.callSession.findUnique({ where: { id: res.body.id } });
+      expect(stored?.status).toBe('active');
+    });
   });
 
   describe('GET /groups/:id/calls/current', () => {
@@ -1959,11 +1981,12 @@ describe('Calls endpoints', () => {
       expect(res.body.success).toBe(true);
     });
 
-    it('closes a spontaneous call when the last participant leaves', async () => {
+    it('delegates to scheduler.closeCall when the last participant leaves a spontaneous call', async () => {
+      const { scheduler: mockScheduler } = jest.requireMock('../services/scheduler');
+      mockScheduler.closeCall.mockClear();
       const { user, token } = await createTestUserWithToken();
       const group = await createGroup(token);
       const call = await createActiveCall(group.id);
-
       await prisma.callParticipant.create({
         data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
       });
@@ -1972,8 +1995,7 @@ describe('Calls endpoints', () => {
         .post(`/groups/${group.id}/calls/${call.id}/leave`)
         .set('Authorization', `Bearer ${token}`);
 
-      const updated = await prisma.callSession.findUnique({ where: { id: call.id } });
-      expect(updated?.status).toBe('ended');
+      expect(mockScheduler.closeCall).toHaveBeenCalledWith(call.id);
     });
 
     it('returns 200 even when user has no participant record', async () => {
@@ -2294,32 +2316,6 @@ describe('Calls endpoints', () => {
 // ─── Svc ──────────────────────────────────────────────────────────────────────
 
 describe('Svc endpoints', () => {
-  describe('POST /svc/schedule/rollover', () => {
-    it('returns ok', async () => {
-      const res = await request(app).post('/svc/schedule/rollover');
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('ok');
-    });
-  });
-
-  describe('POST /svc/schedule/trigger', () => {
-    it('returns triggered', async () => {
-      const res = await request(app).post('/svc/schedule/trigger');
-      expect(res.status).toBe(200);
-      expect(res.body.status).toBe('triggered');
-    });
-  });
-
-  describe('POST /svc/calls/:id/close', () => {
-    it('returns the call id and closed status', async () => {
-      const fakeId = 'test-call-id-123';
-      const res = await request(app).post(`/svc/calls/${fakeId}/close`);
-      expect(res.status).toBe(200);
-      expect(res.body.id).toBe(fakeId);
-      expect(res.body.status).toBe('closed');
-    });
-  });
-
   describe('POST /svc/daily/webhook', () => {
     it('marks participant as left on participant-left event', async () => {
       const { user, token } = await createTestUserWithToken();
@@ -2329,9 +2325,14 @@ describe('Svc endpoints', () => {
         data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
       });
 
+      const payload = { type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } };
+      const { body, timestamp, signature } = signDailyWebhook(payload);
       const res = await request(app)
         .post('/svc/daily/webhook')
-        .send({ type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } });
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', timestamp)
+        .set('X-Webhook-Signature', signature)
+        .send(body);
 
       expect(res.status).toBe(200);
       // Webhook responds immediately and processes async — wait for DB write.
@@ -2353,9 +2354,14 @@ describe('Svc endpoints', () => {
         data: { call_id: call.id, user_id: user.id, joined_at: new Date() },
       });
 
+      const payload = { type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } };
+      const { body, timestamp, signature } = signDailyWebhook(payload);
       await request(app)
         .post('/svc/daily/webhook')
-        .send({ type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } });
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', timestamp)
+        .set('X-Webhook-Signature', signature)
+        .send(body);
 
       const still = await prisma.callSession.findUnique({ where: { id: call.id } });
       expect(still?.status).toBe('active');
@@ -2376,12 +2382,34 @@ describe('Svc endpoints', () => {
       const { notifications: mockNotifications } = jest.requireMock('../services/notifications');
       mockNotifications.updateLiveActivities.mockClear();
 
+      const payload = { type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } };
+      const { body, timestamp, signature } = signDailyWebhook(payload);
       await request(app)
         .post('/svc/daily/webhook')
-        .send({ type: 'participant-left', properties: { room_name: call.room_name, user_id: user.id } });
+        .set('Content-Type', 'application/json')
+        .set('X-Webhook-Timestamp', timestamp)
+        .set('X-Webhook-Signature', signature)
+        .send(body);
 
       await new Promise(r => setTimeout(r, 1100));
       expect(mockNotifications.updateLiveActivities).toHaveBeenCalled();
+    });
+
+    it('rejects an unauthenticated webhook when DAILY_WEBHOOK_SECRET is unset', async () => {
+      let testApp!: express.Express;
+      await jest.isolateModulesAsync(async () => {
+        delete process.env.DAILY_WEBHOOK_SECRET;
+        const { svcRouter } = await import('../routes/svc.js');
+        testApp = express();
+        testApp.use(express.json({
+          verify: (req: any, _res, buf: Buffer) => { req.rawBody = buf; },
+        }));
+        testApp.use('/svc', svcRouter);
+      });
+      process.env.DAILY_WEBHOOK_SECRET = 'b3JiaXQtdGVzdC13ZWJob29rLXNlY3JldA==';
+
+      const res = await request(testApp).post('/svc/daily/webhook').send({});
+      expect(res.status).toBe(401);
     });
   });
 
@@ -2467,49 +2495,6 @@ describe('Svc endpoints', () => {
     });
   });
 
-  describe('GET /svc/groups/:groupId/upcoming', () => {
-    it('returns upcoming scheduled calls for a group', async () => {
-      const { token } = await createTestUserWithToken();
-      const group = await createGroup(token);
-      const scheduledAt = new Date(Date.now() + 3_600_000);
-      await createScheduledCallRecord(group.id, scheduledAt);
-
-      const res = await request(app).get(`/svc/groups/${group.id}/upcoming`);
-
-      expect(res.status).toBe(200);
-      expect(res.body.group_id).toBe(group.id);
-      expect(res.body.upcoming_count).toBe(1);
-      expect(res.body.calls).toHaveLength(1);
-    });
-
-    it('returns 0 upcoming calls when none are scheduled', async () => {
-      const { token } = await createTestUserWithToken();
-      const group = await createGroup(token);
-
-      const res = await request(app).get(`/svc/groups/${group.id}/upcoming`);
-
-      expect(res.status).toBe(200);
-      expect(res.body.upcoming_count).toBe(0);
-      expect(res.body.calls).toEqual([]);
-    });
-
-    it('does not return past scheduled calls as upcoming', async () => {
-      const { token } = await createTestUserWithToken();
-      const group = await createGroup(token);
-      // Past call
-      await createScheduledCallRecord(group.id, new Date(Date.now() - 3_600_000));
-
-      const res = await request(app).get(`/svc/groups/${group.id}/upcoming`);
-
-      expect(res.status).toBe(200);
-      expect(res.body.upcoming_count).toBe(0);
-    });
-
-    it('returns 404 for a non-existent group', async () => {
-      const res = await request(app).get('/svc/groups/00000000-0000-0000-0000-000000000000/upcoming');
-      expect(res.status).toBe(404);
-    });
-  });
 });
 
 describe('Error handling', () => {

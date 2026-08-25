@@ -159,46 +159,57 @@ export const notifications = {
     opts: PushOptions = {},
   ) {
     const results = { success: 0, failure: 0 };
+    const CHUNK = 100;
+    const staleTokens: string[] = [];
+    const channelId = resolveChannelId(opts);
 
-    try {
-      const channelId = resolveChannelId(opts);
-      const messages = tokens.map(token => ({
-        to: token,
-        sound: resolveSoundName(opts),
-        title,
-        body,
-        data: { ...(data || {}), channelId },
-        channelId,
-      }));
+    for (let i = 0; i < tokens.length; i += CHUNK) {
+      const slice = tokens.slice(i, i + CHUNK);
+      try {
+        const messages = slice.map(token => ({
+          to: token,
+          sound: resolveSoundName(opts),
+          title,
+          body,
+          data: { ...(data || {}), channelId },
+          channelId,
+        }));
+        const response = await fetch('https://exp.host/--/api/v2/push/send', {
+          method: 'POST',
+          headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify(messages),
+        });
+        const result = await response.json();
 
-      const response = await fetch('https://exp.host/--/api/v2/push/send', {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(messages),
-      });
-
-      const result = await response.json();
-
-      if (result.data) {
-        for (const receipt of result.data) {
-          if (receipt.status === 'ok') {
-            results.success++;
-          } else {
-            console.error(`[push] Expo push failed:`, receipt);
-            results.failure++;
-          }
+        if (Array.isArray(result.errors) && result.errors.length > 0) {
+          console.error('[push] Expo push rejected:', result.errors);
+          results.failure += slice.length;
+          continue;
         }
-      }
+        if (!Array.isArray(result.data)) {
+          console.error('[push] Expo push: unexpected response shape', result);
+          results.failure += slice.length;
+          continue;
+        }
 
-      console.log(`[push] Expo: sent to ${tokens.length} tokens, ${results.success} succeeded, ${results.failure} failed`);
-    } catch (error) {
-      console.error(`[push] Expo push error:`, error);
-      results.failure = tokens.length;
+        result.data.forEach((receipt: any, idx: number) => {
+          if (receipt.status === 'ok') { results.success++; return; }
+          console.error('[push] Expo push failed:', receipt);
+          results.failure++;
+          if (receipt.details?.error === 'DeviceNotRegistered') staleTokens.push(slice[idx]);
+        });
+      } catch (error) {
+        console.error('[push] Expo push error:', error);
+        results.failure += slice.length;
+      }
     }
 
+    if (staleTokens.length > 0) {
+      console.log(`[push] Removing ${staleTokens.length} stale Expo token(s) from DB`);
+      await prisma.pushDevice.deleteMany({ where: { token: { in: staleTokens } } });
+    }
+
+    console.log(`[push] Expo: sent to ${tokens.length} tokens, ${results.success} succeeded, ${results.failure} failed`);
     return results;
   },
 

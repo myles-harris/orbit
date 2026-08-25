@@ -21,6 +21,7 @@ export const SPONTANEOUS_TTL_MS = 60 * 60 * 1000;
 
 const pending = new Map<string, NodeJS.Timeout>();
 const lastCount = new Map<string, number>();
+const inFlight = new Set<string>();
 
 export function expiryFor(call: {
   call_type: string;
@@ -41,8 +42,16 @@ export function broadcastCallPresence(callId: string): void {
   if (existing) clearTimeout(existing);
   pending.set(callId, setTimeout(() => {
     pending.delete(callId);
-    void runBroadcast(callId).catch(err =>
-      console.error(`[presence] Broadcast failed for call ${callId}:`, err));
+    if (inFlight.has(callId)) {
+      // A run is still awaiting APNs. Re-arm rather than racing it — the trailing
+      // debounce means the newer count is the one that must land last.
+      broadcastCallPresence(callId);
+      return;
+    }
+    inFlight.add(callId);
+    void runBroadcast(callId)
+      .catch(err => console.error(`[presence] Broadcast failed for call ${callId}:`, err))
+      .finally(() => inFlight.delete(callId));
   }, DEBOUNCE_MS));
 }
 
@@ -216,7 +225,10 @@ export async function endLiveActivitiesForCall(callId: string): Promise<void> {
 
   const [tokens, group, count] = await Promise.all([
     prisma.callLiveActivityToken.findMany({ where: { call_id: callId }, select: { push_token: true } }),
-    prisma.group.findUnique({ where: { id: call.group_id }, select: { name: true } }),
+    prisma.group.findUnique({
+      where: { id: call.group_id },
+      include: { members: { include: { user: { select: { id: true, devices: true } } } } },
+    }),
     prisma.callParticipant.count({ where: { call_id: callId, left_at: null } }),
   ]);
 
@@ -226,6 +238,22 @@ export async function endLiveActivitiesForCall(callId: string): Promise<void> {
       buildState(group.name, call, count),
       new Date(),
     );
+  }
+
+  // Android has no push-driven Live Activity equivalent — CallNotificationHelper anchors
+  // its ongoing notification's dismissal on timeoutAtMs/endsAtMs, which for a spontaneous
+  // call is up to an hour away. This data push lets OrbitFirebaseMessagingService cancel
+  // it immediately, the Android counterpart to the iOS end push above.
+  if (group) {
+    const androidTokens = group.members.flatMap(m =>
+      m.user.devices.filter(d => d.platform === 'android').map(d => d.token));
+    if (androidTokens.length > 0) {
+      await notifications.sendExpoData(androidTokens, {
+        type: 'call_ended',
+        callId,
+        groupId: call.group_id,
+      });
+    }
   }
 
   await prisma.callLiveActivityToken.deleteMany({ where: { call_id: callId } });
@@ -238,4 +266,5 @@ export function resetCallPresenceState(): void {
   for (const t of pending.values()) clearTimeout(t);
   pending.clear();
   lastCount.clear();
+  inFlight.clear();
 }
