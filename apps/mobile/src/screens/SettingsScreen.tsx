@@ -22,6 +22,7 @@ import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { UserAvatar } from '../components/UserAvatar';
+import { Display } from '../components/Display';
 import { syncCallChannel } from '../utils/notificationChannels';
 
 export default function SettingsScreen() {
@@ -214,7 +215,7 @@ export default function SettingsScreen() {
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      <Text style={styles.logoText}>orbit</Text>
+      <Display size={57} style={styles.logoText}>orbit</Display>
 
       {/* Profile header */}
       <View style={styles.profileCard}>
@@ -235,7 +236,7 @@ export default function SettingsScreen() {
             </View>
           )}
           <View style={styles.avatarEditBadge}>
-            <Ionicons name="camera" size={12} color="#fff" />
+            <Ionicons name="camera" size={12} color={colors.textOnPrimary} />
           </View>
         </TouchableOpacity>
         <Text style={styles.username}>{user.username}</Text>
@@ -368,9 +369,6 @@ function makeStyles(colors: any, shadow: any) {
     container: { flex: 1, backgroundColor: colors.background },
     loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
     logoText: {
-      fontFamily: 'Chango_400Regular',
-      fontSize: 64,
-      color: colors.text,
       textAlign: 'center',
       marginTop: 72,
       marginBottom: spacing.sm,
@@ -411,19 +409,19 @@ function makeStyles(colors: any, shadow: any) {
     },
     username: {
       fontSize: 22,
-      fontFamily: 'RobotoMono_700Bold',
+      fontFamily: 'GeistMono_500Medium',
       color: colors.text,
       marginBottom: spacing.xs,
     },
     phone: {
       fontSize: 14,
-      fontFamily: 'RobotoMono_400Regular',
+      fontFamily: 'GeistMono_500Medium',
       color: colors.textTertiary,
     },
     section: { marginHorizontal: spacing.xl, marginBottom: spacing.xl },
     sectionLabel: {
       fontSize: 12,
-      fontFamily: 'RobotoMono_500Medium',
+      fontFamily: 'GeistMono_500Medium',
       color: colors.textTertiary,
       textTransform: 'uppercase',
       letterSpacing: 0.5,
@@ -449,7 +447,7 @@ function makeStyles(colors: any, shadow: any) {
     rowBorderless: { borderBottomWidth: 0 },
     helperText: {
       fontSize: 12,
-      fontFamily: 'RobotoMono_400Regular',
+      fontFamily: 'GeistMono_500Medium',
       color: colors.textTertiary,
       marginTop: spacing.sm,
       marginLeft: spacing.xs,
@@ -457,12 +455,12 @@ function makeStyles(colors: any, shadow: any) {
     },
     rowLabel: {
       fontSize: 16,
-      fontFamily: 'RobotoMono_400Regular',
+      fontFamily: 'GeistMono_500Medium',
       color: colors.textSecondary,
     },
     rowValue: {
       fontSize: 16,
-      fontFamily: 'RobotoMono_500Medium',
+      fontFamily: 'GeistMono_500Medium',
       color: colors.text,
     },
     // ── Theme toggle ──
@@ -483,7 +481,7 @@ function makeStyles(colors: any, shadow: any) {
     },
     themeOptionActive: {
       backgroundColor: colors.surface,
-      ...shadow.sm,
+      ...shadow.card,
     },
     themeOptionText: {
       fontSize: 13,
@@ -504,7 +502,7 @@ function makeStyles(colors: any, shadow: any) {
     },
     logoutButtonText: {
       fontSize: 16,
-      fontFamily: 'RobotoMono_700Bold',
+      fontFamily: 'GeistMono_500Medium',
       color: '#d47070',
     },
   });

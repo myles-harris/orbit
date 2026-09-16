@@ -184,7 +184,7 @@ export default function GroupDetailScreen() {
           </View>
         ) : (
           <TouchableOpacity style={styles.startCallButton} onPress={startCall} activeOpacity={0.85}>
-            <Ionicons name="call" size={20} color="#fff" />
+            <Ionicons name="call" size={20} color={colors.textOnPrimary} />
             <Text style={styles.startCallText}>Start Call Now</Text>
           </TouchableOpacity>
         )}
@@ -298,7 +298,7 @@ function makeStyles(colors: any, typography: any, shadow: any) {
       gap: spacing.sm,
       ...shadow.lg,
     },
-    startCallText: { ...typography.bodySemibold, color: '#fff' },
+    startCallText: { ...typography.bodySemibold, color: colors.textOnPrimary },
     section: { marginHorizontal: spacing.xl, marginBottom: spacing.xxl },
     sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
     sectionTitle: { ...typography.h4 },

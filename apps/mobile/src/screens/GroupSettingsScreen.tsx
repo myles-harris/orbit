@@ -18,14 +18,12 @@ import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import * as Localization from 'expo-localization';
 import { formatViewerWindow } from '@orbit/shared';
-import { Ionicons } from '@expo/vector-icons';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import NumberPicker from '../components/NumberPicker';
 import { formatHour, windowStartMax, windowEndMin, durationMax, cadenceSummary } from '../utils/groupFormat';
-import { getGroupColorIndex, setGroupColorIndex, defaultPaletteIndex, CARD_PALETTES } from '../utils/groupColors';
 
 type GroupSettingsRouteProp = RouteProp<RootStackParamList, 'GroupSettings'>;
 type GroupSettingsNavigationProp = StackNavigationProp<RootStackParamList, 'GroupSettings'>;
@@ -45,7 +43,6 @@ export default function GroupSettingsScreen() {
   const [windowStart, setWindowStart] = useState(6);
   const [windowEnd, setWindowEnd] = useState(22);
   const [isMuted, setIsMuted] = useState(false);
-  const [paletteIndex, setPaletteIndex] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
 
   const [savedName, setSavedName] = useState('');
@@ -94,27 +91,7 @@ export default function GroupSettingsScreen() {
     } catch (error) {
       Alert.alert('Error', 'Failed to load group settings');
     }
-
-    // Isolated so a storage failure can't blank the screen for a group that
-    // loaded fine — the enclosing catch never calls setLoading(false).
-    try {
-      setPaletteIndex(await getGroupColorIndex(groupId));
-    } catch {
-      // Non-fatal: resolvedPaletteIndex falls back to defaultPaletteIndex(savedName).
-    }
   };
-
-  const pickColor = async (index: number) => {
-    setPaletteIndex(index);
-    try {
-      await setGroupColorIndex(groupId, index);
-    } catch {
-      // Cosmetic preference — swatch is already selected in state, silent failure
-      // degrades to "didn't persist" rather than an unhandled rejection.
-    }
-  };
-
-  const resolvedPaletteIndex = paletteIndex ?? (savedName ? defaultPaletteIndex(savedName) : 0);
 
   const saveSettings = async () => {
     if (!groupName.trim()) { Alert.alert('Error', 'Group name cannot be empty'); return; }
@@ -405,26 +382,6 @@ export default function GroupSettingsScreen() {
         <Text style={[styles.sectionLabel, { marginTop: spacing.md }]}>Your settings</Text>
 
         <View style={styles.card}>
-          <Text style={styles.fieldLabel}>Tile Color</Text>
-          <View style={styles.colorPickerRow}>
-            {CARD_PALETTES.map((palette, index) => {
-              const isSelected = index === resolvedPaletteIndex;
-              return (
-                <TouchableOpacity
-                  key={index}
-                  style={[styles.colorSwatch, { backgroundColor: palette.bg }, isSelected && styles.colorSwatchSelected]}
-                  onPress={() => pickColor(index)}
-                  activeOpacity={0.7}
-                >
-                  {isSelected && <Ionicons name="checkmark" size={12} color={palette.text} />}
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-          <Text style={styles.helperText}>Sets this group's card color on your home screen. Only you see it.</Text>
-        </View>
-
-        <View style={styles.card}>
           <View style={styles.muteRow}>
             <View style={styles.muteTextBlock}>
               <Text style={styles.muteLabel}>Mute Notifications</Text>
@@ -522,9 +479,6 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     readOnlyValue: { ...typography.bodyMedium, color: colors.text, flexShrink: 1, textAlign: 'right' },
     readOnlySubValue: { ...typography.small, color: colors.textTertiary, marginTop: 2, textAlign: 'right' },
     lockNote: { ...typography.small, color: colors.textTertiary, marginBottom: spacing.xl, marginLeft: spacing.xs },
-    colorPickerRow: { flexDirection: 'row', gap: spacing.sm, flexWrap: 'wrap', marginBottom: spacing.xs },
-    colorSwatch: { width: 28, height: 28, borderRadius: radius.full, justifyContent: 'center', alignItems: 'center' },
-    colorSwatchSelected: { borderWidth: 2, borderColor: colors.text },
     muteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     muteTextBlock: { flex: 1, marginRight: spacing.md },
     muteLabel: { ...typography.bodyMedium, color: colors.text, fontWeight: '600' },
@@ -537,7 +491,7 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     footer: { backgroundColor: colors.background, paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: spacing.xl, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.surface },
     saveButton: { backgroundColor: colors.primary, borderRadius: radius.full, paddingVertical: spacing.md + 2, alignItems: 'center', ...shadow.lg },
     saveButtonDisabled: { backgroundColor: colors.textTertiary, shadowOpacity: 0, elevation: 0 },
-    saveButtonText: { ...typography.bodySemibold, color: '#fff' },
+    saveButtonText: { ...typography.bodySemibold, color: colors.textOnPrimary },
     dangerCard: { backgroundColor: colors.dangerLight, borderRadius: radius.lg, padding: spacing.xl, borderWidth: 1, borderColor: colors.danger, marginBottom: spacing.xl },
     dangerTitle: { ...typography.captionMedium, color: colors.danger, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '700', marginBottom: spacing.md },
     dangerButton: { backgroundColor: colors.danger, borderRadius: radius.md, paddingVertical: spacing.md, alignItems: 'center' },

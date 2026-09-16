@@ -15,7 +15,6 @@ import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
-import { getGroupColorIndices, defaultPaletteIndex, CARD_PALETTES } from '../utils/groupColors';
 
 type HomeScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Main'>;
 
@@ -36,16 +35,7 @@ type FilterTab = 'All' | 'Daily' | 'Weekly' | 'Invited';
 const FILTER_TABS: FilterTab[] = ['All', 'Daily', 'Weekly', 'Invited'];
 
 const GAP = 8;
-
-
-
-function getCardHeight(name: string): number {
-  let hash = 0;
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash * 17 + name.charCodeAt(i)) & 0xffff;
-  }
-  return 120 + (hash % 80);
-}
+const CARD_HEIGHT = 150;
 
 function getCadenceLabel(cadence: string, weekly_frequency?: number | null) {
   if (cadence === 'daily') return 'Daily';
@@ -53,39 +43,40 @@ function getCadenceLabel(cadence: string, weekly_frequency?: number | null) {
   return 'Weekly';
 }
 
-// ─── BentoCard ────────────────────────────────────────────────────────────────
+// ─── GroupTile ────────────────────────────────────────────────────────────────
 
-interface BentoCardProps {
+interface GroupTileProps {
   name: string;
   cadenceLabel: string;
   memberCount: number;
   isMuted?: boolean;
-  paletteIndex: number;
+  colors: any;
   onPress: () => void;
 }
 
-function BentoCard({ name, cadenceLabel, memberCount, isMuted, paletteIndex, onPress }: BentoCardProps) {
-  const { bg, text } = CARD_PALETTES[paletteIndex];
-  const height = getCardHeight(name);
+// Flat surface + hairline — the no-photo tile treatment. The per-group hashed
+// colour system this replaced is retired; group photos are the real identity
+// signal now (see 00-CONTEXT.md, "Group photos").
+function GroupTile({ name, cadenceLabel, memberCount, isMuted, colors, onPress }: GroupTileProps) {
   return (
     <TouchableOpacity
-      style={[cardStyles.card, { backgroundColor: bg, height }]}
+      style={[cardStyles.card, { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline, height: CARD_HEIGHT }]}
       onPress={onPress}
       activeOpacity={0.82}
     >
       <View style={cardStyles.cardTop}>
-        <View style={[cardStyles.pill, { backgroundColor: 'rgba(0,0,0,0.10)' }]}>
-          <Text style={[cardStyles.pillText, { color: text }]}>{cadenceLabel}</Text>
+        <View style={[cardStyles.pill, { backgroundColor: colors.background }]}>
+          <Text style={[cardStyles.pillText, { color: colors.textSecondary }]}>{cadenceLabel}</Text>
         </View>
         {isMuted && (
-          <View style={[cardStyles.pill, { backgroundColor: 'rgba(0,0,0,0.10)', paddingHorizontal: 8, paddingVertical: 5 }]}>
-            <Ionicons name="volume-mute" size={13} color={text} />
+          <View style={[cardStyles.pill, { backgroundColor: colors.background, paddingHorizontal: 8, paddingVertical: 5 }]}>
+            <Ionicons name="volume-mute" size={13} color={colors.textSecondary} />
           </View>
         )}
       </View>
       <View style={cardStyles.cardBottom}>
-        <Text style={[cardStyles.cardName, { color: text }]} numberOfLines={2}>{name}</Text>
-        <Text style={[cardStyles.cardMeta, { color: text, opacity: 0.6 }]}>
+        <Text style={[cardStyles.cardName, { color: colors.text }]} numberOfLines={2}>{name}</Text>
+        <Text style={[cardStyles.cardMeta, { color: colors.textTertiary }]}>
           {memberCount} {memberCount === 1 ? 'member' : 'members'}
         </Text>
       </View>
@@ -93,36 +84,34 @@ function BentoCard({ name, cadenceLabel, memberCount, isMuted, paletteIndex, onP
   );
 }
 
-// ─── PendingCard ──────────────────────────────────────────────────────────────
+// ─── PendingTile ──────────────────────────────────────────────────────────────
 
-interface PendingCardProps {
+interface PendingTileProps {
   name: string;
   cadenceLabel: string;
   memberCount: number;
-  paletteIndex: number;
+  colors: any;
   onPress: () => void;
 }
 
-function PendingCard({ name, cadenceLabel, memberCount, paletteIndex, onPress }: PendingCardProps) {
-  const { bg, text } = CARD_PALETTES[paletteIndex];
-  const height = getCardHeight(name);
+function PendingTile({ name, cadenceLabel, memberCount, colors, onPress }: PendingTileProps) {
   return (
     <TouchableOpacity
-      style={[cardStyles.card, cardStyles.pendingCard, { backgroundColor: bg + 'AA', height, borderColor: text + '55' }]}
+      style={[cardStyles.card, cardStyles.pendingCard, { backgroundColor: colors.surface, height: CARD_HEIGHT, borderColor: colors.hairline }]}
       onPress={onPress}
       activeOpacity={0.82}
     >
       <View style={cardStyles.cardTop}>
-        <View style={[cardStyles.pill, { backgroundColor: 'rgba(0,0,0,0.10)' }]}>
-          <Text style={[cardStyles.pillText, { color: text, opacity: 0.7 }]}>{cadenceLabel}</Text>
+        <View style={[cardStyles.pill, { backgroundColor: colors.background }]}>
+          <Text style={[cardStyles.pillText, { color: colors.textSecondary, opacity: 0.7 }]}>{cadenceLabel}</Text>
         </View>
-        <View style={[cardStyles.pill, { backgroundColor: 'rgba(0,0,0,0.08)' }]}>
-          <Text style={[cardStyles.pillText, { color: text, opacity: 0.8 }]}>Pending</Text>
+        <View style={[cardStyles.pill, { backgroundColor: colors.background }]}>
+          <Text style={[cardStyles.pillText, { color: colors.textSecondary, opacity: 0.8 }]}>Pending</Text>
         </View>
       </View>
       <View style={[cardStyles.cardBottom, { opacity: 0.65 }]}>
-        <Text style={[cardStyles.cardName, { color: text }]} numberOfLines={2}>{name}</Text>
-        <Text style={[cardStyles.cardMeta, { color: text, opacity: 0.6 }]}>
+        <Text style={[cardStyles.cardName, { color: colors.text }]} numberOfLines={2}>{name}</Text>
+        <Text style={[cardStyles.cardMeta, { color: colors.textTertiary }]}>
           {memberCount} {memberCount === 1 ? 'member' : 'members'}
         </Text>
       </View>
@@ -130,49 +119,46 @@ function PendingCard({ name, cadenceLabel, memberCount, paletteIndex, onPress }:
   );
 }
 
-// ─── MasonryGrid ──────────────────────────────────────────────────────────────
+// ─── GroupGrid ──────────────────────────────────────────────────────────────
 
 interface GridItem { type: 'group'; data: GroupDTO; }
 interface PendingGridItem { type: 'pending'; data: Invitation; }
 type AnyGridItem = GridItem | PendingGridItem;
 
-interface MasonryGridProps {
+interface GroupGridProps {
   items: AnyGridItem[];
-  colorPrefs: Record<string, number | null>;
+  colors: any;
   onPressGroup: (groupId: string) => void;
   onPressInvitation: (invitationId: string) => void;
 }
 
-function MasonryGrid({ items, colorPrefs, onPressGroup, onPressInvitation }: MasonryGridProps) {
+function GroupGrid({ items, colors, onPressGroup, onPressInvitation }: GroupGridProps) {
   const left = items.filter((_, i) => i % 2 === 0);
   const right = items.filter((_, i) => i % 2 === 1);
-
-  const resolvePaletteIndex = (id: string, name: string) =>
-    colorPrefs[id] ?? defaultPaletteIndex(name);
 
   const renderItem = (item: AnyGridItem, key: string) => {
     if (item.type === 'group') {
       const g = item.data;
       return (
-        <BentoCard
+        <GroupTile
           key={key}
           name={g.name}
           cadenceLabel={getCadenceLabel(g.cadence, g.weekly_frequency)}
           memberCount={g.member_count}
           isMuted={g.is_muted}
-          paletteIndex={resolvePaletteIndex(g.id, g.name)}
+          colors={colors}
           onPress={() => onPressGroup(g.id)}
         />
       );
     }
     const inv = item.data;
     return (
-      <PendingCard
+      <PendingTile
         key={key}
         name={inv.group.name}
         cadenceLabel={getCadenceLabel(inv.group.cadence, inv.group.weekly_frequency)}
         memberCount={inv.group.member_count}
-        paletteIndex={resolvePaletteIndex(inv.group.id, inv.group.name)}
+        colors={colors}
         onPress={() => onPressInvitation(inv.id)}
       />
     );
@@ -201,7 +187,6 @@ export default function HomeScreen() {
   const { theme: { colors, shadow } } = useTheme();
   const [groups, setGroups] = useState<GroupDTO[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
-  const [colorPrefs, setColorPrefs] = useState<Record<string, number | null>>({});
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterTab>('All');
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -218,11 +203,6 @@ export default function HomeScreen() {
       ]);
       setGroups(groupsRes.groups);
       setInvitations(invitationsRes.invitations);
-      const allIds = [
-        ...groupsRes.groups.map(g => g.id),
-        ...invitationsRes.invitations.map(i => i.group.id),
-      ];
-      setColorPrefs(await getGroupColorIndices(allIds));
     } catch (error) {
       console.error('Failed to load data:', error);
       setLoadError("Couldn't load your groups. Pull down to retry.");
@@ -283,7 +263,9 @@ export default function HomeScreen() {
               </Text>
               {showBadge && (
                 <View style={[styles.filterBadge, isActive && styles.filterBadgeActive]}>
-                  <Text style={styles.filterBadgeText}>{invitations.length}</Text>
+                  <Text style={[styles.filterBadgeText, isActive && styles.filterBadgeTextActive]}>
+                    {invitations.length}
+                  </Text>
                 </View>
               )}
             </TouchableOpacity>
@@ -312,9 +294,9 @@ export default function HomeScreen() {
             <Text style={styles.emptySubtitle}>{emptyMessage.sub}</Text>
           </View>
         ) : (
-          <MasonryGrid
+          <GroupGrid
             items={gridItems}
-            colorPrefs={colorPrefs}
+            colors={colors}
             onPressGroup={(groupId) => navigation.navigate('GroupDetail', { groupId })}
             onPressInvitation={() => navigation.navigate('Invitations')}
           />
@@ -326,7 +308,7 @@ export default function HomeScreen() {
         onPress={() => navigation.navigate('CreateGroup')}
         activeOpacity={0.85}
       >
-        <Ionicons name="add" size={28} color="#fff" />
+        <Ionicons name="add" size={28} color={colors.textOnPrimary} />
       </TouchableOpacity>
     </View>
   );
@@ -414,7 +396,10 @@ function makeStyles(colors: any, shadow: any) {
       paddingHorizontal: 4,
     },
     filterBadgeActive: { backgroundColor: 'rgba(255,255,255,0.25)' },
-    filterBadgeText: { fontSize: 9, fontWeight: '700', color: '#fff' },
+    filterBadgeText: { fontSize: 9, fontWeight: '700', color: colors.textOnPrimary },
+    // On the active pill (colors.text fill), not the marigold badge — same
+    // inversion filterPillTextActive uses.
+    filterBadgeTextActive: { color: colors.background },
     scrollContent: { padding: GAP, paddingBottom: 100 },
     empty: { alignItems: 'center', paddingTop: 80, paddingHorizontal: spacing.xl },
     emptyIconContainer: { marginBottom: spacing.lg },
@@ -441,7 +426,7 @@ function makeStyles(colors: any, shadow: any) {
       backgroundColor: colors.primary,
       justifyContent: 'center',
       alignItems: 'center',
-      ...shadow.lg,
+      ...shadow.menu,
     },
   });
 }

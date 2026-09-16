@@ -138,7 +138,7 @@ function makeStyles(colors: any) {
     value: {
       flex: 1,
       textAlign: 'center',
-      fontFamily: 'RobotoMono_500Medium',
+      fontFamily: 'GeistMono_500Medium',
       fontSize: 16,
       color: colors.text,
     },

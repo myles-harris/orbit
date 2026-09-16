@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
 import { CallLiveActivity, addPushToStartTokenListener, addActivityPushTokenListener } from './modules/call-live-activity';
 import CallNotification from './modules/call-notification';
@@ -8,19 +8,17 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Localization from 'expo-localization';
 import * as Notifications from 'expo-notifications';
-import { Asset } from 'expo-asset';
+import { useFonts, Cormorant_700Bold_Italic } from '@expo-google-fonts/cormorant';
 import {
-  useFonts,
-  Roboto_400Regular,
-  Roboto_500Medium,
-  Roboto_700Bold,
-} from '@expo-google-fonts/roboto';
+  Geist_400Regular,
+  Geist_500Medium,
+  Geist_600SemiBold,
+} from '@expo-google-fonts/geist';
+import { GeistMono_500Medium } from '@expo-google-fonts/geist-mono';
 import {
-  RobotoMono_400Regular,
-  RobotoMono_500Medium,
-  RobotoMono_700Bold,
-} from '@expo-google-fonts/roboto-mono';
-import { Chango_400Regular } from '@expo-google-fonts/chango';
+  Gelasio_400Regular,
+  Gelasio_400Regular_Italic,
+} from '@expo-google-fonts/gelasio';
 import AppNavigator from './src/navigation/AppNavigator';
 import { ApiClient } from '@orbit/shared';
 import type { UserDTO } from '@orbit/shared';
@@ -444,23 +442,16 @@ function AppContent() {
 
 export default function App() {
   const [fontsLoaded] = useFonts({
-    Roboto_400Regular,
-    Roboto_500Medium,
-    Roboto_700Bold,
-    RobotoMono_400Regular,
-    RobotoMono_500Medium,
-    RobotoMono_700Bold,
-    Chango_400Regular,
+    Cormorant_700Bold_Italic,
+    Geist_400Regular,
+    Geist_500Medium,
+    Geist_600SemiBold,
+    GeistMono_500Medium,
+    Gelasio_400Regular,
+    Gelasio_400Regular_Italic,
   });
 
-  const [assetsLoaded, setAssetsLoaded] = useState(false);
-  useEffect(() => {
-    Asset.loadAsync([require('./assets/background-gradient-4.jpeg')])
-      .then(() => setAssetsLoaded(true))
-      .catch(() => setAssetsLoaded(true)); // don't block on failure
-  }, []);
-
-  if (!fontsLoaded || !assetsLoaded) {
+  if (!fontsLoaded) {
     return null;
   }
 

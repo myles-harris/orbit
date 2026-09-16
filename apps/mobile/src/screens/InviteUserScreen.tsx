@@ -97,7 +97,7 @@ export default function InviteUserScreen() {
             activeOpacity={0.8}
           >
             {isSending ? (
-              <ActivityIndicator color="#fff" size="small" />
+              <ActivityIndicator color={colors.textOnPrimary} size="small" />
             ) : (
               <Text style={styles.inviteButtonText}>Invite</Text>
             )}
@@ -164,7 +164,7 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     username: { ...typography.bodyMedium, flex: 1 },
     inviteButton: { backgroundColor: colors.primary, paddingHorizontal: spacing.lg, paddingVertical: spacing.sm, borderRadius: radius.full, minWidth: 72, alignItems: 'center' },
     inviteButtonDisabled: { backgroundColor: colors.textTertiary },
-    inviteButtonText: { ...typography.captionMedium, color: '#fff', fontWeight: '700' },
+    inviteButtonText: { ...typography.captionMedium, color: colors.textOnPrimary, fontWeight: '700' },
     statusBadge: { backgroundColor: colors.surfaceSecondary, paddingHorizontal: spacing.md, paddingVertical: spacing.sm, borderRadius: radius.full },
     statusBadgeInvited: { backgroundColor: colors.primaryLighter },
     statusBadgeText: { ...typography.small, color: colors.textSecondary, fontWeight: '600' },

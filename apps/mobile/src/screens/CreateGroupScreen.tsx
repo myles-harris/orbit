@@ -151,6 +151,6 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     helperText: { ...typography.small, color: colors.textTertiary, marginTop: spacing.sm, marginBottom: spacing.sm },
     windowStack: { marginTop: spacing.sm },
     createButton: { backgroundColor: colors.primary, borderRadius: radius.full, paddingVertical: spacing.md + 2, alignItems: 'center', marginTop: spacing.lg, ...shadow.lg },
-    createButtonText: { ...typography.bodySemibold, color: '#fff' },
+    createButtonText: { ...typography.bodySemibold, color: colors.textOnPrimary },
   });
 }
