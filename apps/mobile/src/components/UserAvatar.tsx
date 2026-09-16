@@ -9,6 +9,7 @@ interface Props {
   hasAvatar: boolean;
   size: number;
   colors: any;
+  /** Ownership is shown by a separate Owner pill at the call site, not by fill. */
   isOwner?: boolean;
   /** ISO timestamp from the API. Versions the URL so it can be cached indefinitely. */
   avatarUpdatedAt?: string | null;
@@ -18,16 +19,16 @@ interface Props {
 
 export function UserAvatar({
   userId, username, hasAvatar, size, colors,
-  isOwner = false, avatarUpdatedAt = null, previewUri = null,
+  avatarUpdatedAt = null, previewUri = null,
 }: Props) {
   // Seeded synchronously from the in-memory cache so rows render the photo on the
   // first paint instead of flashing initials while the keychain read resolves.
   const [token, setToken] = useState<string | null>(() => peekAccessToken());
   const [loadFailed, setLoadFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const borderRadius = size >= 60 ? radius.xl : radius.md;
-  const bgColor = isOwner ? colors.primary : colors.primaryLight;
-  const textColor = isOwner ? '#fff' : colors.primary;
+  const borderRadius = size >= 60 ? radius.full : radius.xl;
+  const bgColor = colors.surface;
+  const textColor = colors.textMeta;
   const fontSize = Math.round(size * 0.4);
   const dimensions = { width: size, height: size, borderRadius };
 
@@ -77,7 +78,16 @@ export function UserAvatar({
 
   const initial = username.trim().charAt(0).toUpperCase();
   return (
-    <View style={{ ...dimensions, backgroundColor: bgColor, justifyContent: 'center', alignItems: 'center' }}>
+    <View
+      style={{
+        ...dimensions,
+        backgroundColor: bgColor,
+        borderWidth: 1,
+        borderColor: colors.borderStrong,
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
+    >
       <Text style={{ fontSize, fontWeight: '700', color: textColor }}>{initial}</Text>
     </View>
   );

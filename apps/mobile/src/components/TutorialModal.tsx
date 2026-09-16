@@ -172,7 +172,7 @@ export default function TutorialModal() {
                 activeOpacity={0.8}
               >
                 {isLast && isFirstRun && (
-                  <Ionicons name="arrow-forward" size={16} color="#fff" style={{ marginRight: 6 }} />
+                  <Ionicons name="arrow-forward" size={16} color={colors.textOnPrimary} style={{ marginRight: 6 }} />
                 )}
                 <Text style={styles.nextButtonText}>{rightCtaLabel}</Text>
               </TouchableOpacity>
@@ -213,14 +213,14 @@ function makeStyles(colors: any, shadow: any) {
       alignItems: 'center',
     },
     stepCounter: {
-      fontFamily: 'RobotoMono_500Medium',
+      fontFamily: 'GeistMono_500Medium',
       fontSize: 11,
       color: colors.textTertiary,
       textTransform: 'uppercase',
       letterSpacing: 0.5,
     },
     skipText: {
-      fontFamily: 'RobotoMono_700Bold',
+      fontFamily: 'GeistMono_500Medium',
       fontSize: 13,
       color: colors.textSecondary,
     },
@@ -246,7 +246,7 @@ function makeStyles(colors: any, shadow: any) {
       marginBottom: spacing.lg,
     },
     title: {
-      fontFamily: 'Roboto_700Bold',
+      fontFamily: 'Geist_600SemiBold',
       fontSize: 26,
       lineHeight: 32,
       color: colors.text,
@@ -254,7 +254,7 @@ function makeStyles(colors: any, shadow: any) {
       marginBottom: spacing.md,
     },
     body: {
-      fontFamily: 'Roboto_400Regular',
+      fontFamily: 'Geist_400Regular',
       fontSize: 14,
       lineHeight: 21,
       color: colors.textSecondary,
@@ -300,7 +300,7 @@ function makeStyles(colors: any, shadow: any) {
       minWidth: 72,
     },
     backButtonText: {
-      fontFamily: 'RobotoMono_500Medium',
+      fontFamily: 'GeistMono_500Medium',
       fontSize: 14,
       color: colors.textSecondary,
     },
@@ -321,9 +321,9 @@ function makeStyles(colors: any, shadow: any) {
       ...shadow.lg,
     },
     nextButtonText: {
-      fontFamily: 'Roboto_700Bold',
+      fontFamily: 'Geist_600SemiBold',
       fontSize: 15,
-      color: '#fff',
+      color: colors.textOnPrimary,
     },
   });
 }

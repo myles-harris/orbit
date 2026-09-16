@@ -19,6 +19,7 @@ import { setAccessToken } from '../utils/apiClient';
 import { API_URL } from '../config';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
+import { Display } from '../components/Display';
 
 const client = new ApiClient(API_URL, () => null);
 
@@ -112,7 +113,7 @@ export default function AuthScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.brandContainer}>
-            <Text style={styles.logoText}>orbit</Text>
+            <Display size={71} color={CREAM} style={styles.logoText}>orbit</Display>
           </View>
 
           <View style={styles.card}>
@@ -202,14 +203,11 @@ const styles = StyleSheet.create({
     marginBottom: spacing.xxxl,
   },
   logoText: {
-    fontFamily: 'Chango_400Regular',
-    fontSize: 80,
-    color: CREAM,
     marginBottom: spacing.lg,
   },
   subtitle: {
     fontSize: 14,
-    fontFamily: 'RobotoMono_400Regular',
+    fontFamily: 'GeistMono_500Medium',
     color: CREAM,
     textAlign: 'center',
   },
@@ -218,7 +216,7 @@ const styles = StyleSheet.create({
   },
   fieldLabel: {
     fontSize: 14,
-    fontFamily: 'RobotoMono_500Medium',
+    fontFamily: 'GeistMono_500Medium',
     color: CREAM,
     marginBottom: spacing.sm,
     textTransform: 'uppercase',
@@ -230,13 +228,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md + 2,
     fontSize: 16,
-    fontFamily: 'RobotoMono_400Regular',
+    fontFamily: 'GeistMono_500Medium',
     color: CREAM,
     marginBottom: spacing.md,
   },
   codeInput: {
     fontSize: 24,
-    fontFamily: 'RobotoMono_700Bold',
+    fontFamily: 'GeistMono_500Medium',
     textAlign: 'center',
     letterSpacing: 8,
   },
@@ -256,7 +254,7 @@ const styles = StyleSheet.create({
   },
   glassButtonText: {
     fontSize: 16,
-    fontFamily: 'RobotoMono_700Bold',
+    fontFamily: 'GeistMono_500Medium',
     fontWeight: '700',
     color: CREAM,
   },
@@ -266,7 +264,7 @@ const styles = StyleSheet.create({
   },
   linkText: {
     fontSize: 14,
-    fontFamily: 'RobotoMono_500Medium',
+    fontFamily: 'GeistMono_500Medium',
     color: CREAM,
   },
 });

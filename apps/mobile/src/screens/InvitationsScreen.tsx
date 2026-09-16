@@ -163,7 +163,7 @@ function makeStyles(colors: any, typography: any, shadow: any) {
     inviteCard: { backgroundColor: colors.surface, borderRadius: radius.xl, padding: spacing.xl, marginBottom: spacing.md, ...shadow.sm },
     cardHeader: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.md },
     groupAvatar: { width: 48, height: 48, borderRadius: radius.md, backgroundColor: colors.primary, justifyContent: 'center', alignItems: 'center', marginRight: spacing.md },
-    groupAvatarText: { fontSize: 20, fontWeight: '700', color: '#fff' },
+    groupAvatarText: { fontSize: 20, fontWeight: '700', color: colors.textOnPrimary },
     cardHeaderText: { flex: 1 },
     groupName: { ...typography.h4, marginBottom: 2 },
     invitedBy: { ...typography.caption, color: colors.textSecondary },
