@@ -13,16 +13,23 @@ jest.mock('../LightStatusBar', () => ({ LightStatusBar: jest.fn(() => null) }));
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
+jest.mock('../../utils/apiClient', () => ({
+  API_URL: 'http://test',
+  peekAccessToken: jest.fn(() => 'tok'),
+  getAccessToken: jest.fn(async () => 'tok'),
+}));
 
 const THEMES = { light: lightTheme, dark: darkTheme } as const;
 type Mode = keyof typeof THEMES;
-const PHOTO = 'https://example.com/group-photo.jpg';
+const STAMP = '2026-09-01T12:00:00.000Z';
 
-async function render(mode: Mode, photoUri?: string | null, handlers = { onBack: jest.fn(), onSettings: jest.fn() }) {
+async function render(mode: Mode, hasPhoto?: boolean, handlers = { onBack: jest.fn(), onSettings: jest.fn() }) {
   (useTheme as jest.Mock).mockReturnValue({ theme: THEMES[mode], mode });
   let tree!: ReactTestRenderer;
   await act(async () => {
-    tree = renderer.create(<GroupPhotoHeader photoUri={photoUri} {...handlers} />);
+    tree = renderer.create(
+      <GroupPhotoHeader groupId="g1" hasPhoto={hasPhoto} photoUpdatedAt={STAMP} {...handlers} />,
+    );
   });
   return { tree, ...handlers };
 }
@@ -70,42 +77,52 @@ describe('GroupPhotoHeader without a photo', () => {
     expect(tree.root.findAllByType(LightStatusBar)).toHaveLength(0);
   });
 
-  it('treats an empty photo the same as none', async () => {
-    const { tree } = await render('dark', '');
+  it('is also what a photo that cannot be loaded falls back to', async () => {
+    const { tree } = await render('dark', true);
+    expect(tree.root.findAllByType(Image)).toHaveLength(1);
+
+    // The token has not changed since mount, so there is nothing to retry with.
+    await act(async () => { await tree.root.findByType(Image).props.onError(); });
+
     expect(tree.root.findAllByType(Image)).toHaveLength(0);
     expect(gradients(tree)).toHaveLength(0);
+    expect(tree.root.findAllByType(Icon)).toHaveLength(2);
   });
 });
 
 describe('GroupPhotoHeader with a photo', () => {
   it.each<Mode>(['light', 'dark'])('shows the photo, cream chrome, and a light status bar in %s mode', async (mode) => {
-    const { tree } = await render(mode, PHOTO);
-    expect(tree.root.findByType(Image).props.source).toEqual({ uri: PHOTO });
+    const { tree } = await render(mode, true);
+    // Behind the group's membership check, so fetched with the token, at the versioned URL.
+    expect(tree.root.findByType(Image).props.source).toEqual({
+      uri: `http://test/groups/g1/photo?v=${Date.parse(STAMP)}`,
+      headers: { Authorization: 'Bearer tok' },
+    });
     expect(glyphColors(tree)).toEqual([onPhoto.title, onPhoto.title]);
     expect(tree.root.findAllByType(LightStatusBar)).toHaveLength(1);
   });
 
   it('lays the photo over a 288pt backdrop in the surface colour, so it is not blank while it loads', async () => {
-    const { tree } = await render('dark', PHOTO);
+    const { tree } = await render('dark', true);
     const backdrop = tree.root.findAll((n) => typeof n.type === 'string' && StyleSheet.flatten(n.props.style)?.height === 288)[0];
     expect(StyleSheet.flatten(backdrop.props.style).backgroundColor).toBe(darkTheme.colors.surface);
     expect(backdrop.findAllByType(Image)).toHaveLength(1);
   });
 
   it('lays the detail scrim over the top 112pt', async () => {
-    const { tree } = await render('light', PHOTO);
+    const { tree } = await render('light', true);
     const top = gradients(tree).find((g) => g.props.colors === scrim.detailHeader)!;
     expect(top).toBeDefined();
     expect(StyleSheet.flatten(top.props.style)).toMatchObject({ top: 0, height: 112 });
   });
 
   it('takes 300pt but hands 4 back, so the title starts at 296', async () => {
-    const { tree } = await render('dark', PHOTO);
+    const { tree } = await render('dark', true);
     expect(StyleSheet.flatten(outermost(tree).props.style)).toMatchObject({ height: 300, marginBottom: -4 });
   });
 
   it('places the buttons 2pt under the status bar inset, 12pt in from each side', async () => {
-    const { tree } = await render('dark', PHOTO);
+    const { tree } = await render('dark', true);
     const chrome = tree.root.findAll((n) => StyleSheet.flatten(n.props.style)?.position === 'absolute' && StyleSheet.flatten(n.props.style)?.flexDirection === 'row')[0];
     expect(StyleSheet.flatten(chrome.props.style)).toMatchObject({ top: 47 + 2, left: 12, right: 12 });
   });
@@ -114,7 +131,7 @@ describe('GroupPhotoHeader with a photo', () => {
 describe.each<Mode>(['light', 'dark'])('GroupPhotoHeader fade in %s mode', (mode) => {
   it('dissolves into the page colour from 208 to 300, through its own clear end, not "transparent"', async () => {
     const { colors } = THEMES[mode];
-    const { tree } = await render(mode, PHOTO);
+    const { tree } = await render(mode, true);
     const fade = gradients(tree).find((g) => g.props.colors[1] === colors.background)!;
 
     expect(fade.props.colors).toEqual([colors.backgroundClear, colors.background]);
@@ -123,11 +140,11 @@ describe.each<Mode>(['light', 'dark'])('GroupPhotoHeader fade in %s mode', (mode
 });
 
 describe.each([
-  ['a photo', PHOTO],
-  ['no photo', undefined],
-])('GroupPhotoHeader controls with %s', (_label, photoUri) => {
+  ['a photo', true],
+  ['no photo', false],
+])('GroupPhotoHeader controls with %s', (_label, hasPhoto) => {
   it('wires the two glyphs to back and settings', async () => {
-    const { tree, onBack, onSettings } = await render('dark', photoUri);
+    const { tree, onBack, onSettings } = await render('dark', hasPhoto);
     const back = tree.root.findByProps({ accessibilityLabel: 'Back' });
     const settings = tree.root.findByProps({ accessibilityLabel: 'Group settings' });
     act(() => { back.props.onPress(); });

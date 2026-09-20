@@ -62,6 +62,13 @@ export declare class ApiClient {
         ok: boolean;
     }>;
     getAvatarUrl(userId: string): string;
+    uploadGroupPhoto(groupId: string, data: string, mimeType: string): Promise<{
+        ok: boolean;
+        photo_updated_at: string;
+    }>;
+    deleteGroupPhoto(groupId: string): Promise<{
+        ok: boolean;
+    }>;
     getMyInvitations(): Promise<{
         invitations: Array<{
             id: string;

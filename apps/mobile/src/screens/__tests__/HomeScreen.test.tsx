@@ -65,6 +65,8 @@ const group = (over: Partial<GroupDTO> & { id: string; name: string }): GroupDTO
   call_window_start: 6,
   call_window_end: 22,
   time_zone: 'UTC',
+  has_photo: false,
+  photo_updated_at: null,
   member_count: 4,
   members: [],
   created_at: '2026-01-01T00:00:00Z',
@@ -1231,5 +1233,155 @@ describe('Home declining invitations', () => {
     let row: ReactTestInstance | null = actions!.parent;
     while (row && !(isHost(row, 'View') && flat(row.props.style).borderColor)) row = row.parent;
     expect(flat(row!.props.style).flexDirection).not.toBe('row');
+  });
+});
+
+// ─── Live calls come from the server, and are asked for again every 15s ───────
+
+describe('Home live-call polling', () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const groups = [group({ id: 'a', name: 'Alpha' }), group({ id: 'b', name: 'Bravo' })];
+  const call: LiveCall = {
+    id: 'ca', group_id: 'a', call_type: 'scheduled', started_at: iso(T0 - 60_000),
+    ends_at: iso(T0 + 724_000), participant_count: 2,
+  };
+  const asked = () => (fetchLiveCalls as jest.Mock).mock.calls.length;
+  const tick = (ms: number) => act(async () => { await jest.advanceTimersByTimeAsync(ms); });
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(T0);
+    // Date stays real-and-mocked above; only the timers are faked, so the 15s interval
+    // can be driven without the countdown's clock arithmetic moving.
+    jest.useFakeTimers({ doNotFake: ['Date', 'setImmediate', 'nextTick', 'queueMicrotask'] });
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('asks for the live calls again every 15 seconds, not sooner', async () => {
+    await renderHome({ groups });
+    const loaded = asked();
+
+    await tick(14_999);
+    expect(asked()).toBe(loaded);
+    await tick(1);
+    expect(asked()).toBe(loaded + 1);
+    await tick(15_000);
+    expect(asked()).toBe(loaded + 2);
+  });
+
+  it('shows a call that starts while Home is open on the next poll, and drops it when it ends', async () => {
+    const { tree } = await renderHome({ groups });
+    expect(hasText(tree, 'Join')).toBe(false);
+
+    (fetchLiveCalls as jest.Mock).mockResolvedValue([call]);
+    await tick(15_000);
+    expect(hasText(tree, 'Join')).toBe(true);
+    expect(hasText(tree, '2 of 4 joined')).toBe(true);
+
+    (fetchLiveCalls as jest.Mock).mockResolvedValue([]);
+    await tick(15_000);
+    expect(hasText(tree, 'Join')).toBe(false);
+  });
+
+  it('polls only the live calls — not the groups, invitations or profile', async () => {
+    const { client } = await renderHome({ groups });
+    const loads = groupLoads(client);
+
+    await tick(45_000);
+
+    expect(groupLoads(client)).toBe(loads);
+    expect(client.getMyInvitations).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the card on screen when a poll fails — a network blip is not a call ending', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [call] });
+    expect(hasText(tree, 'Join')).toBe(true);
+
+    (fetchLiveCalls as jest.Mock).mockRejectedValue(new Error('offline'));
+    await tick(15_000);
+
+    expect(hasText(tree, 'Join')).toBe(true);
+  });
+
+  it('stops polling the moment the screen loses focus', async () => {
+    const { tree } = await renderHome({ groups });
+    await tick(15_000);
+    const before = asked();
+
+    mockIsFocused = false;
+    await act(async () => { tree.update(<HomeScreen />); });
+    await tick(60_000);
+
+    expect(asked()).toBe(before);
+  });
+
+  it('starts again when focus returns', async () => {
+    const { tree } = await renderHome({ groups });
+    mockIsFocused = false;
+    await act(async () => { tree.update(<HomeScreen />); });
+    const blurred = asked();
+
+    mockIsFocused = true;
+    await act(async () => { tree.update(<HomeScreen />); });
+    await tick(15_000);
+
+    expect(asked()).toBe(blurred + 1);
+  });
+
+  it('never starts when the screen mounts blurred', async () => {
+    mockIsFocused = false;
+    await renderHome({ groups });
+    const loaded = asked();
+
+    await tick(60_000);
+
+    expect(asked()).toBe(loaded);
+  });
+
+  it('stops polling when the screen unmounts', async () => {
+    const { tree } = await renderHome({ groups });
+    const before = asked();
+
+    mounted = mounted.filter((t) => t !== tree);
+    act(() => tree.unmount());
+    await tick(60_000);
+
+    expect(asked()).toBe(before);
+  });
+
+  it('drops a poll that only resolves after the screen was blurred', async () => {
+    const { tree } = await renderHome({ groups });
+    let resolvePoll!: (calls: LiveCall[]) => void;
+    (fetchLiveCalls as jest.Mock).mockReturnValueOnce(new Promise<LiveCall[]>((r) => { resolvePoll = r; }));
+    await tick(15_000);
+
+    mockIsFocused = false;
+    await act(async () => { tree.update(<HomeScreen />); });
+    await act(async () => { resolvePoll([call]); });
+
+    expect(hasText(tree, 'Join')).toBe(false);
+  });
+});
+
+// ─── Each tile draws its own group's photo ────────────────────────────────────
+
+describe('Home tile photos', () => {
+  const STAMP = '2026-09-01T12:00:00.000Z';
+
+  it("hands every tile its group's id, has_photo and photo_updated_at", async () => {
+    (GroupTile as jest.Mock).mockClear();
+    await renderHome({
+      groups: [
+        group({ id: 'a', name: 'Alpha', has_photo: true, photo_updated_at: STAMP }),
+        group({ id: 'b', name: 'Bravo' }),
+      ],
+    });
+
+    const propsFor = (name: string) =>
+      (GroupTile as jest.Mock).mock.calls.map(([props]) => props).find((p) => p.name === name);
+    expect(propsFor('Alpha')).toMatchObject({ groupId: 'a', hasPhoto: true, photoUpdatedAt: STAMP });
+    expect(propsFor('Bravo')).toMatchObject({ groupId: 'b', hasPhoto: false, photoUpdatedAt: null });
   });
 });

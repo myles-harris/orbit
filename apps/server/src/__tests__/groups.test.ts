@@ -320,3 +320,346 @@ describe('WS-9: PUT /groups/:id settings change (9c)', () => {
     expect(res.status).toBe(404);
   });
 });
+
+// ─── Group photos ─────────────────────────────────────────────────────────────
+
+/** Minimal structurally-valid JPEG: SOI + APP0/JFIF header, padded to `bytes`. */
+const jpegOfSize = (bytes: number) => {
+  const header = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]);
+  return Buffer.concat([header, Buffer.alloc(Math.max(0, bytes - header.length), 0xab)]);
+};
+
+// 1x1 PNG in base64 (smallest valid PNG)
+const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+async function groupWithPeople() {
+  const owner = await createTestUserWithToken();
+  const member = await createTestUserWithToken();
+  const outsider = await createTestUserWithToken();
+  const created = await request(app)
+    .post('/groups')
+    .set('Authorization', `Bearer ${owner.token}`)
+    .send({ name: 'Photo Group', cadence: 'daily', call_duration_minutes: 5 });
+  const groupId: string = created.body.id;
+  await prisma.groupMember.create({ data: { group_id: groupId, user_id: member.user.id, role: 'member' } });
+  return { groupId, owner, member, outsider };
+}
+
+const putPhoto = (groupId: string, token: string, buf: Buffer, mime = 'image/jpeg') =>
+  request(app)
+    .put(`/groups/${groupId}/photo`)
+    .set('Authorization', `Bearer ${token}`)
+    .send({ data: buf.toString('base64'), mime_type: mime });
+
+const getPhoto = (groupId: string, token: string, query = '') =>
+  request(app).get(`/groups/${groupId}/photo${query}`).set('Authorization', `Bearer ${token}`);
+
+const getGroup = (groupId: string, token: string) =>
+  request(app).get(`/groups/${groupId}`).set('Authorization', `Bearer ${token}`);
+
+describe('group photo', () => {
+  // T10
+  describe('PUT /groups/:id/photo', () => {
+    it('lets the owner set it', async () => {
+      const { groupId, owner } = await groupWithPeople();
+
+      const res = await putPhoto(groupId, owner.token, jpegOfSize(4096));
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      expect(res.body.photo_updated_at).toEqual(expect.any(String));
+      const detail = await getGroup(groupId, owner.token);
+      expect(detail.body.has_photo).toBe(true);
+      expect(detail.body.photo_updated_at).toBe(res.body.photo_updated_at);
+    });
+
+    it('refuses a member with 403 and stores nothing', async () => {
+      const { groupId, owner, member } = await groupWithPeople();
+
+      const res = await putPhoto(groupId, member.token, jpegOfSize(4096));
+
+      expect(res.status).toBe(403);
+      expect((await getGroup(groupId, owner.token)).body.has_photo).toBe(false);
+    });
+
+    it('answers a non-member 404, the same as for an id that does not exist', async () => {
+      const { groupId, outsider } = await groupWithPeople();
+
+      const real = await putPhoto(groupId, outsider.token, jpegOfSize(4096));
+      const unknown = await putPhoto('no-such-group', outsider.token, jpegOfSize(4096));
+
+      expect(real.status).toBe(404);
+      expect(unknown.status).toBe(404);
+      expect(real.body).toEqual(unknown.body);
+    });
+
+    it('requires auth', async () => {
+      const { groupId } = await groupWithPeople();
+      const res = await request(app)
+        .put(`/groups/${groupId}/photo`)
+        .send({ data: jpegOfSize(64).toString('base64'), mime_type: 'image/jpeg' });
+      expect(res.status).toBe(401);
+    });
+
+    it('replaces an existing photo and moves its version stamp', async () => {
+      const { groupId, owner } = await groupWithPeople();
+      const first = await putPhoto(groupId, owner.token, jpegOfSize(2048));
+      await new Promise((r) => setTimeout(r, 5)); // distinct millisecond, so the ETag must differ
+      const second = await putPhoto(groupId, owner.token, jpegOfSize(4096));
+
+      expect(second.status).toBe(200);
+      expect(second.body.photo_updated_at).not.toBe(first.body.photo_updated_at);
+      const served = await getPhoto(groupId, owner.token);
+      expect(served.body.length).toBe(4096);
+    });
+  });
+
+  describe('DELETE /groups/:id/photo', () => {
+    it('lets the owner remove it, after which the photo route 404s', async () => {
+      const { groupId, owner } = await groupWithPeople();
+      await putPhoto(groupId, owner.token, jpegOfSize(4096));
+
+      const res = await request(app).delete(`/groups/${groupId}/photo`).set('Authorization', `Bearer ${owner.token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.ok).toBe(true);
+      const detail = await getGroup(groupId, owner.token);
+      expect(detail.body.has_photo).toBe(false);
+      expect(detail.body.photo_updated_at).toBeNull();
+      expect((await getPhoto(groupId, owner.token)).status).toBe(404);
+    });
+
+    it('refuses a member with 403 and leaves the photo', async () => {
+      const { groupId, owner, member } = await groupWithPeople();
+      await putPhoto(groupId, owner.token, jpegOfSize(4096));
+
+      const res = await request(app).delete(`/groups/${groupId}/photo`).set('Authorization', `Bearer ${member.token}`);
+
+      expect(res.status).toBe(403);
+      expect((await getGroup(groupId, owner.token)).body.has_photo).toBe(true);
+    });
+
+    it('answers a non-member 404 and leaves the photo', async () => {
+      const { groupId, owner, outsider } = await groupWithPeople();
+      await putPhoto(groupId, owner.token, jpegOfSize(4096));
+
+      const res = await request(app).delete(`/groups/${groupId}/photo`).set('Authorization', `Bearer ${outsider.token}`);
+
+      expect(res.status).toBe(404);
+      expect((await getGroup(groupId, owner.token)).body.has_photo).toBe(true);
+    });
+  });
+
+  // T11
+  describe('GET /groups/:id/photo', () => {
+    it('serves the photo to a member as a non-empty image/jpeg', async () => {
+      const { groupId, owner, member } = await groupWithPeople();
+      await putPhoto(groupId, owner.token, jpegOfSize(4096));
+
+      const res = await getPhoto(groupId, member.token);
+
+      expect(res.status).toBe(200);
+      expect(res.headers['content-type']).toMatch(/image\/jpeg/);
+      expect(Buffer.isBuffer(res.body)).toBe(true);
+      expect(res.body.length).toBe(4096);
+    });
+
+    it('answers a non-member 404, with no ETag or cache policy to learn from', async () => {
+      const { groupId, owner, outsider } = await groupWithPeople();
+      await putPhoto(groupId, owner.token, jpegOfSize(4096));
+
+      const res = await getPhoto(groupId, outsider.token);
+
+      expect(res.status).toBe(404);
+      expect(res.headers['etag']).toBeUndefined();
+      expect(res.headers['cache-control']).toBeUndefined();
+    });
+
+    it('does not let a non-member confirm a photo by presenting its ETag', async () => {
+      const { groupId, owner, outsider } = await groupWithPeople();
+      const upload = await putPhoto(groupId, owner.token, jpegOfSize(4096));
+      const etag = `"${new Date(upload.body.photo_updated_at).getTime()}"`;
+
+      const res = await getPhoto(groupId, outsider.token).set('If-None-Match', etag);
+
+      expect(res.status).toBe(404); // not 304: a 304 would say the photo exists and matches
+    });
+
+    it('answers 304 to a member presenting the current ETag', async () => {
+      const { groupId, owner, member } = await groupWithPeople();
+      const upload = await putPhoto(groupId, owner.token, jpegOfSize(4096));
+      const version = new Date(upload.body.photo_updated_at).getTime();
+
+      const first = await getPhoto(groupId, member.token, `?v=${version}`);
+      expect(first.headers['etag']).toBe(`"${version}"`);
+
+      const repeat = await getPhoto(groupId, member.token, `?v=${version}`).set('If-None-Match', first.headers['etag']);
+      expect(repeat.status).toBe(304);
+    });
+
+    it('is immutable-cacheable only when versioned', async () => {
+      const { groupId, owner } = await groupWithPeople();
+      const upload = await putPhoto(groupId, owner.token, jpegOfSize(4096));
+      const version = new Date(upload.body.photo_updated_at).getTime();
+
+      const versioned = await getPhoto(groupId, owner.token, `?v=${version}`);
+      const unversioned = await getPhoto(groupId, owner.token);
+
+      expect(versioned.headers['cache-control']).toContain('immutable');
+      expect(unversioned.headers['cache-control']).not.toContain('immutable');
+    });
+
+    it('404s when the group has no photo', async () => {
+      const { groupId, owner } = await groupWithPeople();
+      expect((await getPhoto(groupId, owner.token)).status).toBe(404);
+    });
+
+    it('stops serving a member who has been removed from the group', async () => {
+      const { groupId, owner, member } = await groupWithPeople();
+      await putPhoto(groupId, owner.token, jpegOfSize(4096));
+      expect((await getPhoto(groupId, member.token)).status).toBe(200);
+
+      await prisma.groupMember.deleteMany({ where: { group_id: groupId, user_id: member.user.id } });
+
+      expect((await getPhoto(groupId, member.token)).status).toBe(404);
+    });
+  });
+
+  // T12 — mirrors the avatar boundary tests in api.test.ts
+  describe('upload validation', () => {
+    it('rejects a PNG body declared as image/jpeg', async () => {
+      const { groupId, owner } = await groupWithPeople();
+
+      const res = await request(app)
+        .put(`/groups/${groupId}/photo`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/jpeg' });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('invalid_image');
+      expect((await getGroup(groupId, owner.token)).body.has_photo).toBe(false);
+    });
+
+    it('rejects a payload one byte over the 2 MB cap', async () => {
+      const { groupId, owner } = await groupWithPeople();
+
+      const res = await putPhoto(groupId, owner.token, jpegOfSize(2 * 1024 * 1024 + 1));
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('photo_too_large');
+    });
+
+    it('accepts a payload of exactly 2 MB, and one just under', async () => {
+      const { groupId, owner } = await groupWithPeople();
+      expect((await putPhoto(groupId, owner.token, jpegOfSize(2 * 1024 * 1024))).status).toBe(200);
+      expect((await putPhoto(groupId, owner.token, jpegOfSize(2 * 1024 * 1024 - 1))).status).toBe(200);
+    });
+
+    it('rejects an unsupported mime type', async () => {
+      const { groupId, owner } = await groupWithPeople();
+
+      const res = await request(app)
+        .put(`/groups/${groupId}/photo`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ data: TINY_PNG_B64, mime_type: 'image/bmp' });
+
+      expect(res.status).toBe(400);
+    });
+
+    it('rejects a body with no data', async () => {
+      const { groupId, owner } = await groupWithPeople();
+      const res = await request(app)
+        .put(`/groups/${groupId}/photo`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ mime_type: 'image/jpeg' });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // T13 — the blob is served by GET /:id/photo and by nothing else
+  describe('group payloads carry no blob', () => {
+    it('GET /groups has_photo and a version stamp, and neither photo bytes nor a photo key', async () => {
+      const { groupId, owner } = await groupWithPeople();
+      const upload = await putPhoto(groupId, owner.token, jpegOfSize(300 * 1024));
+
+      const res = await request(app).get('/groups').set('Authorization', `Bearer ${owner.token}`);
+
+      expect(res.status).toBe(200);
+      const group = res.body.groups.find((g: any) => g.id === groupId);
+      expect(group.has_photo).toBe(true);
+      expect(group.photo_updated_at).toBe(upload.body.photo_updated_at);
+      expect(group).not.toHaveProperty('photo');
+      expect(group).not.toHaveProperty('photo_mime_type');
+      // A 300 KB photo leaking in any encoding would dwarf this.
+      expect(JSON.stringify(res.body).length).toBeLessThan(5_000);
+    });
+
+    it('GET /groups/:id and PUT /groups/:id do not return the blob either', async () => {
+      const { groupId, owner } = await groupWithPeople();
+      await putPhoto(groupId, owner.token, jpegOfSize(300 * 1024));
+
+      const detail = await getGroup(groupId, owner.token);
+      const updated = await request(app)
+        .put(`/groups/${groupId}`)
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ name: 'Renamed' });
+
+      for (const res of [detail, updated]) {
+        expect(res.status).toBe(200);
+        expect(res.body.has_photo).toBe(true);
+        expect(res.body).not.toHaveProperty('photo');
+        expect(JSON.stringify(res.body).length).toBeLessThan(5_000);
+      }
+    });
+
+    it('a group with no photo reports has_photo false and a null stamp everywhere', async () => {
+      const { owner } = await groupWithPeople();
+
+      const created = await request(app)
+        .post('/groups')
+        .set('Authorization', `Bearer ${owner.token}`)
+        .send({ name: 'Bare', cadence: 'daily', call_duration_minutes: 5 });
+      const list = await request(app).get('/groups').set('Authorization', `Bearer ${owner.token}`);
+
+      expect(created.body.has_photo).toBe(false);
+      expect(created.body.photo_updated_at).toBeNull();
+      for (const g of list.body.groups) {
+        expect(g.has_photo).toBe(false);
+        expect(g.photo_updated_at).toBeNull();
+      }
+    });
+  });
+
+  // T15 — the invariant is the database's, not just the routes'
+  describe('group_photo_consistency', () => {
+    it('rejects photo bytes without a version stamp', async () => {
+      const { groupId } = await groupWithPeople();
+      await expect(
+        prisma.group.update({ where: { id: groupId }, data: { photo: jpegOfSize(64) } }),
+      ).rejects.toThrow(/group_photo_consistency/);
+    });
+
+    it('rejects a version stamp without photo bytes', async () => {
+      const { groupId } = await groupWithPeople();
+      await expect(
+        prisma.group.update({ where: { id: groupId }, data: { photo_updated_at: new Date() } }),
+      ).rejects.toThrow(/group_photo_consistency/);
+    });
+
+    it('accepts bytes and stamp together, and clearing both', async () => {
+      const { groupId } = await groupWithPeople();
+      await expect(
+        prisma.group.update({
+          where: { id: groupId },
+          data: { photo: jpegOfSize(64), photo_mime_type: 'image/jpeg', photo_updated_at: new Date() },
+        }),
+      ).resolves.toBeDefined();
+      await expect(
+        prisma.group.update({
+          where: { id: groupId },
+          data: { photo: null, photo_mime_type: null, photo_updated_at: null },
+        }),
+      ).resolves.toBeDefined();
+    });
+  });
+});

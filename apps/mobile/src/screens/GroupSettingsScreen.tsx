@@ -19,50 +19,16 @@ import { layout, radius, spacing } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { CadenceFields } from '../components/CadenceFields';
 import { CallWindowField, WindowPreview } from '../components/CallWindowField';
-import { Display } from '../components/Display';
 import { Field, TextField } from '../components/Field';
 import { FormHeader } from '../components/FormHeader';
 import { FormScreen } from '../components/FormScreen';
+import { GroupPhotoPicker } from '../components/GroupPhotoPicker';
 import { Icon } from '../components/Icon';
 import { SettingRow } from '../components/SettingRow';
 import { formatHour, durationMax, cadenceSummary } from '../utils/groupFormat';
 
 type GroupSettingsRouteProp = RouteProp<RootStackParamList, 'GroupSettings'>;
 type GroupSettingsNavigationProp = StackNavigationProp<RootStackParamList, 'GroupSettings'>;
-
-const THUMB_SIZE = 88;
-const BADGE_SIZE = 32;
-const BADGE_RING = 2;
-const BADGE_OFFSET = -6;
-
-// The group's photo, or — until it has one — the `surface` fill with its initial,
-// the way an avatar falls back. The camera badge is drawn at full fidelity but is
-// not yet wired to anything, so it is out of the accessibility tree rather than a
-// button that announces itself and does nothing.
-function GroupPhotoThumb({ name, editable, styles }: {
-  name: string;
-  editable: boolean;
-  styles: ReturnType<typeof makeStyles>;
-}) {
-  const { theme: { colors } } = useTheme();
-  return (
-    <View style={styles.thumbWrap}>
-      <View style={styles.thumb}>
-        <Display size={26} color={colors.textMeta}>{name.trim().charAt(0)}</Display>
-      </View>
-      {editable && (
-        <View
-          pointerEvents="none"
-          accessibilityElementsHidden
-          importantForAccessibility="no-hide-descendants"
-          style={styles.badge}
-        >
-          <Icon name="camera" size={16} color={colors.onAccent} />
-        </View>
-      )}
-    </View>
-  );
-}
 
 export default function GroupSettingsScreen() {
   const route = useRoute<GroupSettingsRouteProp>();
@@ -91,6 +57,12 @@ export default function GroupSettingsScreen() {
   const [memberTimeZones, setMemberTimeZones] = useState<string[]>([]);
   // True while a dial handle is held, so the form's ScrollView doesn't take the drag.
   const [dialDragging, setDialDragging] = useState(false);
+  // Not part of `hasChanges`: the photo is saved the moment it is picked, like the
+  // avatar, so there is nothing for "Save changes" to hold back.
+  const [photo, setPhoto] = useState<{ hasPhoto: boolean; photoUpdatedAt: string | null }>({
+    hasPhoto: false,
+    photoUpdatedAt: null,
+  });
 
   const hasChanges =
     groupName !== savedName ||
@@ -118,6 +90,7 @@ export default function GroupSettingsScreen() {
       setIsMuted(group.is_muted ?? false);
       setGroupTz(group.time_zone ?? 'UTC');
       setMemberTimeZones(group.members.map((m) => m.time_zone));
+      setPhoto({ hasPhoto: group.has_photo, photoUpdatedAt: group.photo_updated_at });
       setSavedName(group.name); setSavedCadence(loadedCadence);
       setSavedFrequency(loadedFrequency); setSavedCallDuration(loadedDuration);
       setSavedWindowStart(loadedWindowStart); setSavedWindowEnd(loadedWindowEnd);
@@ -301,7 +274,14 @@ export default function GroupSettingsScreen() {
       }}
       scrollEnabled={!dialDragging}
     >
-      <GroupPhotoThumb name={groupName} editable={isOwner} styles={styles} />
+      <GroupPhotoPicker
+        groupId={groupId}
+        name={groupName}
+        editable={isOwner}
+        hasPhoto={photo.hasPhoto}
+        photoUpdatedAt={photo.photoUpdatedAt}
+        onChange={setPhoto}
+      />
 
       <TextField
         label="Group name"
@@ -395,33 +375,6 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
   return StyleSheet.create({
     flex: { flex: 1, backgroundColor: colors.background },
     centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-
-    thumbWrap: { width: THUMB_SIZE, height: THUMB_SIZE },
-    thumb: {
-      width: THUMB_SIZE,
-      height: THUMB_SIZE,
-      borderRadius: radius.xxl,
-      backgroundColor: colors.surface,
-      borderWidth: StyleSheet.hairlineWidth,
-      borderColor: colors.hairline,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    // A 32pt marigold disc inside a 2pt ring the colour of the page, so it reads
-    // as cut out of the thumb's corner.
-    badge: {
-      position: 'absolute',
-      right: BADGE_OFFSET,
-      bottom: BADGE_OFFSET,
-      width: BADGE_SIZE + BADGE_RING * 2,
-      height: BADGE_SIZE + BADGE_RING * 2,
-      borderRadius: radius.full,
-      backgroundColor: colors.accent,
-      borderWidth: BADGE_RING,
-      borderColor: colors.background,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
 
     ownerOnlyNote: {
       fontFamily: 'Geist_400Regular',

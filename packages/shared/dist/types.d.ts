@@ -25,6 +25,8 @@ export type GroupDTO = {
     call_window_start: number;
     call_window_end: number;
     time_zone: string;
+    has_photo: boolean;
+    photo_updated_at: string | null;
     is_muted?: boolean;
     member_count: number;
     members: GroupMember[];

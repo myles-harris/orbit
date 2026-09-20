@@ -2,6 +2,7 @@ import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
 import { layout, onPhoto, radius, scrim } from '../theme';
+import { useGroupPhoto } from '../utils/useGroupPhoto';
 import { Display } from './Display';
 
 interface GroupTileProps {
@@ -13,7 +14,14 @@ interface GroupTileProps {
    * wheat over a photo, textSecondary on a surface.
    */
   subLabel?: string;
-  photoUri?: string | null;
+  /**
+   * The group, and — from `GroupDTO` — whether it has a photo and when that last
+   * changed. The tile fetches the image itself: it is behind the group's membership
+   * check, so it needs the token and the retry that `useGroupPhoto` carries.
+   */
+  groupId: string;
+  hasPhoto?: boolean;
+  photoUpdatedAt?: string | null;
   /**
    * A live call on a group that is not the hero. The live card takes the most
    * recent call; any other live group keeps its square tile and gains a 1px
@@ -30,9 +38,14 @@ interface GroupTileProps {
 // Layout: name (and subLabel) top-left, cadence bottom-right. That is what the
 // two scrims in the design imply — one anchored to each edge, `tileTop` behind
 // the name and `tileBottom` behind the cadence.
-export function GroupTile({ name, cadence, subLabel, photoUri, live, onPress }: GroupTileProps) {
+export function GroupTile({
+  name, cadence, subLabel, groupId, hasPhoto: groupHasPhoto = false, photoUpdatedAt, live, onPress,
+}: GroupTileProps) {
   const { theme: { colors }, mode } = useTheme();
-  const hasPhoto = !!photoUri;
+  // Null covers a group with no photo, a token not yet in hand, and a load that failed
+  // twice. All three draw the same designed no-photo tile.
+  const photo = useGroupPhoto({ groupId, hasPhoto: groupHasPhoto, photoUpdatedAt });
+  const hasPhoto = photo !== null;
   // Marigold text is legal only over a dark ground (AC-3): a photo scrim in either
   // mode, or the dark surface. On the light surface it is 1.60:1, so the label
   // falls back to `text` there and the marigold border carries the signal alone.
@@ -52,10 +65,12 @@ export function GroupTile({ name, cadence, subLabel, photoUri, live, onPress }: 
         },
       ]}
     >
-      {hasPhoto && (
+      {photo && (
         <>
           <Image
-            source={{ uri: photoUri! }}
+            key={photo.imageKey}
+            source={photo.source}
+            onError={photo.onError}
             resizeMode="cover"
             // Android clips a radius+gradient stack inconsistently unless every
             // layer — tile, gradient, image — carries its own borderRadius.

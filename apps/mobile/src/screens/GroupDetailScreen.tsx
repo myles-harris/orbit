@@ -176,6 +176,9 @@ export default function GroupDetailScreen() {
         overScrollMode="never"
       >
         <GroupPhotoHeader
+          groupId={group.id}
+          hasPhoto={group.has_photo}
+          photoUpdatedAt={group.photo_updated_at}
           onBack={goBack}
           onSettings={() => navigation.navigate('GroupSettings', { groupId, isOwner })}
         />

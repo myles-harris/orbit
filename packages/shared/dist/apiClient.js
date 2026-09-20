@@ -117,6 +117,12 @@ export class ApiClient {
     getAvatarUrl(userId) {
         return `${this.baseUrl}/users/${userId}/avatar`;
     }
+    async uploadGroupPhoto(groupId, data, mimeType) {
+        return this.request('PUT', `/groups/${groupId}/photo`, { data, mime_type: mimeType });
+    }
+    async deleteGroupPhoto(groupId) {
+        return this.request('DELETE', `/groups/${groupId}/photo`);
+    }
     async getMyInvitations() {
         return this.get('/me/invitations');
     }

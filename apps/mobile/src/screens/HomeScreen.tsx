@@ -50,6 +50,9 @@ const FILTER_TABS: FilterTab[] = ['All', 'Daily', 'Weekly', 'Invited'];
 // bar is 54pt. With the filter row gone, the gap under the header is what's left.
 const FIRST_RUN_TOP_GAP = 188 - 54 - layout.headerHeight;
 
+// A call that starts while Home is open has nothing to push it here, so Home asks.
+const LIVE_CALL_POLL_MS = 15_000;
+
 function getCadenceLabel(cadence: string, weekly_frequency?: number | null) {
   if (cadence === 'daily') return 'Daily';
   if (weekly_frequency) return `${weekly_frequency}×/wk`;
@@ -107,7 +110,7 @@ export default function HomeScreen() {
         // Only the header avatar reads this — a failed /me must not blank the grid.
         client.get<UserDTO>('/me').catch(() => null),
       ]);
-      const calls = await fetchLiveCalls(groupsRes.groups).catch((): LiveCall[] => []);
+      const calls = await fetchLiveCalls().catch((): LiveCall[] => []);
       if (seq !== loadSeq.current) return;
       setGroups(groupsRes.groups);
       setInvitations(invitationsRes.invitations);
@@ -143,6 +146,25 @@ export default function HomeScreen() {
   // decrement, so a backgrounded app is right the moment it returns.
   const endTimes = liveCalls.filter(hasCountdown).map((c) => new Date(c.ends_at).getTime());
   const now = useClockAt(endTimes, isFocused);
+
+  // Which calls are live is the server's to say, so ask again every 15s while the
+  // screen is focused and stop the moment it is not. The first read is `loadData`'s,
+  // which runs on focus, so the interval's first tick is a full period away. A failed
+  // poll keeps what is already on screen — a network blip is not a call ending — and
+  // one that resolves after blur is dropped.
+  useEffect(() => {
+    if (!isFocused) return;
+    let cancelled = false;
+    const id = setInterval(() => {
+      fetchLiveCalls()
+        .then((calls) => { if (!cancelled) setLiveCalls(calls); })
+        .catch(() => {});
+    }, LIVE_CALL_POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+    };
+  }, [isFocused]);
 
   const groupsById = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
   const activeCalls = liveCalls.filter((c) => groupsById.has(c.group_id) && isLive(c, now));
@@ -259,6 +281,9 @@ export default function HomeScreen() {
     <GroupTile
       key={g.id}
       name={g.name}
+      groupId={g.id}
+      hasPhoto={g.has_photo}
+      photoUpdatedAt={g.photo_updated_at}
       cadence={getCadenceLabel(g.cadence, g.weekly_frequency)}
       subLabel={g.is_muted ? 'muted' : undefined}
       live={otherLiveGroupIds.has(g.id)}

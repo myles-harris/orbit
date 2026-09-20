@@ -7,6 +7,7 @@ import { BottomActionBar } from '../../components/BottomActionBar';
 import { CallWindowDial } from '../../components/CallWindowDial';
 import { CadenceFields } from '../../components/CadenceFields';
 import { FormScreen } from '../../components/FormScreen';
+import { GroupPhotoPicker } from '../../components/GroupPhotoPicker';
 import { Icon } from '../../components/Icon';
 import NumberPicker from '../../components/NumberPicker';
 import { SegmentedControl } from '../../components/SegmentedControl';
@@ -20,7 +21,13 @@ const mockNavigate = jest.fn();
 let mockParams: { groupId: string; isOwner: boolean } = { groupId: 'g1', isOwner: true };
 
 jest.mock('../../context/ThemeContext', () => ({ useTheme: jest.fn() }));
-jest.mock('../../utils/apiClient', () => ({ createAuthenticatedApiClient: jest.fn() }));
+jest.mock('../../utils/apiClient', () => ({
+  createAuthenticatedApiClient: jest.fn(),
+  API_URL: 'http://test',
+  // A token in the in-memory cache, so a group photo can paint on the first frame.
+  peekAccessToken: () => 'tok',
+  getAccessToken: async () => 'tok',
+}));
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
@@ -49,6 +56,8 @@ const GROUP = {
   call_window_start: 6,
   call_window_end: 22,
   time_zone: NY,
+  has_photo: false,
+  photo_updated_at: null,
   is_muted: false,
   member_count: 3,
   members: [
@@ -290,12 +299,33 @@ describe('GroupSettingsScreen owner form', () => {
     expect(camera[0].props.color).toBe(darkTheme.colors.onAccent);
   });
 
-  it('leaves the camera badge out of the accessibility tree — it does nothing yet', async () => {
+  // The badge used to be drawn but inert, and hidden from accessibility for it. It now
+  // does something, so the thumb it sits on is a labelled button.
+  it('makes the thumb a labelled button for an owner, wired to the picker', async () => {
     const { tree } = await renderSettings();
-    const badge = tree.root.findAll((n) => n.props.pointerEvents === 'none' && n.props.accessibilityElementsHidden)[0];
-    expect(badge).toBeDefined();
-    expect(badge.props.importantForAccessibility).toBe('no-hide-descendants');
-    expect(badge.props.onPress).toBeUndefined();
+    const picker = tree.root.findByType(GroupPhotoPicker);
+    expect(picker.props).toMatchObject({ groupId: 'g1', editable: true, hasPhoto: false, photoUpdatedAt: null });
+
+    const button = tree.root.findByProps({ accessibilityLabel: 'Change group photo' });
+    expect(button.props.accessibilityRole).toBe('button');
+    expect(button.props.onPress).toEqual(expect.any(Function));
+  });
+
+  it("hands the picker the group's photo, and follows it when the picker reports a change", async () => {
+    const stamp = '2026-09-02T00:00:00.000Z';
+    const { tree } = await renderSettings({ group: { ...GROUP, has_photo: true, photo_updated_at: stamp } });
+    expect(tree.root.findByType(GroupPhotoPicker).props).toMatchObject({ hasPhoto: true, photoUpdatedAt: stamp });
+
+    const next = '2026-09-03T00:00:00.000Z';
+    act(() => { tree.root.findByType(GroupPhotoPicker).props.onChange({ hasPhoto: true, photoUpdatedAt: next }); });
+
+    expect(tree.root.findByType(GroupPhotoPicker).props).toMatchObject({ hasPhoto: true, photoUpdatedAt: next });
+  });
+
+  it('does not count a photo change as an unsaved edit — it is saved the moment it is picked', async () => {
+    const { tree } = await renderSettings();
+    act(() => { tree.root.findByType(GroupPhotoPicker).props.onChange({ hasPhoto: true, photoUpdatedAt: '2026-09-03T00:00:00.000Z' }); });
+    expect(bar(tree)).toMatchObject({ disabled: true, caption: 'Nothing to save yet.' });
   });
 
   it('shows the weekly stepper only for a weekly cadence', async () => {
@@ -359,6 +389,9 @@ describe('GroupSettingsScreen for a member who is not the owner', () => {
     expect(tree.root.findAllByType(CallWindowDial)).toHaveLength(0);
     expect(tree.root.findAllByType(NumberPicker)).toHaveLength(0);
     expect(tree.root.findAllByType(Icon).some((i) => i.props.name === 'camera')).toBe(false);
+    // Still sees the group's photo, but has no way to change it.
+    expect(tree.root.findByType(GroupPhotoPicker).props.editable).toBe(false);
+    expect(tree.root.findAllByProps({ accessibilityLabel: 'Change group photo' })).toHaveLength(0);
   });
 
   it('can still change the name, mute, and leave', async () => {

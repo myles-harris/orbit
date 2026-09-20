@@ -3,12 +3,19 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../context/ThemeContext';
 import { onPhoto, scrim } from '../theme';
+import { useGroupPhoto } from '../utils/useGroupPhoto';
 import { IconButton } from './IconButton';
 import { LightStatusBar } from './LightStatusBar';
 
 interface GroupPhotoHeaderProps {
-  /** Absent until a group has a photo. Without one the header is only its two glyphs. */
-  photoUri?: string | null;
+  /**
+   * The group, and — from `GroupDetailDTO` — whether it has a photo and when that
+   * last changed. Without a photo the header is only its two glyphs. The header
+   * fetches the image itself, with the token and retry `useGroupPhoto` carries.
+   */
+  groupId: string;
+  hasPhoto?: boolean;
+  photoUpdatedAt?: string | null;
   onBack: () => void;
   onSettings: () => void;
 }
@@ -33,12 +40,15 @@ const PLAIN_TITLE_GAP = 112 - (56 + 44);
 // the page, with back and settings glyphs over it. Without one there is nothing to
 // fill 300pt with, so it is only the glyphs, on the page itself, and the title and
 // everything under it move up into the space.
-export function GroupPhotoHeader({ photoUri, onBack, onSettings }: GroupPhotoHeaderProps) {
+export function GroupPhotoHeader({ groupId, hasPhoto = false, photoUpdatedAt, onBack, onSettings }: GroupPhotoHeaderProps) {
   const { theme: { colors } } = useTheme();
   const insets = useSafeAreaInsets();
+  // Null covers a group with no photo, a token not yet in hand, and a load that failed
+  // twice: all three take the plain header, the designed no-photo state.
+  const photo = useGroupPhoto({ groupId, hasPhoto, photoUpdatedAt });
   const glyphsTop = insets.top + CHROME_TOP_GAP;
 
-  if (!photoUri) {
+  if (!photo) {
     // The glyphs sit on the page background, so they take its text colour in both
     // themes, and the app's own theme-following status bar already suits it.
     return (
@@ -59,7 +69,13 @@ export function GroupPhotoHeader({ photoUri, onBack, onSettings }: GroupPhotoHea
       <LightStatusBar />
 
       <View style={[styles.backdrop, { backgroundColor: colors.surface }]}>
-        <Image source={{ uri: photoUri }} resizeMode="cover" style={StyleSheet.absoluteFillObject} />
+        <Image
+          key={photo.imageKey}
+          source={photo.source}
+          onError={photo.onError}
+          resizeMode="cover"
+          style={StyleSheet.absoluteFillObject}
+        />
       </View>
 
       {/* Keeps the glyphs legible over the photo. */}

@@ -265,10 +265,14 @@ exports[`GroupTile snapshots (T4) photo / dark 1`] = `
   }
 >
   <Image
+    onError={[Function]}
     resizeMode="cover"
     source={
       {
-        "uri": "https://example.com/group-photo.jpg",
+        "headers": {
+          "Authorization": "Bearer tok",
+        },
+        "uri": "http://test/groups/g1/photo?v=1788264000000",
       }
     }
     style={
@@ -490,10 +494,14 @@ exports[`GroupTile snapshots (T4) photo / light 1`] = `
   }
 >
   <Image
+    onError={[Function]}
     resizeMode="cover"
     source={
       {
-        "uri": "https://example.com/group-photo.jpg",
+        "headers": {
+          "Authorization": "Bearer tok",
+        },
+        "uri": "http://test/groups/g1/photo?v=1788264000000",
       }
     }
     style={
