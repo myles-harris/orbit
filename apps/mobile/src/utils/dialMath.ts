@@ -45,15 +45,19 @@ export function shortestDelta(delta: number): number {
 }
 
 /**
- * Where a handle at `current` lands when dragged to a touch at `touched`
- * (fractional hours). It moves the short way round and snaps to a whole hour, so
- * crossing midnight nudges by one hour instead of jumping the length of the ring.
- * Then it is clamped to [min, max] — the same guards the steppers use — so a
- * handle dragged past its partner stops beside it rather than inverting the window.
+ * Where a handle lands once the finger has swept `swept` hours round the clock
+ * since it picked the handle up: the hour the handle started at, moved by the
+ * whole hours swept, then clamped to [min, max]. The clamp is the steppers' own
+ * guards, so a handle dragged past its partner stops beside it rather than
+ * inverting the window.
+ *
+ * `swept` is the running total of `shortestDelta` between consecutive touches, and
+ * is deliberately not wrapped. Crossing midnight therefore moves the handle one
+ * hour instead of jumping the length of the ring, and because the clamp is applied
+ * to origin + swept rather than accumulated, dragging back retraces exactly.
  */
-export function dragHour(current: number, touched: number, min: number, max: number): number {
-  const next = current + Math.round(shortestDelta(touched - current));
-  return Math.max(min, Math.min(max, next));
+export function sweptHour(origin: number, swept: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, origin + Math.round(swept)));
 }
 
 /** The handle a touch at `touched` should pick up: whichever is nearer round the clock. */

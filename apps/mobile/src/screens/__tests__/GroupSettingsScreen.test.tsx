@@ -1,16 +1,18 @@
 import { act } from 'react';
-import { Alert, StyleSheet, TextInput } from 'react-native';
-import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import type { GestureResponderEvent } from 'react-native';
+import { Alert, ScrollView, StyleSheet, TextInput } from 'react-native';
+import renderer, { type ReactTestRenderer } from 'react-test-renderer';
 import GroupSettingsScreen from '../GroupSettingsScreen';
 import { useTheme } from '../../context/ThemeContext';
 import { BottomActionBar } from '../../components/BottomActionBar';
 import { CallWindowDial } from '../../components/CallWindowDial';
+import { CadenceFields } from '../../components/CadenceFields';
+import { FormScreen } from '../../components/FormScreen';
 import { Icon } from '../../components/Icon';
 import NumberPicker from '../../components/NumberPicker';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { createAuthenticatedApiClient } from '../../utils/apiClient';
-import { hourPoint } from '../../utils/dialMath';
+import { allText, stepperShowing } from '../../testUtils/tree';
+import { dragDial, hitAreaOf, path, touchAt } from '../../testUtils/dial';
 import { darkTheme, lightTheme } from '../../theme';
 
 const mockGoBack = jest.fn();
@@ -82,28 +84,12 @@ async function renderSettings(opts: { isOwner?: boolean; mode?: Mode; group?: Re
 
 // ─── Tree helpers ─────────────────────────────────────────────────────────────
 
-const textOf = (node: ReactTestInstance | string): string =>
-  typeof node === 'string' ? node : node.children.map(textOf).join('');
-
-/** The rendered text of every host <Text>, in tree order. */
-const allText = (tree: ReactTestRenderer): string[] =>
-  tree.root.findAll((n) => (n.type as unknown) === 'Text').map((n) => textOf(n));
-
+/** The rendered text of every host <Text>, in tree order — see testUtils. */
 const has = (tree: ReactTestRenderer, text: string) => allText(tree).includes(text);
 const bar = (tree: ReactTestRenderer) => tree.root.findByType(BottomActionBar).props;
 const nameInput = (tree: ReactTestRenderer) => tree.root.findByType(TextInput);
 const typeName = (tree: ReactTestRenderer, value: string) =>
   act(() => { nameInput(tree).props.onChangeText(value); });
-
-/** What a NumberPicker draws in its readout, by the same rule it uses. */
-const readoutOf = (p: ReactTestInstance): string =>
-  p.props.formatValue ? p.props.formatValue(p.props.value)
-    : p.props.suffix ? `${p.props.value} ${p.props.suffix}`
-    : String(p.props.value);
-
-/** The stepper whose readout currently shows `readout`. */
-const stepperShowing = (tree: ReactTestRenderer, readout: string) =>
-  tree.root.findAllByType(NumberPicker).find((p) => readoutOf(p) === readout)!;
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -138,11 +124,15 @@ describe('GroupSettingsScreen Save changes', () => {
     expect(bar(stepped.tree).disabled).toBe(false);
 
     const dragged = await renderSettings();
-    const dial = dragged.tree.root.findByType(CallWindowDial);
-    const area = dial.findAll((n) => typeof n.props.onResponderGrant === 'function')[0];
-    const p = hourPoint(8, 38, 38, 26);
-    act(() => { area.props.onResponderGrant({ nativeEvent: { locationX: p.x, locationY: p.y } } as GestureResponderEvent); });
+    dragDial(dragged.tree.root, path(7, 9)); // the start handle, two hours later
     expect(bar(dragged.tree).disabled).toBe(false);
+  });
+
+  it('does not activate on a tap or a brush of the dial: nothing has moved', async () => {
+    const { tree } = await renderSettings();
+    act(() => { hitAreaOf(tree.root).props.onResponderGrant(touchAt(8)); });
+    act(() => { hitAreaOf(tree.root).props.onResponderRelease(); });
+    expect(bar(tree).disabled).toBe(true);
   });
 
   it('activates on switching cadence, and reverts when switched back', async () => {
@@ -151,6 +141,17 @@ describe('GroupSettingsScreen Save changes', () => {
     expect(bar(tree).disabled).toBe(false);
     act(() => { tree.root.findByType(SegmentedControl).props.onChange('daily'); });
     expect(bar(tree).disabled).toBe(true);
+  });
+
+  it('stays inert when the already-selected cadence is tapped again', async () => {
+    // A weekly group saved at 3 calls a week: re-tapping "Weekly" must not reset it to 1
+    // and turn the form dirty.
+    const { tree } = await renderSettings({ group: { ...GROUP, cadence: 'weekly', weekly_frequency: 3 } });
+    expect(stepperShowing(tree, '3')).toBeDefined();
+
+    act(() => { tree.root.findByType(SegmentedControl).props.onChange('weekly'); });
+    expect(bar(tree).disabled).toBe(true);
+    expect(stepperShowing(tree, '3')).toBeDefined();
   });
 
   it('sends only what changed', async () => {
@@ -186,6 +187,75 @@ describe('GroupSettingsScreen Save changes', () => {
 
     expect(Alert.alert).toHaveBeenCalledWith('Error', 'Group name cannot be empty');
     expect(client.put).not.toHaveBeenCalled();
+  });
+});
+
+// ─── The dial and the page's ScrollView ───────────────────────────────────────
+
+const formScroll = (tree: ReactTestRenderer) => tree.root.findByType(ScrollView);
+
+describe('GroupSettingsScreen dial drag', () => {
+  it('stops the form scrolling while a handle is held, and frees it on release', async () => {
+    const { tree } = await renderSettings();
+    const area = () => hitAreaOf(tree.root);
+    expect(formScroll(tree).props.scrollEnabled).toBe(true);
+
+    act(() => { area().props.onResponderGrant(touchAt(8)); });
+    expect(formScroll(tree).props.scrollEnabled).toBe(false);
+
+    act(() => { area().props.onResponderRelease(); });
+    expect(formScroll(tree).props.scrollEnabled).toBe(true);
+  });
+
+  it('frees the form again if React Native takes the touch away mid-drag', async () => {
+    const { tree } = await renderSettings();
+    act(() => { hitAreaOf(tree.root).props.onResponderGrant(touchAt(8)); });
+    act(() => { hitAreaOf(tree.root).props.onResponderTerminate(); });
+    expect(formScroll(tree).props.scrollEnabled).toBe(true);
+  });
+
+  it('moves the window with a drag, and the steppers follow it', async () => {
+    const { tree } = await renderSettings();
+    dragDial(tree.root, path(7, 9));
+    // The start handle swept two hours: 6 AM -> 8 AM.
+    expect(stepperShowing(tree, '8 AM')).toBeDefined();
+    expect(stepperShowing(tree, '10 PM')).toBeDefined();
+  });
+});
+
+// ─── Accessibility ────────────────────────────────────────────────────────────
+
+describe('GroupSettingsScreen accessibility', () => {
+  it('labels the name input, not just its placeholder', async () => {
+    const { tree } = await renderSettings();
+    expect(nameInput(tree).props.accessibilityLabel).toBe('Group name');
+  });
+
+  it('labels every stepper with what it sets', async () => {
+    const { tree } = await renderSettings();
+    expect(stepperShowing(tree, '6 AM').props.accessibilityLabel).toBe('From');
+    expect(stepperShowing(tree, '10 PM').props.accessibilityLabel).toBe('Until');
+    expect(stepperShowing(tree, '5 min').props.accessibilityLabel).toBe('Call duration');
+
+    act(() => { tree.root.findByType(SegmentedControl).props.onChange('weekly'); });
+    expect(stepperShowing(tree, '1').props.accessibilityLabel).toBe('Calls per week');
+  });
+});
+
+// ─── Shared, not re-drawn ─────────────────────────────────────────────────────
+
+describe('GroupSettingsScreen composition', () => {
+  it('is built from the shared form shell and cadence fields', async () => {
+    const { tree } = await renderSettings();
+    expect(tree.root.findAllByType(FormScreen)).toHaveLength(1);
+    expect(tree.root.findAllByType(CadenceFields)).toHaveLength(1);
+    // The owner's duration ceiling ratchets: a group saved above the usual cap keeps it.
+    expect(tree.root.findByType(CadenceFields).props.durationCeiling).toBe(30);
+  });
+
+  it('keeps a group already saved above the usual duration cap at its true value', async () => {
+    const { tree } = await renderSettings({ group: { ...GROUP, call_duration_minutes: 45 } });
+    expect(tree.root.findByType(CadenceFields).props.durationCeiling).toBe(45);
   });
 });
 

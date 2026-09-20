@@ -143,6 +143,51 @@ describe('GET /groups/:id', () => {
 
     expect(res.status).toBe(404);
   });
+
+  // The invite preview hands the group id to anyone holding a code, so an id alone
+  // must not be enough to read a roster. 404, not 403 — a 403 would confirm the id
+  // belongs to a real group — and byte-for-byte what an unknown id gets.
+  it('returns 404 to a user who is not a member, indistinguishable from an unknown id', async () => {
+    const { token: ownerToken } = await createTestUserWithToken();
+    const { token: outsiderToken } = await createTestUserWithToken();
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'Private Group', cadence: 'daily', call_duration_minutes: 10 });
+
+    const asOutsider = await request(app)
+      .get(`/groups/${createRes.body.id}`)
+      .set('Authorization', `Bearer ${outsiderToken}`);
+    const unknownId = await request(app)
+      .get('/groups/00000000-0000-0000-0000-000000000000')
+      .set('Authorization', `Bearer ${outsiderToken}`);
+
+    expect(asOutsider.status).toBe(404);
+    expect(asOutsider.body).toEqual(unknownId.body);
+    // Nothing about the group or its members leaks in the body.
+    expect(JSON.stringify(asOutsider.body)).not.toMatch(/Private Group|username|time_zone/);
+  });
+
+  it('stops serving a user once they have been removed from the group', async () => {
+    const { token: ownerToken } = await createTestUserWithToken();
+    const { user: member, token: memberToken } = await createTestUserWithToken();
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'Leaving Group', cadence: 'daily', call_duration_minutes: 10 });
+    const membership = await prisma.groupMember.create({
+      data: { group_id: createRes.body.id, user_id: member.id, role: 'member' },
+    });
+
+    const before = await request(app).get(`/groups/${createRes.body.id}`).set('Authorization', `Bearer ${memberToken}`);
+    expect(before.status).toBe(200);
+
+    await prisma.groupMember.delete({ where: { id: membership.id } });
+    const after = await request(app).get(`/groups/${createRes.body.id}`).set('Authorization', `Bearer ${memberToken}`);
+    expect(after.status).toBe(404);
+  });
 });
 
 describe('DELETE /groups/:id', () => {

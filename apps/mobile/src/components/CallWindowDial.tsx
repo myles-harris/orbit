@@ -1,8 +1,17 @@
-import { useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef } from 'react';
 import { type GestureResponderEvent, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { useTheme } from '../context/ThemeContext';
-import { arcLength, arcRotation, dragHour, hourPoint, nearestHandle, touchHour, windowSpan } from '../utils/dialMath';
+import {
+  arcLength,
+  arcRotation,
+  hourPoint,
+  nearestHandle,
+  shortestDelta,
+  sweptHour,
+  touchHour,
+  windowSpan,
+} from '../utils/dialMath';
 import { MAX_WINDOW_HOUR, MIN_WINDOW_HOUR, windowEndMin, windowStartMax } from '../utils/groupFormat';
 
 interface CallWindowDialProps {
@@ -11,6 +20,13 @@ interface CallWindowDialProps {
   end: number;
   onChangeStart: (hour: number) => void;
   onChangeEnd: (hour: number) => void;
+  /**
+   * True from the moment a handle is picked up until the finger lets go. A screen
+   * holding this in a ScrollView should stop that ScrollView scrolling meanwhile:
+   * React Native only stops a parent taking over a touch on Android, and a ring
+   * always drags with a vertical component.
+   */
+  onDragChange?: (dragging: boolean) => void;
 }
 
 // Appendix B: a 60pt ring with an 8pt band, 12pt handles.
@@ -24,47 +40,91 @@ const HANDLE_RING = 2;
 const HIT_PAD = 8;
 const HIT_SIZE = SIZE + HIT_PAD * 2;
 const HIT_CENTER = HIT_SIZE / 2;
-// Inside the label there is no meaningful angle, and a tap on the number should
-// not fling a handle across the ring.
+// Inside the label there is no meaningful angle.
 const DEAD_ZONE = 6;
+// One touch event moving a quarter of the clock or more is the finger passing
+// through the centre, where the angle flips, not a drag.
+const MAX_STEP_HOURS = 6;
+
+interface Grab {
+  handle: 'start' | 'end';
+  /** The handle's hour when it was picked up. */
+  origin: number;
+  /** The touch's hour at the previous event. */
+  last: number;
+  /** Hours swept round the clock since pick-up, unwrapped. */
+  swept: number;
+}
 
 // A 24-hour clock face: midnight at 12 o'clock, hours clockwise. It is the same
 // state the From/Until steppers beside it own — dragging just sets it faster — so
 // the steppers stay as the accessible path and this is hidden from screen readers.
 //
+// Touching the ring picks up the nearer handle without moving it; the handle then
+// moves by the angle the finger sweeps. So a brush or a tap changes nothing, and
+// grabbing the ring far from a handle does not make the handle jump to the finger.
+//
 // The marigold arc is a stroked circle with a dash, not a conic gradient (React
 // Native has none). SVG strokes begin at 3 o'clock, hence the rotation.
-export function CallWindowDial({ start, end, onChangeStart, onChangeEnd }: CallWindowDialProps) {
+export function CallWindowDial({ start, end, onChangeStart, onChangeEnd, onDragChange }: CallWindowDialProps) {
   const { theme: { colors } } = useTheme();
 
   // The responder callbacks live as long as the view does, so they read the latest
   // props through a ref rather than closing over a render's worth of them.
-  const latest = useRef({ start, end, onChangeStart, onChangeEnd });
-  latest.current = { start, end, onChangeStart, onChangeEnd };
-  const picked = useRef<'start' | 'end' | null>(null);
+  const latest = useRef({ start, end, onChangeStart, onChangeEnd, onDragChange });
+  latest.current = { start, end, onChangeStart, onChangeEnd, onDragChange };
+  const grab = useRef<Grab | null>(null);
 
-  const touch = (event: GestureResponderEvent, pickHandle: boolean) => {
-    // locationX/Y are relative to the touched view. Everything inside is
-    // pointerEvents="none", so that is always the hit area itself.
+  // The fractional hour under a touch, or null in the centre. locationX/Y are
+  // relative to the touched view; everything inside is pointerEvents="none", so that
+  // is always the hit area itself.
+  const hourAt = (event: GestureResponderEvent): number | null => {
     const dx = event.nativeEvent.locationX - HIT_CENTER;
     const dy = event.nativeEvent.locationY - HIT_CENTER;
-    if (Math.hypot(dx, dy) < DEAD_ZONE) return;
+    return Math.hypot(dx, dy) < DEAD_ZONE ? null : touchHour(dx, dy);
+  };
 
-    const touched = touchHour(dx, dy);
+  // Returns whether the touch was taken. React Native blocks a parent ScrollView from
+  // stealing the touch only when the grant handler returns exactly `true`.
+  const pickUp = (event: GestureResponderEvent): boolean => {
+    const touched = hourAt(event);
+    if (touched === null) return false;
     const now = latest.current;
-    if (pickHandle) picked.current = nearestHandle(now.start, now.end, touched);
+    const handle = nearestHandle(now.start, now.end, touched);
+    grab.current = { handle, origin: handle === 'start' ? now.start : now.end, last: touched, swept: 0 };
+    now.onDragChange?.(true);
+    return true;
+  };
 
-    if (picked.current === 'start') {
-      // The steppers' guards, so a handle dragged past its partner stops beside it.
-      const next = dragHour(now.start, touched, MIN_WINDOW_HOUR, windowStartMax(now.end));
+  const follow = (event: GestureResponderEvent) => {
+    const g = grab.current;
+    const touched = hourAt(event);
+    if (!g || touched === null) return;
+
+    const step = shortestDelta(touched - g.last);
+    g.last = touched;
+    if (Math.abs(step) >= MAX_STEP_HOURS) return;
+    g.swept += step;
+
+    const now = latest.current;
+    if (g.handle === 'start') {
+      // The steppers' guards, so a handle swept past its partner stops beside it.
+      const next = sweptHour(g.origin, g.swept, MIN_WINDOW_HOUR, windowStartMax(now.end));
       if (next !== now.start) now.onChangeStart(next);
-    } else if (picked.current === 'end') {
-      const next = dragHour(now.end, touched, windowEndMin(now.start), MAX_WINDOW_HOUR);
+    } else {
+      const next = sweptHour(g.origin, g.swept, windowEndMin(now.start), MAX_WINDOW_HOUR);
       if (next !== now.end) now.onChangeEnd(next);
     }
   };
 
-  const release = () => { picked.current = null; };
+  const letGo = () => {
+    if (!grab.current) return;
+    grab.current = null;
+    latest.current.onDragChange?.(false);
+  };
+
+  // A dial unmounted mid-drag must not leave its screen locked.
+  useEffect(() => letGo, []);
 
   const styles = useMemo(() => makeStyles(colors), [colors]);
   const startPoint = hourPoint(start, SIZE / 2, SIZE / 2, RADIUS);
@@ -77,10 +137,10 @@ export function CallWindowDial({ start, end, onChangeStart, onChangeEnd }: CallW
       onMoveShouldSetResponder={() => true}
       // Inside a ScrollView: once the dial has the touch, the page must not take it back.
       onResponderTerminationRequest={() => false}
-      onResponderGrant={(e) => touch(e, true)}
-      onResponderMove={(e) => touch(e, false)}
-      onResponderRelease={release}
-      onResponderTerminate={release}
+      onResponderGrant={pickUp}
+      onResponderMove={follow}
+      onResponderRelease={letGo}
+      onResponderTerminate={letGo}
       accessibilityElementsHidden
       importantForAccessibility="no-hide-descendants"
     >
@@ -125,7 +185,11 @@ export function CallWindowDial({ start, end, onChangeStart, onChangeEnd }: CallW
 
 function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
   return StyleSheet.create({
-    // Negative margin: the layout still takes 60pt, the touch area 76.
+    // The layout still takes 60pt; the touch area is 76. The negative margin puts up to
+    // 8pt of that outside the parents' bounds, which is safe: React Native only refuses
+    // a touch outside a parent's bounds when that parent clips (overflow hidden/scroll,
+    // or clipChildren — see TouchTargetHelper.findTouchTargetView), and nothing above
+    // the dial does.
     hitArea: {
       width: HIT_SIZE,
       height: HIT_SIZE,

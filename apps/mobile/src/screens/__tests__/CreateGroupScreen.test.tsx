@@ -1,16 +1,20 @@
 import { act } from 'react';
-import { Alert, TextInput } from 'react-native';
-import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { Alert, ScrollView, TextInput } from 'react-native';
+import renderer, { type ReactTestRenderer } from 'react-test-renderer';
 import CreateGroupScreen from '../CreateGroupScreen';
 import GroupSettingsScreen from '../GroupSettingsScreen';
 import { useTheme } from '../../context/ThemeContext';
 import { BottomActionBar } from '../../components/BottomActionBar';
+import { CadenceFields } from '../../components/CadenceFields';
 import { CallWindowDial } from '../../components/CallWindowDial';
 import { CallWindowField } from '../../components/CallWindowField';
 import { FormHeader } from '../../components/FormHeader';
+import { FormScreen } from '../../components/FormScreen';
 import NumberPicker from '../../components/NumberPicker';
 import { SegmentedControl } from '../../components/SegmentedControl';
 import { createAuthenticatedApiClient } from '../../utils/apiClient';
+import { allText, stepperShowing } from '../../testUtils/tree';
+import { dragDial, hitAreaOf, path, touchAt } from '../../testUtils/dial';
 import { darkTheme, lightTheme } from '../../theme';
 
 const mockGoBack = jest.fn();
@@ -50,20 +54,9 @@ async function renderCreate(mode: Mode = 'dark') {
   return { tree, client };
 }
 
-const textOf = (node: ReactTestInstance | string): string =>
-  typeof node === 'string' ? node : node.children.map(textOf).join('');
-const allText = (tree: ReactTestRenderer): string[] =>
-  tree.root.findAll((n) => (n.type as unknown) === 'Text').map((n) => textOf(n));
 const bar = (tree: ReactTestRenderer) => tree.root.findByType(BottomActionBar).props;
 const typeName = (tree: ReactTestRenderer, value: string) =>
   act(() => { tree.root.findByType(TextInput).props.onChangeText(value); });
-const readoutOf = (p: ReactTestInstance): string =>
-  p.props.formatValue ? p.props.formatValue(p.props.value)
-    : p.props.suffix ? `${p.props.value} ${p.props.suffix}`
-    : String(p.props.value);
-const stepperShowing = (tree: ReactTestRenderer, readout: string) =>
-  tree.root.findAllByType(NumberPicker).find((p) => readoutOf(p) === readout)!;
-
 beforeEach(() => {
   jest.clearAllMocks();
   jest.spyOn(Alert, 'alert').mockImplementation(() => {});
@@ -112,6 +105,41 @@ describe('CreateGroupScreen layout', () => {
       .map((n) => JSON.stringify(n.props.style));
     expect(textColours.join('')).not.toContain(THEMES[mode].colors.accent);
     expect(json).toContain(THEMES[mode].colors.accent); // and it does appear as a fill
+  });
+});
+
+describe('CreateGroupScreen dial drag', () => {
+  it('stops the form scrolling while a handle is held, and frees it on release', async () => {
+    const { tree } = await renderCreate();
+    expect(tree.root.findByType(ScrollView).props.scrollEnabled).toBe(true);
+
+    act(() => { hitAreaOf(tree.root).props.onResponderGrant(touchAt(8)); });
+    expect(tree.root.findByType(ScrollView).props.scrollEnabled).toBe(false);
+
+    act(() => { hitAreaOf(tree.root).props.onResponderRelease(); });
+    expect(tree.root.findByType(ScrollView).props.scrollEnabled).toBe(true);
+  });
+
+  it('carries a dragged window into what it posts', async () => {
+    const { tree, client } = await renderCreate();
+    typeName(tree, 'Dawn Patrol');
+    dragDial(tree.root, path(7, 9)); // the start handle, two hours later: 6 AM -> 8 AM
+    await act(async () => { await bar(tree).onPress(); });
+
+    expect(client.post).toHaveBeenCalledWith('/groups', expect.objectContaining({
+      call_window_start: 8,
+      call_window_end: 22,
+    }));
+  });
+});
+
+describe('CreateGroupScreen accessibility', () => {
+  it('labels the name input and every stepper', async () => {
+    const { tree } = await renderCreate();
+    expect(tree.root.findByType(TextInput).props.accessibilityLabel).toBe('Group name');
+    expect(stepperShowing(tree, '6 AM').props.accessibilityLabel).toBe('From');
+    expect(stepperShowing(tree, '10 PM').props.accessibilityLabel).toBe('Until');
+    expect(stepperShowing(tree, '5 min').props.accessibilityLabel).toBe('Call duration');
   });
 });
 
@@ -176,6 +204,8 @@ describe('Create Group and Group Settings share their controls', () => {
   }
 
   it.each([
+    ['form shell', FormScreen],
+    ['cadence fields', CadenceFields],
     ['header', FormHeader],
     ['segmented cadence control', SegmentedControl],
     ['call-window block', CallWindowField],

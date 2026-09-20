@@ -5,39 +5,30 @@ import {
   TouchableOpacity,
   StyleSheet,
   Alert,
-  ScrollView,
   Share,
   ActionSheetIOS,
   Platform,
   ActivityIndicator,
-  KeyboardAvoidingView,
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import type { GroupDTO, GroupMember } from '@orbit/shared';
+import type { GroupDetailDTO } from '@orbit/shared';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { layout, radius, spacing } from '../theme';
 import { useTheme } from '../context/ThemeContext';
-import { BottomActionBar } from '../components/BottomActionBar';
+import { CadenceFields } from '../components/CadenceFields';
 import { CallWindowField, WindowPreview } from '../components/CallWindowField';
 import { Display } from '../components/Display';
 import { Field, TextField } from '../components/Field';
 import { FormHeader } from '../components/FormHeader';
+import { FormScreen } from '../components/FormScreen';
 import { Icon } from '../components/Icon';
-import NumberPicker from '../components/NumberPicker';
-import { SegmentedControl } from '../components/SegmentedControl';
 import { SettingRow } from '../components/SettingRow';
-import { CADENCE_OPTIONS, MIN_CALL_DURATION, formatHour, durationMax, cadenceSummary } from '../utils/groupFormat';
+import { formatHour, durationMax, cadenceSummary } from '../utils/groupFormat';
 
 type GroupSettingsRouteProp = RouteProp<RootStackParamList, 'GroupSettings'>;
 type GroupSettingsNavigationProp = StackNavigationProp<RootStackParamList, 'GroupSettings'>;
-
-// GET /groups/:id also sends each member's username and time_zone, which the
-// list-shaped `members` on GroupDTO doesn't declare.
-type GroupDetail = Omit<GroupDTO, 'members'> & {
-  members: Array<GroupMember & { username: string; time_zone: string }>;
-};
 
 const THUMB_SIZE = 88;
 const BADGE_SIZE = 32;
@@ -98,6 +89,8 @@ export default function GroupSettingsScreen() {
   const [savedWindowEnd, setSavedWindowEnd] = useState(22);
   const [groupTz, setGroupTz] = useState<string>('UTC');
   const [memberTimeZones, setMemberTimeZones] = useState<string[]>([]);
+  // True while a dial handle is held, so the form's ScrollView doesn't take the drag.
+  const [dialDragging, setDialDragging] = useState(false);
 
   const hasChanges =
     groupName !== savedName ||
@@ -107,17 +100,12 @@ export default function GroupSettingsScreen() {
     windowStart !== savedWindowStart ||
     windowEnd !== savedWindowEnd;
 
-  const handleCadenceChange = (value: 'daily' | 'weekly') => {
-    setCadence(value);
-    setFrequency(1);
-  };
-
   useEffect(() => { loadGroupSettings(); }, []);
 
   const loadGroupSettings = async () => {
     try {
       const client = await createAuthenticatedApiClient();
-      const group = await client.get<GroupDetail>(`/groups/${groupId}`);
+      const group = await client.get<GroupDetailDTO>(`/groups/${groupId}`);
       const loadedCadence = group.cadence;
       const loadedFrequency = loadedCadence === 'weekly'
         ? (group.weekly_frequency || 1)
@@ -211,7 +199,7 @@ export default function GroupSettingsScreen() {
   const transferOwnership = async () => {
     try {
       const client = await createAuthenticatedApiClient();
-      const group = await client.get<GroupDetail>(`/groups/${groupId}`);
+      const group = await client.get<GroupDetailDTO>(`/groups/${groupId}`);
       const members = group.members.filter((m) => m.user_id !== group.owner_id);
       if (members.length === 0) { Alert.alert('No Members', 'There are no other members to transfer ownership to'); return; }
       if (Platform.OS === 'ios') {
@@ -283,14 +271,14 @@ export default function GroupSettingsScreen() {
     ]);
   };
 
+  const goBack = () => navigation.goBack();
+
   // Drawn while loading too: the navigator no longer supplies a back button, and a
   // failed load leaves this spinner up.
-  const header = <FormHeader title="Group settings" onBack={() => navigation.goBack()} />;
-
   if (loading) {
     return (
       <View style={styles.flex}>
-        {header}
+        <FormHeader title="Group settings" onBack={goBack} />
         <View style={styles.centered}>
           <ActivityIndicator size="large" color={colors.textSecondary} />
         </View>
@@ -302,142 +290,111 @@ export default function GroupSettingsScreen() {
   const windowSummary = `${formatHour(savedWindowStart)} – ${formatHour(savedWindowEnd)}`;
 
   return (
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      {header}
-      <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <FormScreen
+      title="Group settings"
+      onBack={goBack}
+      action={{
+        label: 'Save changes',
+        onPress: saveSettings,
+        disabled: !hasChanges,
+        caption: hasChanges ? undefined : 'Nothing to save yet.',
+      }}
+      scrollEnabled={!dialDragging}
+    >
+      <GroupPhotoThumb name={groupName} editable={isOwner} styles={styles} />
 
-        <GroupPhotoThumb name={groupName} editable={isOwner} styles={styles} />
-
-        <TextField
-          label="Group name"
-          value={groupName}
-          onChangeText={setGroupName}
-          placeholder="Enter group name"
-          helper="All members can update the group name"
-        />
-
-        {!isOwner && (
-          <View>
-            <SettingRow label="Call frequency" variant={{ type: 'value', value: cadenceLabel }} />
-            <SettingRow label="Call duration" variant={{ type: 'value', value: `${savedCallDuration} min` }} />
-            <SettingRow label="Call window" variant={{ type: 'value', value: windowSummary }} last />
-            <WindowPreview start={savedWindowStart} end={savedWindowEnd} groupTz={groupTz} memberTimeZones={memberTimeZones} />
-            <Text style={styles.ownerOnlyNote}>Only the group owner can change these.</Text>
-          </View>
-        )}
-
-        {isOwner && (
-          <>
-            <View style={styles.block}>
-              <Field label="Call frequency" helper={cadence === 'daily' ? 'One call per day.' : undefined}>
-                <SegmentedControl options={CADENCE_OPTIONS} value={cadence} onChange={handleCadenceChange} />
-              </Field>
-              <View>
-                {cadence === 'weekly' && (
-                  <SettingRow
-                    label="Calls per week"
-                    variant={{
-                      type: 'control',
-                      control: <NumberPicker min={1} max={6} value={frequency} onChange={setFrequency} />,
-                    }}
-                  />
-                )}
-                <SettingRow
-                  label="Call duration"
-                  last
-                  variant={{
-                    type: 'control',
-                    control: (
-                      <NumberPicker
-                        min={MIN_CALL_DURATION}
-                        max={durationMax(savedCallDuration)}
-                        value={callDuration}
-                        onChange={setCallDuration}
-                        suffix="min"
-                        wide
-                      />
-                    ),
-                  }}
-                />
-              </View>
-            </View>
-
-            <CallWindowField
-              start={windowStart}
-              end={windowEnd}
-              onChangeStart={setWindowStart}
-              onChangeEnd={setWindowEnd}
-              groupTz={groupTz}
-              memberTimeZones={memberTimeZones}
-            />
-
-            <Field label="Invite link" helper="Anyone with the link can join this group. Links expire in 7 days.">
-              <TouchableOpacity
-                style={[styles.shareRow, sharingLink && styles.shareRowDisabled]}
-                onPress={shareInviteLink}
-                disabled={sharingLink}
-                activeOpacity={0.7}
-                accessibilityRole="button"
-              >
-                <Text style={styles.shareLabel}>Share invite link</Text>
-                {sharingLink
-                  ? <ActivityIndicator size="small" color={colors.textSecondary} />
-                  : <Icon name="share" size={20} color={colors.text} />}
-              </TouchableOpacity>
-            </Field>
-          </>
-        )}
-
-        <View>
-          <SettingRow
-            label="Mute notifications"
-            variant={{ type: 'toggle', value: isMuted, onToggle: toggleMute }}
-            last={!isOwner}
-          />
-          {isOwner && (
-            <SettingRow label="Transfer ownership" variant={{ type: 'chevron' }} onPress={transferOwnership} last />
-          )}
-        </View>
-
-        {/* The owner's Delete is the danger zone. A member has no such thing, only
-            a way out, so theirs is the same box without the heading. */}
-        <View style={styles.dangerBox}>
-          {isOwner && <Text style={styles.dangerHeading}>Danger zone</Text>}
-          {isOwner ? (
-            <SettingRow
-              label="Delete group"
-              danger
-              last
-              onPress={deleteGroup}
-              variant={{ type: 'control', control: <Icon name="trash" size={20} color={colors.danger} /> }}
-            />
-          ) : (
-            <SettingRow label="Leave group" danger last onPress={leaveGroup} variant={{ type: 'chevron' }} />
-          )}
-        </View>
-      </ScrollView>
-
-      <BottomActionBar
-        label="Save changes"
-        onPress={saveSettings}
-        disabled={!hasChanges}
-        caption={hasChanges ? undefined : 'Nothing to save yet.'}
+      <TextField
+        label="Group name"
+        value={groupName}
+        onChangeText={setGroupName}
+        placeholder="Enter group name"
+        helper="All members can update the group name"
       />
-    </KeyboardAvoidingView>
+
+      {!isOwner && (
+        <View>
+          <SettingRow label="Call frequency" variant={{ type: 'value', value: cadenceLabel }} />
+          <SettingRow label="Call duration" variant={{ type: 'value', value: `${savedCallDuration} min` }} />
+          <SettingRow label="Call window" variant={{ type: 'value', value: windowSummary }} last />
+          <WindowPreview start={savedWindowStart} end={savedWindowEnd} groupTz={groupTz} memberTimeZones={memberTimeZones} />
+          <Text style={styles.ownerOnlyNote}>Only the group owner can change these.</Text>
+        </View>
+      )}
+
+      {isOwner && (
+        <>
+          <CadenceFields
+            cadence={cadence}
+            onCadenceChange={setCadence}
+            frequency={frequency}
+            onFrequencyChange={setFrequency}
+            duration={callDuration}
+            onDurationChange={setCallDuration}
+            durationCeiling={durationMax(savedCallDuration)}
+          />
+
+          <CallWindowField
+            start={windowStart}
+            end={windowEnd}
+            onChangeStart={setWindowStart}
+            onChangeEnd={setWindowEnd}
+            onDragChange={setDialDragging}
+            groupTz={groupTz}
+            memberTimeZones={memberTimeZones}
+          />
+
+          <Field label="Invite link" helper="Anyone with the link can join this group. Links expire in 7 days.">
+            <TouchableOpacity
+              style={[styles.shareRow, sharingLink && styles.shareRowDisabled]}
+              onPress={shareInviteLink}
+              disabled={sharingLink}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              <Text style={styles.shareLabel}>Share invite link</Text>
+              {sharingLink
+                ? <ActivityIndicator size="small" color={colors.textSecondary} />
+                : <Icon name="share" size={20} color={colors.text} />}
+            </TouchableOpacity>
+          </Field>
+        </>
+      )}
+
+      <View>
+        <SettingRow
+          label="Mute notifications"
+          variant={{ type: 'toggle', value: isMuted, onToggle: toggleMute }}
+          last={!isOwner}
+        />
+        {isOwner && (
+          <SettingRow label="Transfer ownership" variant={{ type: 'chevron' }} onPress={transferOwnership} last />
+        )}
+      </View>
+
+      {/* The owner's Delete is the danger zone. A member has no such thing, only
+          a way out, so theirs is the same box without the heading. */}
+      <View style={styles.dangerBox}>
+        {isOwner && <Text style={styles.dangerHeading}>Danger zone</Text>}
+        {isOwner ? (
+          <SettingRow
+            label="Delete group"
+            danger
+            last
+            onPress={deleteGroup}
+            variant={{ type: 'control', control: <Icon name="trash" size={20} color={colors.danger} /> }}
+          />
+        ) : (
+          <SettingRow label="Leave group" danger last onPress={leaveGroup} variant={{ type: 'chevron' }} />
+        )}
+      </View>
+    </FormScreen>
   );
 }
 
 function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
   return StyleSheet.create({
     flex: { flex: 1, backgroundColor: colors.background },
-    container: { flex: 1 },
     centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-    content: {
-      paddingHorizontal: layout.screenPad,
-      paddingTop: spacing.xl,
-      paddingBottom: spacing.xl,
-      gap: spacing.xl,
-    },
 
     thumbWrap: { width: THUMB_SIZE, height: THUMB_SIZE },
     thumb: {
@@ -466,9 +423,6 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
       justifyContent: 'center',
     },
 
-    // The cadence control and the rows under it read as one group, tighter than
-    // the blocks around them.
-    block: { gap: spacing.sm },
     ownerOnlyNote: {
       fontFamily: 'Geist_400Regular',
       fontSize: 12.5,

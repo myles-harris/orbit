@@ -1,3 +1,5 @@
+import { withAlpha } from './utils/color';
+
 // ─── Static (no theme dependency) ────────────────────────────────────────────
 export const spacing = {
   xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, xxxl: 32,
@@ -102,11 +104,6 @@ export const liveGlow = {
 };
 
 // ─── Derived tokens ───────────────────────────────────────────────────────────
-
-// `#RRGGBB` at the given alpha, in React Native's 8-digit `#RRGGBBAA` form.
-function withAlpha(hex: string, alpha: number): string {
-  return `${hex}${Math.round(alpha * 255).toString(16).padStart(2, '0')}`;
-}
 
 function makeColors(p: Palette, isDark: boolean) {
   return {

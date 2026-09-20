@@ -1,3 +1,4 @@
+import { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { formatHour, MAX_WINDOW_HOUR, MIN_WINDOW_HOUR, windowEndMin, windowStartMax } from '../utils/groupFormat';
@@ -12,7 +13,7 @@ interface WindowInput {
   start: number;
   end: number;
   groupTz: string;
-  /** One entry per member; duplicates collapse. */
+  /** One entry per member; duplicates collapse. Pass a stable array — it keys the memo. */
   memberTimeZones?: string[];
 }
 
@@ -20,7 +21,12 @@ interface WindowInput {
 // edit the window but still wants to know what it is where they are.
 export function WindowPreview({ start, end, groupTz, memberTimeZones }: WindowInput) {
   const { theme: { colors } } = useTheme();
-  const lines = windowPreviewLines({ start, end, groupTz, memberTimeZones });
+  // Each zone line builds two Intl.DateTimeFormats, and a drag re-renders this once
+  // per hour step. Nothing in it changes between steps but `start` and `end`.
+  const lines = useMemo(
+    () => windowPreviewLines({ start, end, groupTz, memberTimeZones }),
+    [start, end, groupTz, memberTimeZones],
+  );
 
   return (
     <View style={styles.preview}>
@@ -34,18 +40,26 @@ export function WindowPreview({ start, end, groupTz, memberTimeZones }: WindowIn
 interface CallWindowFieldProps extends WindowInput {
   onChangeStart: (hour: number) => void;
   onChangeEnd: (hour: number) => void;
+  /** Passed to the dial: true while a handle is held. See CallWindowDial. */
+  onDragChange?: (dragging: boolean) => void;
 }
 
 // The whole call-window block — label, dial, From/Until steppers, and the zone
 // preview — so Group Settings and Create Group can't drift apart. The dial and the
 // steppers own the same two numbers; each is clamped by the other's hour.
-export function CallWindowField({ onChangeStart, onChangeEnd, ...windowInput }: CallWindowFieldProps) {
+export function CallWindowField({ onChangeStart, onChangeEnd, onDragChange, ...windowInput }: CallWindowFieldProps) {
   const { start, end } = windowInput;
 
   return (
     <Field label="Call window" helper="Calls are scheduled at a random time within this window, in the group's timezone.">
       <View style={styles.controls}>
-        <CallWindowDial start={start} end={end} onChangeStart={onChangeStart} onChangeEnd={onChangeEnd} />
+        <CallWindowDial
+          start={start}
+          end={end}
+          onChangeStart={onChangeStart}
+          onChangeEnd={onChangeEnd}
+          onDragChange={onDragChange}
+        />
         <View style={styles.steppers}>
           <SettingRow
             label="From"
@@ -53,6 +67,7 @@ export function CallWindowField({ onChangeStart, onChangeEnd, ...windowInput }: 
               type: 'control',
               control: (
                 <NumberPicker
+                  accessibilityLabel="From"
                   min={MIN_WINDOW_HOUR}
                   max={windowStartMax(end)}
                   value={start}
@@ -68,6 +83,7 @@ export function CallWindowField({ onChangeStart, onChangeEnd, ...windowInput }: 
               type: 'control',
               control: (
                 <NumberPicker
+                  accessibilityLabel="Until"
                   min={windowEndMin(start)}
                   max={MAX_WINDOW_HOUR}
                   value={end}

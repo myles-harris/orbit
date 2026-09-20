@@ -46,6 +46,9 @@ export function TextField({ label, helper, ...inputProps }: TextFieldProps) {
     <Field label={label} helper={helper}>
       <TextInput
         {...inputProps}
+        // The visible label is a sibling Text, so without this a screen reader
+        // announces the field by its placeholder, or by nothing once it has a value.
+        accessibilityLabel={label}
         placeholderTextColor={colors.textSecondary}
         style={[styles.input, inputStyle]}
       />

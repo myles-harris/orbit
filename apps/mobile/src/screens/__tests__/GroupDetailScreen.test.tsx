@@ -5,14 +5,19 @@ import GroupDetailScreen from '../GroupDetailScreen';
 import { useTheme } from '../../context/ThemeContext';
 import { BottomActionBar } from '../../components/BottomActionBar';
 import { createAuthenticatedApiClient } from '../../utils/apiClient';
+import { allText, textOf } from '../../testUtils/tree';
 import { darkTheme, lightTheme } from '../../theme';
 
 const mockGoBack = jest.fn();
 const mockNavigate = jest.fn();
+const mockReplace = jest.fn();
+let mockCanGoBack = true;
 let mockViewerTz = 'America/New_York';
 const mockNavigation = {
   goBack: mockGoBack,
   navigate: mockNavigate,
+  replace: mockReplace,
+  canGoBack: () => mockCanGoBack,
   addListener: jest.fn(() => jest.fn()),
 };
 
@@ -104,10 +109,6 @@ async function renderDetail(fixture: Fixture = {}, mode: Mode = 'dark') {
 
 // ─── Tree helpers ─────────────────────────────────────────────────────────────
 
-const textOf = (node: ReactTestInstance | string): string =>
-  typeof node === 'string' ? node : node.children.map(textOf).join('');
-const allText = (tree: ReactTestRenderer): string[] =>
-  tree.root.findAll((n) => (n.type as unknown) === 'Text').map((n) => textOf(n));
 const has = (tree: ReactTestRenderer, text: string) => allText(tree).includes(text);
 const bar = (tree: ReactTestRenderer) => tree.root.findByType(BottomActionBar).props;
 const press = (tree: ReactTestRenderer, label: string) =>
@@ -120,6 +121,7 @@ const isAncestorOfType = (node: ReactTestInstance, type: unknown): boolean => {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockCanGoBack = true;
   jest.spyOn(Alert, 'alert').mockImplementation(() => {});
 });
 
@@ -267,6 +269,17 @@ describe('GroupDetailScreen owner controls', () => {
     const { tree } = await renderDetail();
     await press(tree, 'Back');
     expect(mockGoBack).toHaveBeenCalled();
+    expect(mockReplace).not.toHaveBeenCalled();
+  });
+
+  // A cold orbit://group/:id link opens with this screen alone on the stack (the
+  // linking config has no initialRouteName), so goBack() would do nothing.
+  it('replaces itself with Home when nothing is beneath it, so Back is never dead', async () => {
+    mockCanGoBack = false;
+    const { tree } = await renderDetail();
+    await press(tree, 'Back');
+    expect(mockGoBack).not.toHaveBeenCalled();
+    expect(mockReplace).toHaveBeenCalledWith('Home');
   });
 });
 
@@ -304,6 +317,10 @@ describe('GroupDetailScreen when the group has not loaded', () => {
     expect(tree.root.findAllByType(BottomActionBar)).toHaveLength(0);
     await press(tree, 'Back');
     expect(mockGoBack).toHaveBeenCalled();
+
+    mockCanGoBack = false;
+    await press(tree, 'Back');
+    expect(mockReplace).toHaveBeenCalledWith('Home');
 
     client.get.mockClear();
     await act(async () => { await tree.root.findAll((n) => n.props.accessibilityRole === 'button' && textOf(n) === 'Retry')[0].props.onPress(); });

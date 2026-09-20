@@ -35,6 +35,17 @@ export type GroupDTO = {
     } | null;
     created_at: string;
 };
+/** What `GET /groups/:id` sends for each member — more than the list endpoint's `GroupMember`. */
+export type GroupMemberDetail = GroupMember & {
+    username: string;
+    time_zone: string;
+    has_avatar: boolean;
+    avatar_updated_at: string | null;
+};
+/** `GET /groups/:id`: the group, with each member's profile fields. Members only. */
+export type GroupDetailDTO = Omit<GroupDTO, 'members'> & {
+    members: GroupMemberDetail[];
+};
 export type CallSessionDTO = {
     id: string;
     group_id: string;

@@ -13,7 +13,7 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import * as Localization from 'expo-localization';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
-import { formatViewerWindow, parseApiError } from '@orbit/shared';
+import { formatViewerWindow, parseApiError, type GroupDetailDTO } from '@orbit/shared';
 import { cadenceSummary, formatHour } from '../utils/groupFormat';
 import { layout, onPhoto, spacing } from '../theme';
 import { useTheme } from '../context/ThemeContext';
@@ -40,8 +40,8 @@ export default function GroupDetailScreen() {
   const { theme: { colors } } = useTheme();
   const styles = useMemo(() => makeStyles(colors), [colors]);
 
-  const [group, setGroup] = useState<any>(null);
-  const [currentCall, setCurrentCall] = useState<any>(null);
+  const [group, setGroup] = useState<GroupDetailDTO | null>(null);
+  const [currentCall, setCurrentCall] = useState<{ id: string } | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -51,9 +51,9 @@ export default function GroupDetailScreen() {
       const client = await createAuthenticatedApiClient();
       const userInfo = await client.get<any>('/me');
       setCurrentUserId(userInfo.id);
-      const groupData = await client.get<any>(`/groups/${groupId}`);
+      const groupData = await client.get<GroupDetailDTO>(`/groups/${groupId}`);
       setGroup(groupData);
-      const callData = await client.get<{ current: any }>(`/groups/${groupId}/calls/current`);
+      const callData = await client.get<{ current: { id: string } | null }>(`/groups/${groupId}/calls/current`);
       setCurrentCall(callData.current);
     } catch (error) {
       console.error('Failed to load group:', error);
@@ -116,13 +116,17 @@ export default function GroupDetailScreen() {
 
   const isOwner = group?.owner_id === currentUserId;
 
+  // The linking config has no initialRouteName, so a cold orbit://group/:id link
+  // opens with this screen alone on the stack and goBack() would do nothing.
+  const goBack = () => (navigation.canGoBack() ? navigation.goBack() : navigation.replace('Home'));
+
   // No photo header yet, so no dark ground for a light status bar to sit on: the
   // app's own, theme-following bar stays. The way back has to be drawn here too,
   // since the navigator no longer supplies one.
   if (!group) {
     return (
       <View style={styles.container}>
-        <FormHeader onBack={() => navigation.goBack()} />
+        <FormHeader onBack={goBack} />
         <View style={styles.centered}>
           {loadError ? (
             <>
@@ -172,7 +176,7 @@ export default function GroupDetailScreen() {
         overScrollMode="never"
       >
         <GroupPhotoHeader
-          onBack={() => navigation.goBack()}
+          onBack={goBack}
           onSettings={() => navigation.navigate('GroupSettings', { groupId, isOwner })}
         />
 
@@ -223,7 +227,7 @@ export default function GroupDetailScreen() {
           nestedScrollEnabled
           showsVerticalScrollIndicator={false}
         >
-          {group.members.map((member: any, index: number) => {
+          {group.members.map((member, index) => {
             const isMemberOwner = member.role === 'owner';
             return (
               <View
@@ -233,8 +237,8 @@ export default function GroupDetailScreen() {
                 <UserAvatar
                   userId={member.user_id}
                   username={member.username}
-                  hasAvatar={member.has_avatar ?? false}
-                  avatarUpdatedAt={member.avatar_updated_at ?? null}
+                  hasAvatar={member.has_avatar}
+                  avatarUpdatedAt={member.avatar_updated_at}
                   size={MEMBER_AVATAR}
                   colors={colors}
                 />

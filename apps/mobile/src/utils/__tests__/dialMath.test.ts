@@ -1,11 +1,11 @@
 import {
   arcLength,
   arcRotation,
-  dragHour,
   hourAngle,
   hourPoint,
   nearestHandle,
   shortestDelta,
+  sweptHour,
   touchHour,
   windowSpan,
 } from '../dialMath';
@@ -84,29 +84,43 @@ describe('shortestDelta', () => {
   });
 });
 
-describe('dragHour', () => {
-  it('follows the finger and snaps to a whole hour', () => {
-    expect(dragHour(6, 8.4, 0, 21)).toBe(8);
-    expect(dragHour(6, 8.6, 0, 21)).toBe(9);
-    expect(dragHour(6, 3.2, 0, 21)).toBe(3);
+describe('sweptHour', () => {
+  it('moves the handle by the whole hours the finger has swept', () => {
+    expect(sweptHour(6, 2, 0, 21)).toBe(8);
+    expect(sweptHour(6, -3, 0, 21)).toBe(3);
   });
 
-  it('snaps to the guard rather than inverting when dragged past its partner', () => {
+  it('snaps to a whole hour', () => {
+    expect(sweptHour(6, 2.4, 0, 21)).toBe(8);
+    expect(sweptHour(6, 2.6, 0, 21)).toBe(9);
+  });
+
+  it('leaves a handle where it was for a sweep too small to reach the next hour', () => {
+    // A brush, not a drag: under half an hour (7.5°, about 3.4pt on the ring).
+    expect(sweptHour(6, 0.3, 0, 21)).toBe(6);
+    expect(sweptHour(6, -0.3, 0, 21)).toBe(6);
+  });
+
+  it('snaps to the guard rather than inverting when swept past the partner', () => {
     // Start handle at 5, end at 8: the start's ceiling is windowStartMax(8) = 7.
-    expect(dragHour(5, 9.2, 0, 7)).toBe(7);
+    expect(sweptHour(5, 6, 0, 7)).toBe(7);
     // End handle at 8, start at 5: the end's floor is windowEndMin(5) = 6.
-    expect(dragHour(8, 3.1, 6, 23)).toBe(6);
+    expect(sweptHour(8, -5, 6, 23)).toBe(6);
   });
 
-  it('does not jump the length of the ring when a handle crosses midnight', () => {
-    // Start handle resting at 0, finger slides a little past 12 o'clock to 23.4.
-    expect(dragHour(0, 23.4, 0, 21)).toBe(0);
-    // End handle resting at 23, finger slides a little past 12 o'clock to 0.4.
-    expect(dragHour(23, 0.4, 1, 23)).toBe(23);
+  it('crosses midnight by one hour, not the length of the ring', () => {
+    // Start handle resting at 0, finger sliding a little past 12 o'clock: swept -0.6, -1.
+    expect(sweptHour(0, -0.6, 0, 21)).toBe(0); // rounds to -1, clamped to 0
+    expect(sweptHour(0, -1, 0, 21)).toBe(0);
+    // End handle resting at 23, finger sliding a little past 12 o'clock the other way.
+    expect(sweptHour(23, 1, 1, 23)).toBe(23);
   });
 
-  it('leaves a handle alone when the finger is on it', () => {
-    expect(dragHour(6, 6.2, 0, 21)).toBe(6);
+  it('retraces exactly: overshoot the guard and come back, and the handle follows the finger', () => {
+    // The clamp is applied to origin + swept, not accumulated onto the clamped hour,
+    // so the extra sweep spent pressing against the guard is not "owed" on the way back.
+    const sweeps = [1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1];
+    expect(sweeps.map((swept) => sweptHour(5, swept, 0, 7))).toEqual([6, 7, 7, 7, 7, 7, 7, 7, 7, 7, 6]);
   });
 });
 

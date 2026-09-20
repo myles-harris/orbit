@@ -20,10 +20,12 @@ interface NumberPickerProps {
   formatValue?: (v: number) => string;
   /** The duration's "10 min" needs a wider readout than an hour or a count does. */
   wide?: boolean;
+  /** What this stepper sets — the visible label sits in a sibling Text, so a screen reader would otherwise hear only "6 AM, adjustable". */
+  accessibilityLabel?: string;
 }
 
 export default function NumberPicker({
-  min, max, value, onChange, suffix, formatValue, wide,
+  min, max, value, onChange, suffix, formatValue, wide, accessibilityLabel,
 }: NumberPickerProps) {
   const { theme: { colors } } = useTheme();
   const styles = useMemo(() => makeStyles(colors, !!wide), [colors, wide]);
@@ -91,6 +93,7 @@ export default function NumberPicker({
       style={styles.container}
       accessible
       accessibilityRole="adjustable"
+      accessibilityLabel={accessibilityLabel}
       accessibilityValue={{ text: label }}
       accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
       onAccessibilityAction={(e) => {
