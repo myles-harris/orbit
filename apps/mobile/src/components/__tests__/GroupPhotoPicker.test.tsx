@@ -172,6 +172,21 @@ describe('GroupPhotoPicker upload', () => {
     expect(allText(tree)).toEqual(['T']);
   });
 
+  // Nothing awaits the press handler, so a rejection here would be an unhandled promise
+  // and the owner would get no word that nothing happened.
+  it('says so, and stays usable, when the picker itself cannot be shown', async () => {
+    (ImagePicker.launchImageLibraryAsync as jest.Mock).mockRejectedValueOnce(new Error('picker unavailable'));
+    const { tree, client, onChange } = await render();
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await press(tree);
+
+    expect(Alert.alert).toHaveBeenCalledWith('Error', 'Friendly error message');
+    expect(client.uploadGroupPhoto).not.toHaveBeenCalled();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(button(tree).props.disabled).toBeFalsy();
+  });
+
   it('says so when the image cannot be re-encoded, without touching the server', async () => {
     pick();
     mockSaveAsync.mockResolvedValueOnce({ uri: 'file:///resized.jpg', base64: undefined });
@@ -197,6 +212,18 @@ describe('GroupPhotoPicker permissions', () => {
     await press(tree);
 
     expect(Alert.alert).toHaveBeenCalledWith('Permission Required', expect.stringContaining('group photo'));
+    expect(ImagePicker.launchImageLibraryAsync).not.toHaveBeenCalled();
+  });
+
+  it('says so, and does not open the picker, when the permission request itself fails', async () => {
+    Platform.OS = 'android';
+    (ImagePicker.requestMediaLibraryPermissionsAsync as jest.Mock).mockRejectedValueOnce(new Error('no permission service'));
+    const { tree } = await render();
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+
+    await press(tree);
+
+    expect(Alert.alert).toHaveBeenCalledWith('Error', 'Friendly error message');
     expect(ImagePicker.launchImageLibraryAsync).not.toHaveBeenCalled();
   });
 

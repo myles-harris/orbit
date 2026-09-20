@@ -509,6 +509,26 @@ describe('group photo', () => {
       expect(unversioned.headers['cache-control']).not.toContain('immutable');
     });
 
+    // A versioned URL is only content-addressed if its version is the photo's. A client
+    // working from a stale group payload asks for the photo it last saw and is served the
+    // current one, so pinning that response for a year would tie the wrong bytes to the URL.
+    it.each([
+      ['a version that is no longer current', (current: number) => `?v=${current - 1000}`],
+      ['a version that is not a number', () => '?v=garbage'],
+      ['a version given twice', (current: number) => `?v=${current}&v=${current}`],
+    ])('revalidates instead of pinning %s, and still serves the current photo', async (_label, query) => {
+      const { groupId, owner } = await groupWithPeople();
+      const upload = await putPhoto(groupId, owner.token, jpegOfSize(4096));
+      const current = new Date(upload.body.photo_updated_at).getTime();
+
+      const res = await getPhoto(groupId, owner.token, query(current));
+
+      expect(res.status).toBe(200);
+      expect(res.body.length).toBe(4096);
+      expect(res.headers['cache-control']).not.toContain('immutable');
+      expect(res.headers['cache-control']).toContain('max-age=60');
+    });
+
     it('404s when the group has no photo', async () => {
       const { groupId, owner } = await groupWithPeople();
       expect((await getPhoto(groupId, owner.token)).status).toBe(404);

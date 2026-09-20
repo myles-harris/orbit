@@ -45,32 +45,47 @@ export function GroupPhotoPicker({ groupId, name, editable, hasPhoto, photoUpdat
   const [localUri, setLocalUri] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const pickAndUpload = async () => {
-    // iOS: with allowsEditing: true, expo-image-picker uses UIImagePickerController, which
-    // has needed no photo-library authorization since iOS 11. Requesting it anyway calls
-    // PHPhotoLibrary.requestAuthorization(.readWrite) — which hard-crashes without
-    // NSPhotoLibraryUsageDescription and, with it, adds a prompt users can deny themselves
-    // out of a flow that would have worked. Android < 13 does need the storage permissions;
-    // Android 13+ resolves to an empty permission set.
-    if (Platform.OS === 'android') {
-      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (status !== 'granted') {
-        Alert.alert('Permission Required', 'Allow access to your photo library to set a group photo.');
-        return;
+  // The chosen picture, or null when the owner cancels, declines the permission, or the
+  // picker cannot be shown — the last two already reported. It has its own catch because
+  // nothing awaits the press handler: a rejection here would be an unhandled promise,
+  // and the owner would get no word that nothing happened.
+  const pickPhoto = async () => {
+    try {
+      // iOS: with allowsEditing: true, expo-image-picker uses UIImagePickerController, which
+      // has needed no photo-library authorization since iOS 11. Requesting it anyway calls
+      // PHPhotoLibrary.requestAuthorization(.readWrite) — which hard-crashes without
+      // NSPhotoLibraryUsageDescription and, with it, adds a prompt users can deny themselves
+      // out of a flow that would have worked. Android < 13 does need the storage permissions;
+      // Android 13+ resolves to an empty permission set.
+      if (Platform.OS === 'android') {
+        const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+        if (status !== 'granted') {
+          Alert.alert('Permission Required', 'Allow access to your photo library to set a group photo.');
+          return null;
+        }
       }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 1,     // no lossy pass here; the manipulator performs the single re-encode
+        base64: false,  // never base64-encode the full-resolution asset
+      });
+      if (result.canceled) return null;
+
+      const asset = result.assets[0];
+      return asset?.uri ? asset : null;
+    } catch (error) {
+      console.error('[group-photo-pick] failed:', error);
+      Alert.alert('Error', photoErrorMessage(error));
+      return null;
     }
+  };
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ['images'],
-      allowsEditing: true,
-      aspect: [1, 1],
-      quality: 1,     // no lossy pass here; the manipulator performs the single re-encode
-      base64: false,  // never base64-encode the full-resolution asset
-    });
-    if (result.canceled) return;
-
-    const asset = result.assets[0];
-    if (!asset?.uri) return;
+  const pickAndUpload = async () => {
+    const asset = await pickPhoto();
+    if (!asset) return;
 
     setBusy(true);
     try {

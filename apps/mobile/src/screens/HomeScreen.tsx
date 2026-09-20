@@ -104,18 +104,21 @@ export default function HomeScreen() {
     setLoadError(null);
     try {
       const client = await createAuthenticatedApiClient();
-      const [groupsRes, invitationsRes, meRes] = await Promise.all([
+      const [groupsRes, invitationsRes, meRes, calls] = await Promise.all([
         client.get<{ groups: GroupDTO[] }>('/groups'),
         client.getMyInvitations(),
         // Only the header avatar reads this — a failed /me must not blank the grid.
         client.get<UserDTO>('/me').catch(() => null),
+        // Asked for alongside the rest: Home draws nothing until the load is done, so a
+        // request that started afterwards would add a round trip to every load. A failed
+        // one is null, not "no calls" — it must not take down a card that is already up.
+        fetchLiveCalls().catch((): null => null),
       ]);
-      const calls = await fetchLiveCalls().catch((): LiveCall[] => []);
       if (seq !== loadSeq.current) return;
       setGroups(groupsRes.groups);
       setInvitations(invitationsRes.invitations);
       if (meRes) setMe(meRes);
-      setLiveCalls(calls);
+      if (calls) setLiveCalls(calls);
       setHasLoaded(true);
     } catch (error) {
       if (seq !== loadSeq.current) return;

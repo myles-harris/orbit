@@ -84,9 +84,11 @@ interface Fixture {
   invitations?: ReturnType<typeof invitation>[];
   liveCalls?: LiveCall[];
   failLoad?: boolean;
+  /** Only the live-calls request fails; the groups, invitations and profile load. */
+  failLiveCalls?: boolean;
 }
 
-function mockApi({ groups = [], invitations = [], liveCalls = [], failLoad = false }: Fixture) {
+function mockApi({ groups = [], invitations = [], liveCalls = [], failLoad = false, failLiveCalls = false }: Fixture) {
   const client = {
     get: jest.fn(async (path: string) => {
       if (failLoad) throw new Error('offline');
@@ -102,7 +104,8 @@ function mockApi({ groups = [], invitations = [], liveCalls = [], failLoad = fal
     post: jest.fn(),
   };
   (createAuthenticatedApiClient as jest.Mock).mockResolvedValue(client);
-  (fetchLiveCalls as jest.Mock).mockResolvedValue(liveCalls);
+  (fetchLiveCalls as jest.Mock).mockImplementation(() =>
+    failLiveCalls ? Promise.reject(new Error('offline')) : Promise.resolve(liveCalls));
   return client;
 }
 
@@ -1360,6 +1363,76 @@ describe('Home live-call polling', () => {
     mockIsFocused = false;
     await act(async () => { tree.update(<HomeScreen />); });
     await act(async () => { resolvePoll([call]); });
+
+    expect(hasText(tree, 'Join')).toBe(false);
+  });
+});
+
+// ─── The live calls ride along with the rest of a load ────────────────────────
+
+describe('Home live calls on load', () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const groups = [group({ id: 'a', name: 'Alpha' }), group({ id: 'b', name: 'Bravo' })];
+  const call: LiveCall = {
+    id: 'ca', group_id: 'a', call_type: 'scheduled', started_at: iso(T0 - 60_000),
+    ends_at: iso(T0 + 724_000), participant_count: 2,
+  };
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(T0);
+  });
+
+  // Home waits on all of a load before it draws anything, so a request that only starts
+  // once the others have finished puts a full round trip on every load and every focus.
+  it('asks for the live calls alongside the groups, not after them', async () => {
+    const { client } = await renderHome({ groups });
+    let releaseGroups!: () => void;
+    client.get.mockImplementation(async (path: string) => {
+      if (path === '/groups') {
+        await new Promise<void>((resolve) => { releaseGroups = resolve; });
+        return { groups };
+      }
+      if (path === '/me') return ME;
+      throw new Error(`unexpected GET ${path}`);
+    });
+    (fetchLiveCalls as jest.Mock).mockClear();
+
+    await act(async () => { mockListeners.focus(); });
+
+    // /groups is still open, and the live-call request is already out.
+    expect(fetchLiveCalls).toHaveBeenCalledTimes(1);
+    await act(async () => { releaseGroups(); });
+  });
+
+  // A request that fails is not a call that ended — the poll already treats it so.
+  it('keeps a live card that is already up when a reload cannot reach the live calls', async () => {
+    const { tree, client } = await renderHome({ groups, liveCalls: [call] });
+    expect(hasText(tree, 'Join')).toBe(true);
+
+    (fetchLiveCalls as jest.Mock).mockRejectedValue(new Error('offline'));
+    await act(async () => mockListeners.focus());
+    await flush();
+
+    expect(groupLoads(client)).toBe(2);
+    expect(hasText(tree, 'Join')).toBe(true);
+  });
+
+  it('still draws the groups, with no load error, when the first load cannot reach the live calls', async () => {
+    const { tree } = await renderHome({ groups, failLiveCalls: true });
+
+    expect(hasText(tree, 'Alpha')).toBe(true);
+    expect(hasText(tree, 'Bravo')).toBe(true);
+    expect(hasText(tree, "Couldn't load groups")).toBe(false);
+    expect(hasText(tree, 'Join')).toBe(false);
+  });
+
+  it('does take the card down when a reload says the call is over', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [call] });
+    expect(hasText(tree, 'Join')).toBe(true);
+
+    (fetchLiveCalls as jest.Mock).mockResolvedValue([]);
+    await act(async () => mockListeners.focus());
+    await flush();
 
     expect(hasText(tree, 'Join')).toBe(false);
   });

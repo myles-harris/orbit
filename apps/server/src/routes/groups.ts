@@ -358,7 +358,8 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
 // body, same 2 MB cap and magic-byte check, same metadata-first read with ETag/304.
 
 // A versioned URL (?v=<photo_updated_at ms>) is content-addressed: it changes whenever
-// the photo does, so it can be cached indefinitely. An unversioned one revalidates.
+// the photo does, so it can be cached indefinitely. One that is unversioned, or names a
+// version other than the current one, revalidates.
 const PHOTO_CACHE_IMMUTABLE = 'private, max-age=31536000, immutable';
 const PHOTO_CACHE_REVALIDATE = 'private, max-age=60';
 
@@ -441,9 +442,13 @@ groupsRouter.get('/:id/photo', requireJwt, async (req, res) => {
     });
     if (!meta?.photo_updated_at) return res.status(404).end();
 
-    const etag = `"${meta.photo_updated_at.getTime()}"`;
+    const version = meta.photo_updated_at.getTime();
+    const etag = `"${version}"`;
     res.setHeader('ETag', etag);
-    res.setHeader('Cache-Control', req.query.v ? PHOTO_CACHE_IMMUTABLE : PHOTO_CACHE_REVALIDATE);
+    // Immutable only for the version the URL names. `?v=` is the client's claim about
+    // which photo it wants; when it is stale the bytes served are a different photo, and
+    // a year-long cache would pin them to a URL that says otherwise.
+    res.setHeader('Cache-Control', String(req.query.v) === String(version) ? PHOTO_CACHE_IMMUTABLE : PHOTO_CACHE_REVALIDATE);
 
     if (req.headers['if-none-match'] === etag) return res.status(304).end();
 

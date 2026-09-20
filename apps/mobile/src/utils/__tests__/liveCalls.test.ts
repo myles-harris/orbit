@@ -19,7 +19,7 @@ const spontaneous = (id: string, over: Partial<LiveCall> = {}) =>
   call({ id, call_type: 'spontaneous', ends_at: null, ...over });
 
 // Only scheduled calls count down. This is the rule every live surface asks — Home's
-// card now, the Spotlight overlay in PR 6 — so it is pinned here, once.
+// card now, the Spotlight overlay once it exists — so it is pinned here, once.
 describe('hasCountdown', () => {
   it('is true for a scheduled call with an end time', () => {
     expect(hasCountdown(scheduled('c'))).toBe(true);

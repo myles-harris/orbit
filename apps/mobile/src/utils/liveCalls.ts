@@ -22,7 +22,7 @@ export interface LiveCall {
  * Whether a live call shows a countdown: scheduled calls only. A spontaneous call
  * has nothing to count down to, and a countdown on it would be a lie. Every live
  * surface asks here rather than testing `ends_at` itself — Home's card today, and
- * the Spotlight overlay when PR 6 builds it.
+ * the Spotlight overlay once it exists.
  *
  * A scheduled call that somehow arrives without an `ends_at` degrades to "no
  * countdown" rather than being dropped.
