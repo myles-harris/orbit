@@ -1,4 +1,6 @@
-import { fetchLiveCalls, hasCountdown, isLive, pickHeroCall, type LiveCall } from '../liveCalls';
+import {
+  fetchLiveCalls, formatCallTimer, hasCountdown, isLive, isMissingEndTime, pickHeroCall, type LiveCall,
+} from '../liveCalls';
 import { createAuthenticatedApiClient } from '../apiClient';
 
 jest.mock('../apiClient', () => ({ createAuthenticatedApiClient: jest.fn() }));
@@ -19,7 +21,55 @@ const spontaneous = (id: string, over: Partial<LiveCall> = {}) =>
   call({ id, call_type: 'spontaneous', ends_at: null, ...over });
 
 // Only scheduled calls count down. This is the rule every live surface asks — Home's
-// card now, the Spotlight overlay once it exists — so it is pinned here, once.
+// card and the Spotlight overlay — so it is pinned here, once.
+// T18 — the timer branch. One function picks the direction for every live surface, so
+// it is pinned here, once, as pure strings.
+describe('formatCallTimer (T18)', () => {
+  const sched = (over: Partial<LiveCall> = {}) =>
+    scheduled('s', { started_at: '2026-09-19T11:58:00Z', ends_at: '2026-09-19T12:15:00Z', ...over });
+  const spont = (over: Partial<LiveCall> = {}) =>
+    spontaneous('p', { started_at: '2026-09-19T11:58:00Z', ...over });
+
+  it('counts DOWN for a scheduled call with a future ends_at: the string decreases', () => {
+    const at = (secs: number) => formatCallTimer(sched(), T0 + secs * 1000);
+    expect(at(0)).toBe('15:00');
+    expect(at(1)).toBe('14:59');
+    expect(at(60)).toBe('14:00');
+  });
+
+  it('counts UP for a spontaneous call with a past started_at: the string increases', () => {
+    const at = (secs: number) => formatCallTimer(spont(), T0 + secs * 1000);
+    expect(at(0)).toBe('2:00');
+    expect(at(1)).toBe('2:01');
+    expect(at(60)).toBe('3:00');
+  });
+
+  it('falls back to elapsed for a scheduled call with a null ends_at — never NaN', () => {
+    const faulty = sched({ ends_at: null });
+    expect(formatCallTimer(faulty, T0)).toBe('2:00');
+    expect(formatCallTimer(faulty, T0 + 1000)).toBe('2:01');
+    expect(formatCallTimer(faulty, T0)).not.toMatch(/NaN/);
+  });
+
+  it('is decided by call_type, so an ends_at on a spontaneous call does not bring the countdown back', () => {
+    const odd = spont({ ends_at: '2026-09-19T12:15:00Z' });
+    expect(formatCallTimer(odd, T0)).toBe('2:00');
+  });
+
+  it('never reads NaN even from unparseable timestamps', () => {
+    expect(formatCallTimer(spont({ started_at: 'garbage' }), T0)).toBe('0:00');
+    expect(formatCallTimer(sched({ ends_at: 'garbage' }), T0)).toBe('0:00');
+  });
+});
+
+describe('isMissingEndTime', () => {
+  it('flags only a scheduled call with no end time — the data fault', () => {
+    expect(isMissingEndTime(scheduled('c', { ends_at: null }))).toBe(true);
+    expect(isMissingEndTime(scheduled('c'))).toBe(false);
+    expect(isMissingEndTime(spontaneous('c'))).toBe(false); // null is normal here
+  });
+});
+
 describe('hasCountdown', () => {
   it('is true for a scheduled call with an end time', () => {
     expect(hasCountdown(scheduled('c'))).toBe(true);

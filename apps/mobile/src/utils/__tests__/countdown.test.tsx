@@ -1,8 +1,9 @@
 import { act } from 'react';
 import { AppState, Text } from 'react-native';
 import renderer, { type ReactTestRenderer } from 'react-test-renderer';
-import { formatCountdown, secondsRemaining, useClockAt, useNow } from '../countdown';
-import { Countdown } from '../../components/Countdown';
+import { formatCountdown, formatElapsed, secondsElapsed, secondsRemaining, useClockAt, useNow } from '../countdown';
+import { CallTimer } from '../../components/CallTimer';
+import type { LiveCall } from '../liveCalls';
 
 const T0 = Date.parse('2026-09-19T12:00:00.000Z');
 const ENDS_AT = '2026-09-19T12:15:00.000Z'; // fifteen minutes after T0
@@ -371,9 +372,46 @@ describe('useClockAt', () => {
   });
 });
 
-// ─── Countdown ────────────────────────────────────────────────────────────────
+// ─── Count-up ─────────────────────────────────────────────────────────────────
 
-describe('Countdown', () => {
+const STARTED_AT = '2026-09-19T11:58:00.000Z'; // two minutes before T0
+
+// T18 — the elapsed time is a pure function of `now`, the mirror of the countdown.
+describe('formatElapsed (T18)', () => {
+  it('is a pure function of now: same inputs, same string', () => {
+    expect(formatElapsed(STARTED_AT, T0)).toBe('2:00');
+    expect(formatElapsed(STARTED_AT, T0 + 1000)).toBe('2:01');
+    expect(formatElapsed(STARTED_AT, T0)).toBe('2:00');
+  });
+
+  it('rounds partial seconds down, so 0:00 holds until a full second has passed', () => {
+    const start = T0;
+    expect(formatElapsed(start, start)).toBe('0:00');
+    expect(formatElapsed(start, start + 999)).toBe('0:00');
+    expect(formatElapsed(start, start + 1000)).toBe('0:01');
+  });
+
+  it('never goes negative when the device clock is behind the server, and never reads NaN', () => {
+    expect(secondsElapsed(T0 + 5000, T0)).toBe(0);
+    expect(formatElapsed(T0 + 5000, T0)).toBe('0:00');
+    expect(secondsElapsed('not a date', T0)).toBe(0);
+    expect(formatElapsed('not a date', T0)).toBe('0:00');
+  });
+
+  it('shares the countdown\'s shape, including past the hour', () => {
+    expect(formatElapsed(T0 - 125_000, T0)).toBe('2:05');
+    expect(formatElapsed(T0 - 3_723_000, T0)).toBe('1:02:03');
+  });
+
+  it('crosses 9:59 → 10:00 as one more digit, with nothing else changing', () => {
+    expect(formatElapsed(T0 - 599_000, T0)).toBe('9:59');
+    expect(formatElapsed(T0 - 600_000, T0)).toBe('10:00');
+  });
+});
+
+// ─── CallTimer ────────────────────────────────────────────────────────────────
+
+describe('CallTimer', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     jest.setSystemTime(T0);
@@ -387,6 +425,18 @@ describe('Countdown', () => {
     jest.restoreAllMocks();
   });
 
+  const call = (over: Partial<LiveCall> = {}): LiveCall => ({
+    id: 'c1',
+    group_id: 'g1',
+    call_type: 'scheduled',
+    started_at: new Date(T0 - 60_000).toISOString(),
+    ends_at: ENDS_AT,
+    participant_count: 2,
+    ...over,
+  });
+  const spontaneous = (over: Partial<LiveCall> = {}) =>
+    call({ call_type: 'spontaneous', ends_at: null, started_at: STARTED_AT, ...over });
+
   async function mount(element: React.ReactElement): Promise<ReactTestRenderer> {
     let tree!: ReactTestRenderer;
     await act(async () => {
@@ -398,7 +448,7 @@ describe('Countdown', () => {
   const text = (tree: ReactTestRenderer) => ((tree.toJSON() as { children: string[] }).children ?? []).join('');
 
   it('renders the formatted countdown and ticks on its own', async () => {
-    const tree = await mount(<Text><Countdown endsAt={ENDS_AT} active /></Text>);
+    const tree = await mount(<Text><CallTimer call={call()} active /></Text>);
     expect(text(tree)).toBe('15:00');
 
     await act(async () => { jest.advanceTimersByTime(3000); });
@@ -409,7 +459,7 @@ describe('Countdown', () => {
     let parentRenders = 0;
     function Parent() {
       parentRenders += 1;
-      return <Text><Countdown endsAt={ENDS_AT} active /></Text>;
+      return <Text><CallTimer call={call()} active /></Text>;
     }
     const tree = await mount(<Parent />);
     const settled = parentRenders;
@@ -422,17 +472,85 @@ describe('Countdown', () => {
 
   it('runs no clock while inactive', async () => {
     const started = jest.spyOn(globalThis, 'setInterval');
-    await mount(<Text><Countdown endsAt={ENDS_AT} active={false} /></Text>);
+    await mount(<Text><CallTimer call={call()} active={false} /></Text>);
     expect(started.mock.calls.filter(([, ms]) => ms === 1000)).toHaveLength(0);
   });
 
   it('stops at the end and reads 0:00', async () => {
     const soon = new Date(T0 + 2000).toISOString();
-    const tree = await mount(<Text><Countdown endsAt={soon} active /></Text>);
+    const tree = await mount(<Text><CallTimer call={call({ ends_at: soon })} active /></Text>);
 
     await act(async () => { jest.advanceTimersByTime(2000); });
     expect(text(tree)).toBe('0:00');
     await act(async () => { jest.advanceTimersByTime(10_000); });
     expect(text(tree)).toBe('0:00');
+  });
+
+  // T18 — the timer branch, at the component: the direction follows `call_type`.
+  describe('direction (T18)', () => {
+    it('counts UP from started_at for a spontaneous call, on its own clock', async () => {
+      const tree = await mount(<Text><CallTimer call={spontaneous()} active /></Text>);
+      expect(text(tree)).toBe('2:00');
+
+      await act(async () => { jest.advanceTimersByTime(3000); });
+      expect(text(tree)).toBe('2:03');
+    });
+
+    it('never stops counting up, however long the call has run', async () => {
+      const tree = await mount(<Text><CallTimer call={spontaneous()} active /></Text>);
+
+      await act(async () => { jest.advanceTimersByTime(3_600_000); });
+      expect(text(tree)).toBe('1:02:00');
+    });
+
+    it('crosses 9:59 → 10:00 counting up without a stray character', async () => {
+      const call9 = spontaneous({ started_at: new Date(T0 - 597_000).toISOString() }); // 9:57 in
+      const tree = await mount(<Text><CallTimer call={call9} active /></Text>);
+      const seen = [text(tree)];
+      for (let i = 0; i < 4; i++) {
+        await act(async () => { jest.advanceTimersByTime(1000); });
+        seen.push(text(tree));
+      }
+      expect(seen).toEqual(['9:57', '9:58', '9:59', '10:00', '10:01']);
+    });
+
+    it('crosses 10:00 → 9:59 counting down the same way', async () => {
+      const end = new Date(T0 + 602_000).toISOString(); // 10:02 left
+      const tree = await mount(<Text><CallTimer call={call({ ends_at: end })} active /></Text>);
+      const seen = [text(tree)];
+      for (let i = 0; i < 4; i++) {
+        await act(async () => { jest.advanceTimersByTime(1000); });
+        seen.push(text(tree));
+      }
+      expect(seen).toEqual(['10:02', '10:01', '10:00', '9:59', '9:58']);
+    });
+
+    it('falls back to elapsed for a scheduled call with no ends_at — never NaN — and logs the fault once', async () => {
+      const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+      const faulty = call({ ends_at: null, started_at: STARTED_AT });
+      const tree = await mount(<Text><CallTimer call={faulty} active /></Text>);
+
+      expect(text(tree)).toBe('2:00');
+      await act(async () => { jest.advanceTimersByTime(5000); });
+      expect(text(tree)).toBe('2:05');
+      expect(text(tree)).not.toMatch(/NaN/);
+
+      // Once for the call, not once a second.
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error.mock.calls[0].join(' ')).toContain('c1');
+    });
+
+    it('logs nothing for a well-formed call of either type', async () => {
+      const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+      await mount(<Text><CallTimer call={call()} active /></Text>);
+      await mount(<Text><CallTimer call={spontaneous()} active /></Text>);
+      expect(error).not.toHaveBeenCalled();
+    });
+
+    it('runs no clock while inactive, in either direction', async () => {
+      const started = jest.spyOn(globalThis, 'setInterval');
+      await mount(<Text><CallTimer call={spontaneous()} active={false} /></Text>);
+      expect(started.mock.calls.filter(([, ms]) => ms === 1000)).toHaveLength(0);
+    });
   });
 });

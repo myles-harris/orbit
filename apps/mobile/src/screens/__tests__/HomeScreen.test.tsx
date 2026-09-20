@@ -1,13 +1,16 @@
 import { act } from 'react';
 import { Alert, RefreshControl, StyleSheet, TextInput } from 'react-native';
 import renderer, { type ReactTestInstance, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { GroupDTO } from '@orbit/shared';
 import HomeScreen from '../HomeScreen';
 import { useTheme } from '../../context/ThemeContext';
 import { GroupTile } from '../../components/GroupTile';
+import { Icon } from '../../components/Icon';
 import { createAuthenticatedApiClient } from '../../utils/apiClient';
 import { fetchLiveCalls, type LiveCall } from '../../utils/liveCalls';
-import { darkTheme, lightTheme } from '../../theme';
+import { HOME_CACHE_KEY, type HomeSnapshot } from '../../utils/homeCache';
+import { darkTheme, lightTheme, radius } from '../../theme';
 
 const mockNavigate = jest.fn();
 // The screen's own listeners, so a test can fire 'focus' the way React Navigation does.
@@ -23,6 +26,8 @@ const mockNavigation = {
 };
 let mockIsFocused = true;
 
+jest.mock('@react-native-async-storage/async-storage', () =>
+  require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
 jest.mock('../../context/ThemeContext', () => ({ useTheme: jest.fn() }));
 jest.mock('../../utils/apiClient', () => ({
   createAuthenticatedApiClient: jest.fn(),
@@ -35,6 +40,23 @@ jest.mock('../../utils/liveCalls', () => ({
   fetchLiveCalls: jest.fn(),
 }));
 jest.mock('@orbit/shared', () => ({ parseApiError: () => 'Friendly error message' }));
+// The overlay's own drawing is tested with the real component in CallSpotlight.test.tsx.
+// Here it is a marker that records the props Home gave it, so these tests stay about
+// Home's decisions (when it goes up, and what Dismiss and Join do) and the grid tests
+// are not doubled up by a second copy of the title and a second 1s clock.
+let mockSpotlightProps: {
+  call: LiveCall;
+  group: GroupDTO;
+  active: boolean;
+  onJoin: () => void;
+  onDismiss: () => void;
+} | null = null;
+jest.mock('../../components/CallSpotlight', () => ({
+  CallSpotlight: (props: NonNullable<typeof mockSpotlightProps>) => {
+    mockSpotlightProps = props;
+    return require('react').createElement('View', { testID: 'call-spotlight' });
+  },
+}));
 jest.mock('../../components/GroupTile', () => {
   const actual = jest.requireActual('../../components/GroupTile');
   // A pass-through spy. Tiles re-render whenever the screen does, so counting their
@@ -188,6 +210,11 @@ function marigoldNodes(tree: ReactTestRenderer, mode: Mode) {
     (n) => typeof n.type === 'string' && Object.values(flat(n.props.style)).some((v) => ours.has(v as string)),
   );
 }
+
+beforeEach(async () => {
+  await AsyncStorage.clear();
+  mockSpotlightProps = null;
+});
 
 afterEach(() => {
   mounted.forEach((t) => act(() => t.unmount()));
@@ -774,6 +801,9 @@ describe('Home loading', () => {
 
   it('says the load failed — not "No all groups" — for a user whose only content is an invitation', async () => {
     const { tree, client } = await renderHome({ invitations: [invitation('i1', 'Book Club')] });
+    // The first load saved a copy, and a failed reload would now draw it. This is the
+    // no-copy case — the error state — so take the copy away first.
+    await AsyncStorage.clear();
     client.get.mockRejectedValue(new Error('offline'));
 
     await act(async () => tree.root.findByType(RefreshControl).props.onRefresh());
@@ -788,6 +818,8 @@ describe('Home loading', () => {
     await press(tree, 'Weekly');
     expect(hasText(tree, 'No weekly groups')).toBe(true);
 
+    // As above: with a saved copy the reload would draw it; this is the no-copy case.
+    await AsyncStorage.clear();
     client.get.mockRejectedValue(new Error('offline'));
     await act(async () => tree.root.findByType(RefreshControl).props.onRefresh());
     await flush();
@@ -1456,5 +1488,509 @@ describe('Home tile photos', () => {
       (GroupTile as jest.Mock).mock.calls.map(([props]) => props).find((p) => p.name === name);
     expect(propsFor('Alpha')).toMatchObject({ groupId: 'a', hasPhoto: true, photoUpdatedAt: STAMP });
     expect(propsFor('Bravo')).toMatchObject({ groupId: 'b', hasPhoto: false, photoUpdatedAt: null });
+  });
+});
+
+
+// ─── Offline: the saved copy (T17) ────────────────────────────────────────────
+
+// Local time on purpose: the copy is shown in the device's own clock, so a fixed local
+// hour reads the same wherever the suite runs.
+const SAVED_AT = new Date(2026, 8, 19, 9, 41).getTime();
+const LATER_TODAY = new Date(2026, 8, 19, 14, 5).getTime();
+
+const seedCache = (snapshot: Partial<HomeSnapshot> = {}) =>
+  AsyncStorage.setItem(
+    HOME_CACHE_KEY,
+    JSON.stringify({
+      groups: [group({ id: 'a', name: 'Alpha' }), group({ id: 'b', name: 'Bravo' })],
+      invitations: [],
+      fetchedAt: SAVED_AT,
+      ...snapshot,
+    }),
+  );
+const readCache = async () => JSON.parse((await AsyncStorage.getItem(HOME_CACHE_KEY)) ?? 'null');
+const tiles = (tree: ReactTestRenderer) => tree.root.findAllByType(GroupTile);
+const savedLine = (tree: ReactTestRenderer) => allText(tree).find((t) => t.startsWith('Showing groups saved at'));
+
+describe('Home offline cache (T17)', () => {
+  const alpha = group({ id: 'a', name: 'Alpha' });
+  const bravo = group({ id: 'b', name: 'Bravo' });
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(LATER_TODAY);
+  });
+
+  it('writes { groups, invitations, fetchedAt } under orbit.cache.groups on every successful load', async () => {
+    const invitations = [invitation('i1', 'Book Club')];
+    await renderHome({ groups: [alpha, bravo], invitations });
+
+    expect(HOME_CACHE_KEY).toBe('orbit.cache.groups');
+    expect(await readCache()).toEqual({ groups: [alpha, bravo], invitations, fetchedAt: LATER_TODAY });
+  });
+
+  it('rewrites it on the next successful load, so the copy is always the latest good one', async () => {
+    const { client } = await renderHome({ groups: [alpha] });
+    expect((await readCache()).groups).toHaveLength(1);
+
+    client.get.mockImplementation(async (path: string) => (path === '/groups' ? { groups: [alpha, bravo] } : ME));
+    await act(async () => { mockListeners.focus(); });
+    await flush();
+
+    expect((await readCache()).groups.map((g: GroupDTO) => g.id)).toEqual(['a', 'b']);
+  });
+
+  it('draws the saved copy when a load fails, and says when it was saved', async () => {
+    await seedCache();
+    const { tree } = await renderHome({ failLoad: true });
+
+    expect(tiles(tree).map((t) => t.props.name)).toEqual(['Alpha', 'Bravo']);
+    expect(hasText(tree, 'No connection')).toBe(true);
+    expect(savedLine(tree)).toMatch(/^Showing groups saved at .*9:41/); // a real time, not a placeholder
+    expect(hasText(tree, "Couldn't load groups")).toBe(false); // the banner replaces the error line
+  });
+
+  it('carries the saved invitations too', async () => {
+    await seedCache({ invitations: [invitation('i1', 'Book Club')] as HomeSnapshot['invitations'] });
+    const { tree } = await renderHome({ failLoad: true });
+
+    await press(tree, 'Invited');
+    expect(hasText(tree, 'Book Club')).toBe(true);
+  });
+
+  it('puts the date on a copy that is not from today, where a bare time would mislead', async () => {
+    await seedCache({ fetchedAt: new Date(2026, 8, 17, 9, 41).getTime() });
+    const { tree } = await renderHome({ failLoad: true });
+
+    expect(savedLine(tree)).toMatch(/Sep 17.*9:41/);
+  });
+
+  it('is the error state, not an empty grid, on a cold install with nothing saved', async () => {
+    const { tree } = await renderHome({ failLoad: true });
+
+    expect(hasText(tree, "Couldn't load groups")).toBe(true);
+    expect(hasText(tree, 'No connection')).toBe(false); // no banner: there is no copy to be honest about
+    expect(hasText(tree, 'No groups yet')).toBe(false);
+    expect(tiles(tree)).toHaveLength(0);
+  });
+
+  it.each([
+    ['unparseable', '{not json'],
+    ['the wrong shape', JSON.stringify({ groups: 'nope', invitations: [], fetchedAt: 1 })],
+    ['a group with no name', JSON.stringify({ groups: [{ id: 'a' }], invitations: [], fetchedAt: 1 })],
+    ['no timestamp', JSON.stringify({ groups: [], invitations: [] })],
+  ])('treats a saved copy that is %s as no copy at all', async (_label, raw) => {
+    await AsyncStorage.setItem(HOME_CACHE_KEY, raw);
+    const { tree } = await renderHome({ failLoad: true });
+
+    expect(hasText(tree, "Couldn't load groups")).toBe(true);
+    expect(hasText(tree, 'No connection')).toBe(false);
+  });
+
+  it('restores the normal render on Retry: banner gone, grid undimmed, New group live', async () => {
+    await seedCache();
+    const { tree } = await renderHome({ failLoad: true });
+    expect(hasText(tree, 'No connection')).toBe(true);
+
+    mockApi({ groups: [alpha, bravo, group({ id: 'c', name: 'Charlie' })] }); // the connection is back
+    await press(tree, 'Retry');
+
+    expect(hasText(tree, 'No connection')).toBe(false);
+    expect(tiles(tree).map((t) => t.props.name)).toEqual(['Alpha', 'Bravo', 'Charlie']); // fresh, not saved
+    expect(tree.root.findAll((n) => isHost(n, 'View') && flat(n.props.style).opacity === 0.72)).toHaveLength(0);
+    expect(pressable(tree, 'New group').props.disabled).toBeFalsy();
+    expect((await readCache()).groups).toHaveLength(3); // and the copy moved forward
+  });
+
+  it('keeps the banner up when Retry fails too, rather than flashing the error state', async () => {
+    await seedCache();
+    const { tree } = await renderHome({ failLoad: true });
+
+    await press(tree, 'Retry');
+
+    expect(hasText(tree, 'No connection')).toBe(true);
+    expect(hasText(tree, "Couldn't load groups")).toBe(false);
+    expect(tiles(tree)).toHaveLength(2);
+  });
+
+  it('holds Retry inert while a retry is in flight, instead of queueing another', async () => {
+    await seedCache();
+    const { tree, client } = await renderHome({ failLoad: true });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    client.get.mockImplementation(async (path: string) => {
+      await gate;
+      return path === '/groups' ? { groups: [alpha] } : ME;
+    });
+    client.getMyInvitations.mockImplementation(async () => { await gate; return { invitations: [] }; });
+
+    await act(async () => { pressable(tree, 'Retry').props.onPress(); });
+    expect(pressable(tree, 'Retry').props.disabled).toBe(true);
+
+    release();
+    await flush();
+    expect(hasText(tree, 'No connection')).toBe(false);
+  });
+
+  it('lets a newer load win over a failed one that is still reading the saved copy', async () => {
+    await seedCache({ groups: [group({ id: 's', name: 'Stale' })] });
+    // The failed first load stops at its cache read…
+    let finishRead!: (raw: string | null) => void;
+    (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(
+      () => new Promise((resolve) => { finishRead = resolve; }),
+    );
+    const { tree } = await renderHome({ failLoad: true });
+
+    // …while a newer load — Home regaining focus — succeeds.
+    mockApi({ groups: [group({ id: 'f', name: 'Fresh' })] });
+    await act(async () => { mockListeners.focus(); });
+    await flush();
+    expect(tiles(tree).map((t) => t.props.name)).toEqual(['Fresh']);
+
+    // The old read now lands. It must not put the stale copy, or the banner, back.
+    finishRead(await AsyncStorage.getItem(HOME_CACHE_KEY));
+    await flush();
+    expect(tiles(tree).map((t) => t.props.name)).toEqual(['Fresh']);
+    expect(hasText(tree, 'No connection')).toBe(false);
+  });
+
+  it('still loads normally when the disk will not take the copy', async () => {
+    (AsyncStorage.setItem as jest.Mock).mockRejectedValueOnce(new Error('disk full'));
+    const { tree } = await renderHome({ groups: [alpha] });
+
+    expect(tiles(tree)).toHaveLength(1);
+    expect(hasText(tree, "Couldn't load groups")).toBe(false);
+    expect(hasText(tree, 'No connection')).toBe(false);
+  });
+
+  it('writes nothing for a load that lands after Home is gone — a logout must stay cleared', async () => {
+    const { tree, client } = await renderHome({ groups: [alpha] });
+    await AsyncStorage.clear(); // what signing out does
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    client.get.mockImplementation(async (path: string) => {
+      await gate;
+      return path === '/groups' ? { groups: [alpha] } : ME;
+    });
+    client.getMyInvitations.mockImplementation(async () => { await gate; return { invitations: [] }; });
+
+    await act(async () => { mockListeners.focus(); }); // a load starts…
+    act(() => tree.unmount()); // …Home goes with the session…
+    release();
+    await flush(); // …and it lands.
+
+    expect(await AsyncStorage.getItem(HOME_CACHE_KEY)).toBeNull();
+  });
+});
+
+// ─── Offline: what the screen looks like ──────────────────────────────────────
+
+describe.each<Mode>(['light', 'dark'])('Home offline presentation (%s)', (mode) => {
+  const { colors } = THEMES[mode];
+  const offline = (fixture: Fixture = {}) => renderHome({ failLoad: true, ...fixture }, mode);
+
+  beforeEach(async () => {
+    jest.spyOn(Date, 'now').mockReturnValue(LATER_TODAY);
+    await seedCache();
+  });
+
+  it('draws the banner: radius.xl, surface, hairline border, a 20pt wifi-off in textSecondary, and a 44pt Retry', async () => {
+    const { tree } = await offline();
+
+    const banner = tree.root.findAll((n) => isHost(n, 'View') && n.props.accessibilityRole === 'alert')[0];
+    expect(flat(banner.props.style)).toMatchObject({
+      borderRadius: radius.xl,
+      backgroundColor: colors.surface,
+      borderColor: colors.hairline,
+      borderWidth: 1,
+    });
+    const icon = tree.root.findAllByType(Icon).find((i) => i.props.name === 'wifi-off');
+    expect(icon?.props).toMatchObject({ size: 20, color: colors.textSecondary });
+    expect(flat(pressable(tree, 'Retry').props.style).minHeight).toBe(44);
+  });
+
+  it('sets the two lines in the designed type: Geist 600 14.5, then Gelasio 13.5', async () => {
+    const { tree } = await offline();
+    const style = (text: string) =>
+      flat(tree.root.findAll((n) => isHost(n, 'Text') && [n.props.children].flat().join('') === text)[0].props.style);
+
+    expect(style('No connection')).toMatchObject({ fontFamily: 'Geist_600SemiBold', fontSize: 14.5 });
+    expect(style(savedLine(tree)!)).toMatchObject({ fontFamily: 'Gelasio_400Regular', fontSize: 13.5 });
+  });
+
+  it('dims the grid to 72% — the tiles, not the banner', async () => {
+    const { tree } = await offline();
+
+    const dimmed = tree.root.findAll((n) => isHost(n, 'View') && flat(n.props.style).opacity === 0.72);
+    expect(dimmed).toHaveLength(1);
+    expect(dimmed[0].findAllByType(GroupTile)).toHaveLength(2);
+    expect(dimmed[0].findAll((n) => n.props.accessibilityRole === 'alert')).toHaveLength(0);
+  });
+
+  it('leaves the grid at full strength when online', async () => {
+    const { tree } = await renderHome({ groups: [group({ id: 'a', name: 'Alpha' })] }, mode);
+    expect(tree.root.findAll((n) => isHost(n, 'View') && flat(n.props.style).opacity === 0.72)).toHaveLength(0);
+  });
+
+  it('turns the active tab underline from marigold to borderStrong — nothing is live, so nothing is marigold', async () => {
+    const { tree } = await offline();
+
+    const rule = pressable(tree, 'All').findAll((n) => isHost(n, 'View') && flat(n.props.style).height === 2)[0];
+    expect(flat(rule.props.style).backgroundColor).toBe(colors.borderStrong);
+    expect(marigoldNodes(tree, mode)).toHaveLength(0);
+  });
+
+  it('makes New group inert, with its caption beneath', async () => {
+    const { tree } = await offline();
+
+    const button = pressable(tree, 'New group');
+    expect(button.props.disabled).toBe(true);
+    expect(flat(button.props.style).backgroundColor).toBe(colors.controlTrack);
+    expect(hasText(tree, 'Creating groups needs a connection.')).toBe(true);
+  });
+
+  it('does not navigate to Create group when the inert button is pressed', async () => {
+    const { tree } = await offline();
+    // A disabled TouchableOpacity never calls onPress; the handler is still there, so
+    // check the prop that gates it rather than assume.
+    expect(pressable(tree, 'New group').props.disabled).toBe(true);
+    expect(mockNavigate).not.toHaveBeenCalledWith('CreateGroup');
+  });
+
+  it('says none of it online: no caption, and New group answers', async () => {
+    const { tree } = await renderHome({ groups: [group({ id: 'a', name: 'Alpha' })] }, mode);
+
+    expect(hasText(tree, 'Creating groups needs a connection.')).toBe(false);
+    expect(pressable(tree, 'New group').props.disabled).toBeFalsy();
+  });
+
+  it('takes the first-run primary action offline too — creating a group needs the server either way', async () => {
+    await seedCache({ groups: [] });
+    const { tree } = await offline();
+
+    expect(hasText(tree, 'No groups yet')).toBe(true);
+    expect(pressable(tree, 'Create a group').props.disabled).toBe(true);
+    expect(hasText(tree, 'Creating groups needs a connection.')).toBe(true);
+  });
+});
+
+// ─── The spotlight overlay: when Home raises it ───────────────────────────────
+
+describe('Home spotlight', () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const groups = [
+    group({ id: 'a', name: 'Alpha', member_count: 4 }),
+    group({ id: 'b', name: 'Bravo' }),
+    group({ id: 'c', name: 'Charlie' }),
+  ];
+  const callA: LiveCall = {
+    id: 'ca', group_id: 'a', call_type: 'scheduled', started_at: iso(T0 - 60_000),
+    ends_at: iso(T0 + 724_000), participant_count: 2,
+  };
+  const callB: LiveCall = {
+    id: 'cb', group_id: 'b', call_type: 'scheduled', started_at: iso(T0 - 300_000),
+    ends_at: iso(T0 + 544_000), participant_count: 1,
+  };
+  const spontaneous: LiveCall = {
+    id: 'cs', group_id: 'c', call_type: 'spontaneous', started_at: iso(T0 - 30_000),
+    ends_at: null, participant_count: 1,
+  };
+  const overlay = (tree: ReactTestRenderer) =>
+    tree.root.findAll((n) => isHost(n, 'View') && n.props.testID === 'call-spotlight');
+  const dismiss = () => act(async () => { mockSpotlightProps!.onDismiss(); });
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(T0);
+  });
+
+  it('goes up when Home opens on a live call — for that call, with that group', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+
+    expect(overlay(tree)).toHaveLength(1);
+    expect(mockSpotlightProps?.call.id).toBe('ca');
+    expect(mockSpotlightProps?.group.name).toBe('Alpha');
+    expect(mockSpotlightProps?.active).toBe(true);
+  });
+
+  it('does not go up when nothing is live', async () => {
+    const { tree } = await renderHome({ groups });
+    expect(overlay(tree)).toHaveLength(0);
+  });
+
+  it('is for the call that started most recently when two are live, whatever its type', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [callB, spontaneous, callA] });
+
+    expect(overlay(tree)).toHaveLength(1);
+    expect(mockSpotlightProps?.call.id).toBe('cs'); // started 30s ago, against 60s and 5min
+  });
+
+  it('goes up for a spontaneous call as much as a scheduled one', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [spontaneous] });
+    expect(overlay(tree)).toHaveLength(1);
+    expect(mockSpotlightProps?.call.call_type).toBe('spontaneous');
+  });
+
+  it('is not raised for a call in a group the user cannot see', async () => {
+    const stranger: LiveCall = { ...callA, id: 'cx', group_id: 'not-mine' };
+    const { tree } = await renderHome({ groups, liveCalls: [stranger] });
+    expect(overlay(tree)).toHaveLength(0);
+  });
+
+  it('comes down on Dismiss, leaving the live card in the grid', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    expect(overlay(tree)).toHaveLength(1);
+
+    await dismiss();
+
+    expect(overlay(tree)).toHaveLength(0);
+    expect(hasText(tree, '2 of 4 joined')).toBe(true); // the card was there all along
+    expect(hasText(tree, 'Join')).toBe(true);
+  });
+
+  it('does not come back this session — not when Home reloads, not for another call', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    await dismiss();
+
+    (fetchLiveCalls as jest.Mock).mockResolvedValue([callA, callB]);
+    await act(async () => { mockListeners.focus(); });
+    await flush();
+
+    expect(overlay(tree)).toHaveLength(0);
+    expect(hasText(tree, '2 of 4 joined')).toBe(true); // the live data did arrive
+  });
+
+  it('stays down through a trip to another screen and back — blur, then focus', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    await dismiss();
+
+    mockIsFocused = false; // a group is opened…
+    await act(async () => { tree.update(<HomeScreen />); });
+    mockIsFocused = true; // …and closed again, the call still live
+    await act(async () => { tree.update(<HomeScreen />); });
+
+    expect(overlay(tree)).toHaveLength(0);
+    expect(hasText(tree, '2 of 4 joined')).toBe(true);
+  });
+
+  it('stays down through a spell offline and back, though the call is still live', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [callA] }); // saves the copy
+    await dismiss();
+
+    // Losing the connection and getting it back re-runs the very condition the overlay
+    // waits on. Being dismissed is not undone by it.
+    const client = mockApi({ groups, liveCalls: [callA], failLoad: true });
+    await act(async () => { mockListeners.focus(); });
+    await flush();
+    expect(client.get).toHaveBeenCalled();
+    mockApi({ groups, liveCalls: [callA] });
+    await act(async () => { mockListeners.focus(); });
+    await flush();
+
+    expect(overlay(tree)).toHaveLength(0);
+  });
+
+  it('keeps nothing on disk: dismissal is component state, so the next cold start raises it again', async () => {
+    const first = await renderHome({ groups, liveCalls: [callA] });
+    await dismiss();
+    expect(await AsyncStorage.getAllKeys()).toEqual([HOME_CACHE_KEY]); // only the offline copy
+
+    act(() => first.tree.unmount()); // a cold start is a fresh Home
+    const second = await renderHome({ groups, liveCalls: [callA] });
+    expect(overlay(second.tree)).toHaveLength(1);
+  });
+
+  it('is answered by Join as well: it comes down, joins, and stays down when Home reloads on the way back', async () => {
+    const { tree, client } = await renderHome({ groups, liveCalls: [callA] });
+    client.post.mockResolvedValue({ room_url: 'https://room', token: 'tok', ends_at: callA.ends_at });
+
+    await act(async () => { mockSpotlightProps!.onJoin(); });
+    await flush();
+
+    expect(client.post).toHaveBeenCalledWith('/groups/a/calls/ca/join-token', {});
+    expect(mockNavigate).toHaveBeenCalledWith('Call', {
+      callId: 'ca', groupId: 'a', roomUrl: 'https://room', token: 'tok', endsAt: callA.ends_at,
+    });
+    expect(overlay(tree)).toHaveLength(0);
+
+    await act(async () => { mockListeners.focus(); }); // back from the call, still live
+    await flush();
+    expect(overlay(tree)).toHaveLength(0);
+  });
+
+  it('waits while Home is showing a saved copy, and goes up when a retry reaches a live call', async () => {
+    await seedCache();
+    const { tree } = await renderHome({ failLoad: true, liveCalls: [callA] });
+    expect(overlay(tree)).toHaveLength(0); // nothing known to be live
+
+    mockApi({ groups, liveCalls: [callA] });
+    await press(tree, 'Retry');
+
+    expect(overlay(tree)).toHaveLength(1);
+  });
+
+  it('waits while Home is blurred, and goes up when it is focused', async () => {
+    mockIsFocused = false;
+    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    expect(overlay(tree)).toHaveLength(0);
+
+    mockIsFocused = true;
+    await act(async () => { tree.update(<HomeScreen />); });
+    expect(overlay(tree)).toHaveLength(1);
+  });
+
+  it('hides the screen behind it from screen readers while it is up, and only then', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    const hiders = () => tree.root.findAll((n) => isHost(n, 'View') && n.props.importantForAccessibility === 'no-hide-descendants');
+
+    expect(hiders()).toHaveLength(1);
+    expect(hiders()[0].props.accessibilityElementsHidden).toBe(true);
+    expect(hiders()[0].findAllByType(GroupTile).length).toBeGreaterThan(0);
+
+    await dismiss();
+    expect(hiders()).toHaveLength(0);
+  });
+
+  describe('as time passes', () => {
+    // Timers are faked; the wall clock is moved by hand alongside them, as a device's is.
+    let elapsed = 0;
+    const tick = (ms: number) => {
+      elapsed += ms;
+      return act(async () => { await jest.advanceTimersByTimeAsync(ms); });
+    };
+
+    beforeEach(() => {
+      elapsed = 0;
+      jest.spyOn(Date, 'now').mockImplementation(() => T0 + elapsed);
+      jest.useFakeTimers({ doNotFake: ['Date', 'setImmediate', 'nextTick', 'queueMicrotask'] });
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('is raised for a call that was live when Home opened, not for one that starts while it is open', async () => {
+      const { tree } = await renderHome({ groups });
+      expect(overlay(tree)).toHaveLength(0);
+
+      (fetchLiveCalls as jest.Mock).mockResolvedValue([callA]);
+      await tick(15_000); // the poll finds a new call
+
+      expect(hasText(tree, '2 of 4 joined')).toBe(true); // it gets its card…
+      expect(overlay(tree)).toHaveLength(0); // …not an overlay dropped on whatever the user is doing
+    });
+
+    it('goes when its call ends, rather than moving to whichever call is live next', async () => {
+      // Older than callA, so it is not the hero — and it outlives callA by five minutes.
+      const callC: LiveCall = {
+        id: 'cc', group_id: 'c', call_type: 'scheduled', started_at: iso(T0 - 400_000),
+        ends_at: iso(T0 + 1_000_000), participant_count: 1,
+      };
+      const { tree } = await renderHome({ groups, liveCalls: [callA, callC] });
+      expect(mockSpotlightProps?.call.id).toBe('ca');
+
+      await tick(724_000); // callA's end
+
+      expect(overlay(tree)).toHaveLength(0); // not re-pointed at callC…
+      expect(hasText(tree, '1 of 4 joined')).toBe(true); // …which is live, and now holds the card
+    });
   });
 });

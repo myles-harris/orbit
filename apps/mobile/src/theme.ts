@@ -52,6 +52,7 @@ const darkPalette = {
   borderStrong: 'rgba(226,196,141,.40)',
   controlTrack: 'rgba(226,196,141,.16)',
   toggleTrack:  'rgba(226,196,141,.22)',
+  overlayScrim: 'rgba(58,44,26,.34)',   // over the blur behind the call spotlight
   danger:       '#D98A72',
   homeIndicator:'rgba(255,248,231,.50)',
 };
@@ -66,6 +67,7 @@ const lightPalette = {
   borderStrong: 'rgba(58,44,26,.28)',
   controlTrack: 'rgba(58,44,26,.12)',
   toggleTrack:  'rgba(58,44,26,.18)',
+  overlayScrim: 'rgba(58,44,26,.20)',
   danger:       '#8C3A2A',
   homeIndicator:'rgba(58,44,26,.45)',
 };
@@ -161,6 +163,7 @@ function makeColors(p: Palette, isDark: boolean) {
     borderStrong:  p.borderStrong,
     controlTrack:  p.controlTrack,
     toggleTrack:   p.toggleTrack,
+    overlayScrim:  p.overlayScrim,
     homeIndicator: p.homeIndicator,
 
     tabActive:   marigold,

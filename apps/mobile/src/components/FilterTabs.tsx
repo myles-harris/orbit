@@ -14,9 +14,16 @@ interface FilterTabsProps<T extends string> {
    * draw "Invited" bare — so it renders only when the count is above zero.
    */
   invitedCount?: number;
+  /**
+   * Colour of the active tab's rule. Marigold by default; Home passes `borderStrong`
+   * while offline — nothing is live, so nothing is marigold.
+   */
+  ruleColor?: string;
 }
 
-export function FilterTabs<T extends string>({ tabs, active, onChange, invitedCount, style }: FilterTabsProps<T>) {
+export function FilterTabs<T extends string>({
+  tabs, active, onChange, invitedCount, style, ruleColor,
+}: FilterTabsProps<T>) {
   const { theme: { colors } } = useTheme();
 
   return (
@@ -52,7 +59,7 @@ export function FilterTabs<T extends string>({ tabs, active, onChange, invitedCo
             {/* A View, not textDecorationLine — RN ignores textDecorationColor on
                 Android and offset entirely, so any marigold rule under text is a
                 sibling border throughout this app. */}
-            <View style={[styles.underline, isActive && { backgroundColor: colors.accent }]} />
+            <View style={[styles.underline, isActive && { backgroundColor: ruleColor ?? colors.accent }]} />
           </TouchableOpacity>
         );
       })}

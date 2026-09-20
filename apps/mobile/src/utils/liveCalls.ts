@@ -1,4 +1,5 @@
 import { createAuthenticatedApiClient } from './apiClient';
+import { formatCountdown, formatElapsed } from './countdown';
 
 type CallType = 'scheduled' | 'spontaneous';
 
@@ -19,16 +20,41 @@ export interface LiveCall {
 }
 
 /**
- * Whether a live call shows a countdown: scheduled calls only. A spontaneous call
- * has nothing to count down to, and a countdown on it would be a lie. Every live
- * surface asks here rather than testing `ends_at` itself — Home's card today, and
- * the Spotlight overlay once it exists.
+ * Whether a live call counts down: scheduled calls only. A spontaneous call has
+ * nothing to count down to, and a countdown on it would be a lie. Every live
+ * surface asks here rather than testing `ends_at` itself.
+ *
+ * What a surface does with "no" differs. Home's card draws no timer at all and its
+ * Join pill takes the row. The Spotlight overlay keeps its 52pt timer slot and counts
+ * *up* from `started_at` instead (`formatCallTimer`), because the card's composition
+ * is built around that element.
  *
  * A scheduled call that somehow arrives without an `ends_at` degrades to "no
  * countdown" rather than being dropped.
  */
 export function hasCountdown(call: LiveCall): call is LiveCall & { ends_at: string } {
   return call.call_type === 'scheduled' && call.ends_at !== null;
+}
+
+/**
+ * A scheduled call with no end time is a data fault, not a state to render: the
+ * server sets `ends_at` on every scheduled call. Callers log it and show elapsed
+ * time, which `formatCallTimer` already does.
+ */
+export function isMissingEndTime(call: LiveCall): boolean {
+  return call.call_type === 'scheduled' && call.ends_at === null;
+}
+
+/**
+ * The timer string for a live call at `now`: time left for a scheduled call, time
+ * since it started for any other. Branches on `call_type` (through `hasCountdown`),
+ * not on `ends_at == null`, so a scheduled call that arrives without an end time
+ * falls back to elapsed time instead of counting toward `null` and printing "NaN:NaN".
+ *
+ * A pure function of `now`, like the two formatters it picks between.
+ */
+export function formatCallTimer(call: LiveCall, now: number): string {
+  return hasCountdown(call) ? formatCountdown(call.ends_at, now) : formatElapsed(call.started_at, now);
 }
 
 /**

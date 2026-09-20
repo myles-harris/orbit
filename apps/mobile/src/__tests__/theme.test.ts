@@ -19,4 +19,10 @@ describe('derived colour tokens', () => {
     expect(darkTheme.colors.dangerBorder).toBe('#D98A7280');
     expect(lightTheme.colors.dangerBorder).toBe('#8C3A2A80');
   });
+
+  // Behind the call spotlight, over the blur. The design's own two values, not derived.
+  it('overlayScrim is the espresso wash the spotlight sits on: .20 in light, .34 in dark', () => {
+    expect(lightTheme.colors.overlayScrim).toBe('rgba(58,44,26,.20)');
+    expect(darkTheme.colors.overlayScrim).toBe('rgba(58,44,26,.34)');
+  });
 });
