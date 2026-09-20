@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../context/ThemeContext';
@@ -9,8 +10,13 @@ interface LiveCallCardProps {
   photoUri?: string | null;
   joinedCount: number;
   totalCount: number;
-  /** Pre-formatted countdown text (e.g. "12:04"), ticked client-side from `ends_at`. */
-  countdown: string;
+  /**
+   * The countdown — text such as "12:04", or a component that renders it and owns
+   * its own clock (`<Countdown/>`), so a tick re-renders that text and not this
+   * card. Omit it for a spontaneous call, which has no end time to count toward:
+   * the Join pill then takes the row on its own.
+   */
+  countdown?: ReactNode;
   onJoin: () => void;
 }
 
@@ -66,10 +72,12 @@ export function LiveCallCard({ groupName, photoUri, joinedCount, totalCount, cou
             {groupName}
           </Display>
 
-          <View style={styles.bottomRow}>
-            <Display size={28} leading={1} tabular color={colors.accent}>
-              {countdown}
-            </Display>
+          <View style={[styles.bottomRow, !countdown && styles.bottomRowJoinOnly]}>
+            {countdown ? (
+              <Display size={28} leading={1} tabular color={colors.accent}>
+                {countdown}
+              </Display>
+            ) : null}
             <TouchableOpacity
               onPress={onJoin}
               activeOpacity={0.85}
@@ -111,6 +119,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  // space-between would put a lone Join pill on the left.
+  bottomRowJoinOnly: {
+    justifyContent: 'flex-end',
   },
   joinPill: {
     minHeight: 48,

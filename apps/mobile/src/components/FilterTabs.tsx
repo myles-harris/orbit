@@ -1,4 +1,4 @@
-import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleProp, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { layout, radius } from '../theme';
 
@@ -6,6 +6,8 @@ interface FilterTabsProps<T extends string> {
   tabs: T[];
   active: T;
   onChange: (tab: T) => void;
+  /** Row style — e.g. `paddingHorizontal` to inset the tabs while the hairline stays full-bleed. */
+  style?: StyleProp<ViewStyle>;
   /**
    * Pending-invite count for the tab literally named "Invited". The chip is
    * conditional on the design: screen 02 draws "Invited 2", screens 03 and 06
@@ -14,11 +16,11 @@ interface FilterTabsProps<T extends string> {
   invitedCount?: number;
 }
 
-export function FilterTabs<T extends string>({ tabs, active, onChange, invitedCount }: FilterTabsProps<T>) {
+export function FilterTabs<T extends string>({ tabs, active, onChange, invitedCount, style }: FilterTabsProps<T>) {
   const { theme: { colors } } = useTheme();
 
   return (
-    <View style={[styles.row, { borderBottomColor: colors.hairline }]}>
+    <View style={[styles.row, { borderBottomColor: colors.hairline }, style]}>
       {tabs.map((tab) => {
         const isActive = tab === active;
         const showBadge = tab === 'Invited' && (invitedCount ?? 0) > 0;
