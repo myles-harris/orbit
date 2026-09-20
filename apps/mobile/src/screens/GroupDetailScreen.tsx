@@ -10,46 +10,38 @@ import {
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
+import * as Localization from 'expo-localization';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
-import { parseApiError } from '@orbit/shared';
-import { spacing, radius } from '../theme';
+import { formatViewerWindow, parseApiError, type GroupDetailDTO } from '@orbit/shared';
+import { cadenceSummary, formatHour } from '../utils/groupFormat';
+import { layout, onPhoto, spacing } from '../theme';
 import { useTheme } from '../context/ThemeContext';
-import { Ionicons } from '@expo/vector-icons';
-import { LightStatusBar } from '../components/LightStatusBar';
+import { BottomActionBar } from '../components/BottomActionBar';
+import { Display } from '../components/Display';
+import { FormHeader } from '../components/FormHeader';
+import { GroupPhotoHeader } from '../components/GroupPhotoHeader';
 import { UserAvatar } from '../components/UserAvatar';
 
 type GroupDetailRouteProp = RouteProp<RootStackParamList, 'GroupDetail'>;
 type GroupDetailNavigationProp = StackNavigationProp<RootStackParamList, 'GroupDetail'>;
 
-function MemberAvatar({ userId, username, hasAvatar, isOwner, colors, avatarUpdatedAt }: {
-  userId: string; username: string; hasAvatar: boolean; isOwner: boolean; colors: any;
-  avatarUpdatedAt?: string | null;
-}) {
-  return (
-    <View style={{ marginRight: spacing.md }}>
-      <UserAvatar
-        userId={userId}
-        username={username}
-        hasAvatar={hasAvatar}
-        size={40}
-        colors={colors}
-        isOwner={isOwner}
-        avatarUpdatedAt={avatarUpdatedAt}
-      />
-    </View>
-  );
-}
+// Appendix B: the title starts at y=296 and its single line is 40pt tall (a 32pt
+// display size is drawn at 36pt, at 1.12 leading); the first row starts at y=382.
+const ROWS_GAP = 382 - (296 + 40);
+// Two full 56pt rows and a sliver of the third, so it reads as scrollable.
+const MEMBER_LIST_HEIGHT = 122;
+const MEMBER_AVATAR = 36;
 
 export default function GroupDetailScreen() {
   const route = useRoute<GroupDetailRouteProp>();
   const navigation = useNavigation<GroupDetailNavigationProp>();
   const { groupId } = route.params;
-  const { theme: { colors, typography, shadow } } = useTheme();
-  const styles = useMemo(() => makeStyles(colors, typography, shadow), [colors]);
+  const { theme: { colors } } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
-  const [group, setGroup] = useState<any>(null);
-  const [currentCall, setCurrentCall] = useState<any>(null);
+  const [group, setGroup] = useState<GroupDetailDTO | null>(null);
+  const [currentCall, setCurrentCall] = useState<{ id: string } | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -59,9 +51,9 @@ export default function GroupDetailScreen() {
       const client = await createAuthenticatedApiClient();
       const userInfo = await client.get<any>('/me');
       setCurrentUserId(userInfo.id);
-      const groupData = await client.get<any>(`/groups/${groupId}`);
+      const groupData = await client.get<GroupDetailDTO>(`/groups/${groupId}`);
       setGroup(groupData);
-      const callData = await client.get<{ current: any }>(`/groups/${groupId}/calls/current`);
+      const callData = await client.get<{ current: { id: string } | null }>(`/groups/${groupId}/calls/current`);
       setCurrentCall(callData.current);
     } catch (error) {
       console.error('Failed to load group:', error);
@@ -75,21 +67,6 @@ export default function GroupDetailScreen() {
     const poll = setInterval(loadGroupDetails, 10000);
     return () => { unsubscribe(); clearInterval(poll); };
   }, [groupId, navigation]);
-
-  useEffect(() => {
-    if (!group || !currentUserId) return;
-    const isOwner = group.owner_id === currentUserId;
-    navigation.setOptions({
-      headerRight: () => (
-        <TouchableOpacity
-          onPress={() => navigation.navigate('GroupSettings', { groupId, isOwner })}
-          style={styles.headerButton}
-        >
-          <Ionicons name="settings-outline" size={22} color={colors.primary} />
-        </TouchableOpacity>
-      ),
-    });
-  }, [group, currentUserId, groupId, navigation, colors]);
 
   const startCall = async () => {
     try {
@@ -139,199 +116,229 @@ export default function GroupDetailScreen() {
 
   const isOwner = group?.owner_id === currentUserId;
 
-  // GroupDetail always overlays a dark photo, in both twins of the design, so its
-  // status bar is light regardless of mode — but only while it is the focused screen.
+  // The linking config has no initialRouteName, so a cold orbit://group/:id link
+  // opens with this screen alone on the stack and goBack() would do nothing.
+  const goBack = () => (navigation.canGoBack() ? navigation.goBack() : navigation.replace('Home'));
+
+  // No photo header yet, so no dark ground for a light status bar to sit on: the
+  // app's own, theme-following bar stays. The way back has to be drawn here too,
+  // since the navigator no longer supplies one.
   if (!group) {
     return (
-      <View style={styles.loadingContainer}>
-        <LightStatusBar />
-        {loadError ? (
-          <>
-            <Text style={{ color: colors.textSecondary, marginBottom: 16, textAlign: 'center' }}>{loadError}</Text>
-            <TouchableOpacity onPress={loadGroupDetails}>
-              <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 16 }}>Retry</Text>
-            </TouchableOpacity>
-          </>
-        ) : (
-          <ActivityIndicator size="large" color={colors.primary} />
-        )}
+      <View style={styles.container}>
+        <FormHeader onBack={goBack} />
+        <View style={styles.centered}>
+          {loadError ? (
+            <>
+              <Text style={styles.errorText}>{loadError}</Text>
+              <TouchableOpacity onPress={loadGroupDetails} accessibilityRole="button">
+                <Text style={styles.retryText}>Retry</Text>
+              </TouchableOpacity>
+            </>
+          ) : (
+            <ActivityIndicator size="large" color={colors.textSecondary} />
+          )}
+        </View>
       </View>
     );
   }
 
+  const start: number = group.call_window_start;
+  const end: number = group.call_window_end;
+  const groupTz: string = group.time_zone;
+  const viewerTz = Localization.getCalendars()[0]?.timeZone ?? 'UTC';
+  // The zone under the window, then — only when it differs — what the window is for you.
+  const windowNotes = [
+    groupTz,
+    ...(groupTz !== viewerTz ? [`${formatViewerWindow(start, end, groupTz, viewerTz)} your time`] : []),
+  ];
+
+  const detailRow = (label: string, value: string, notes: string[] = [], last = false) => (
+    <View key={label} style={[styles.detailRow, last && styles.detailRowLast]}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <View style={styles.detailValueBlock}>
+        <Text style={styles.detailValue}>{value}</Text>
+        {notes.map((note) => (
+          <Text key={note} style={styles.detailNote}>{note}</Text>
+        ))}
+      </View>
+    </View>
+  );
+
   return (
-    <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
-      <LightStatusBar />
-      {/* Header card */}
-      <View style={styles.headerCard}>
-        <Text style={styles.groupName}>{group.name}</Text>
-        {group.is_muted && (
-          <View style={styles.mutedBadge}>
-            <Ionicons name="volume-mute" size={12} color={colors.textSecondary} />
-            <Text style={styles.mutedBadgeText}>Muted</Text>
-          </View>
-        )}
-      </View>
+    <View style={styles.container}>
+      <ScrollView
+        style={styles.scroll}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        // The photo runs to the top edge; a bounce would open a gap above it.
+        bounces={false}
+        overScrollMode="never"
+      >
+        <GroupPhotoHeader
+          onBack={goBack}
+          onSettings={() => navigation.navigate('GroupSettings', { groupId, isOwner })}
+        />
 
-      {/* Call action */}
-      <View style={styles.callSection}>
-        {currentCall ? (
-          <View style={styles.activeCallCard}>
-            <View style={styles.activeCallIndicator} />
-            <View style={styles.activeCallContent}>
-              <Text style={styles.activeCallTitle}>Call in progress</Text>
-              <Text style={styles.activeCallSub}>Join your group now</Text>
-            </View>
-            <TouchableOpacity style={styles.joinButton} onPress={joinCall}>
-              <Text style={styles.joinButtonText}>Join</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <TouchableOpacity style={styles.startCallButton} onPress={startCall} activeOpacity={0.85}>
-            <Ionicons name="call" size={20} color={colors.textOnPrimary} />
-            <Text style={styles.startCallText}>Start Call Now</Text>
-          </TouchableOpacity>
-        )}
-      </View>
+        <View style={styles.titleBlock}>
+          <Display
+            size={32}
+            leading={1.12}
+            numberOfLines={2}
+            ellipsizeMode="tail"
+            accessibilityRole="header"
+            style={onPhoto.textShadow}
+          >
+            {group.name}
+          </Display>
+        </View>
 
-      {/* Members */}
-      <View style={styles.section}>
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>
-            Members<Text style={styles.sectionCount}> {group.member_count}</Text>
-          </Text>
+        <View style={styles.rows}>
+          {detailRow('Calls', cadenceSummary(group.cadence, group.weekly_frequency || 1))}
+          {detailRow('Length', `${group.call_duration_minutes} min`)}
+          {detailRow('Call window', `${formatHour(start)} – ${formatHour(end)}`, windowNotes, true)}
+        </View>
+
+        <View style={styles.membersHeader}>
+          <View style={styles.membersTitleRow}>
+            <Text accessibilityRole="header" style={styles.membersTitle}>Members</Text>
+            <Text style={styles.membersCount}>{group.member_count}</Text>
+          </View>
           {isOwner && (
+            // A sibling View, not textDecorationLine: RN ignores textDecorationColor
+            // on Android and the offset everywhere (Appendix E).
             <TouchableOpacity
-              style={styles.inviteButton}
               onPress={() => navigation.navigate('InviteUser', { groupId })}
+              activeOpacity={0.7}
+              accessibilityRole="link"
+              accessibilityLabel="Invite a member"
             >
-              <Text style={styles.inviteButtonText}>+ Invite</Text>
+              <Text style={styles.inviteText}>Invite</Text>
+              <View style={styles.inviteRule} />
             </TouchableOpacity>
           )}
         </View>
 
-        <View style={styles.membersCard}>
-          {group.members.map((member: any, index: number) => {
+        {/* A ScrollView, not a FlatList: a FlatList nested in this ScrollView is a
+            VirtualizedList inside a VirtualizedList and warns. The list scrolls in
+            place so the window above and the call button below stay put. */}
+        <ScrollView
+          style={styles.memberList}
+          nestedScrollEnabled
+          showsVerticalScrollIndicator={false}
+        >
+          {group.members.map((member, index) => {
             const isMemberOwner = member.role === 'owner';
-            const isLast = index === group.members.length - 1;
             return (
               <View
                 key={member.user_id}
-                style={[styles.memberRow, isLast && styles.memberRowLast]}
+                style={[styles.memberRow, index === group.members.length - 1 && styles.memberRowLast]}
               >
-                <MemberAvatar
+                <UserAvatar
                   userId={member.user_id}
                   username={member.username}
-                  hasAvatar={member.has_avatar ?? false}
-                  avatarUpdatedAt={member.avatar_updated_at ?? null}
-                  isOwner={isMemberOwner}
+                  hasAvatar={member.has_avatar}
+                  avatarUpdatedAt={member.avatar_updated_at}
+                  size={MEMBER_AVATAR}
                   colors={colors}
                 />
                 <View style={styles.memberInfo}>
-                  <Text style={styles.memberName}>{member.username}</Text>
-                  {isMemberOwner && (
-                    <View style={styles.ownerBadge}>
-                      <Text style={styles.ownerBadgeText}>Owner</Text>
-                    </View>
-                  )}
+                  <Text style={styles.memberName} numberOfLines={1}>{member.username}</Text>
+                  {isMemberOwner && <Text style={styles.ownerLabel}>Owner</Text>}
                 </View>
                 {isOwner && !isMemberOwner && (
                   <TouchableOpacity
-                    style={styles.removeButton}
                     onPress={() => removeMember(member.user_id, member.username)}
+                    activeOpacity={0.7}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove ${member.username}`}
                   >
-                    <Text style={styles.removeButtonText}>Remove</Text>
+                    <Text style={styles.removeText}>Remove</Text>
                   </TouchableOpacity>
                 )}
               </View>
             );
           })}
-        </View>
-      </View>
-    </ScrollView>
+        </ScrollView>
+      </ScrollView>
+
+      {/* A live call takes the one primary action: nobody starts a second call
+          in a group that already has one. */}
+      <BottomActionBar
+        label={currentCall ? 'Join call' : 'Start call now'}
+        onPress={currentCall ? joinCall : startCall}
+      />
+    </View>
   );
 }
 
-function makeStyles(colors: any, typography: any, shadow: any) {
+function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
-    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-    headerButton: { marginRight: spacing.lg, padding: spacing.xs },
-    headerCard: {
-      backgroundColor: colors.surface,
-      margin: spacing.xl,
-      borderRadius: radius.xl,
-      paddingVertical: spacing.xl,
-      paddingHorizontal: spacing.xxl,
+    scroll: { flex: 1 },
+    scrollContent: { paddingBottom: spacing.xl },
+    centered: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: layout.screenPad },
+    errorText: {
+      fontFamily: 'Geist_400Regular',
+      fontSize: 15,
+      color: colors.textSecondary,
+      textAlign: 'center',
+      marginBottom: spacing.lg,
+    },
+    retryText: { fontFamily: 'Geist_600SemiBold', fontSize: 16, color: colors.text },
+
+    titleBlock: { paddingHorizontal: layout.screenPad },
+    rows: { marginTop: ROWS_GAP, marginHorizontal: layout.screenPad },
+    detailRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      gap: spacing.md,
+      paddingVertical: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.hairline,
+    },
+    detailRowLast: { borderBottomWidth: 0 },
+    detailLabel: { fontFamily: 'Gelasio_400Regular', fontSize: 15, color: colors.textSecondary },
+    detailValueBlock: { flexShrink: 1, alignItems: 'flex-end' },
+    detailValue: { fontFamily: 'Geist_500Medium', fontSize: 16, color: colors.text, textAlign: 'right' },
+    detailNote: {
+      fontFamily: 'GeistMono_500Medium',
+      fontSize: 12.5,
+      color: colors.textMeta,
+      textAlign: 'right',
+      marginTop: 2,
+    },
+
+    membersHeader: {
+      minHeight: 48,
+      marginTop: spacing.lg,
+      marginHorizontal: layout.screenPad,
+      flexDirection: 'row',
       alignItems: 'center',
-      ...shadow.sm,
+      justifyContent: 'space-between',
     },
-    groupName: { ...typography.h3, textAlign: 'center' },
-    mutedBadge: {
-      flexDirection: 'row', alignItems: 'center', gap: 4,
-      backgroundColor: colors.background,
-      paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: radius.full,
-      marginTop: spacing.md,
-    },
-    mutedBadgeText: { ...typography.captionMedium, color: colors.textSecondary, fontWeight: '600' },
-    callSection: { marginHorizontal: spacing.xl, marginBottom: spacing.xl },
-    activeCallCard: {
-      backgroundColor: colors.success,
-      borderRadius: radius.lg, padding: spacing.lg,
-      flexDirection: 'row', alignItems: 'center',
-      ...shadow.md,
-    },
-    activeCallIndicator: {
-      width: 10, height: 10, borderRadius: 5,
-      backgroundColor: '#fff', marginRight: spacing.md, opacity: 0.9,
-    },
-    activeCallContent: { flex: 1 },
-    activeCallTitle: { ...typography.bodySemibold, color: '#fff' },
-    activeCallSub: { fontSize: 12, color: 'rgba(255,255,255,0.8)', marginTop: 2 },
-    joinButton: {
-      backgroundColor: '#fff',
-      paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
-      borderRadius: radius.full,
-    },
-    joinButtonText: { ...typography.captionMedium, color: colors.successDark, fontWeight: '700' },
-    startCallButton: {
-      backgroundColor: colors.primary,
-      borderRadius: radius.lg, paddingVertical: spacing.lg,
-      flexDirection: 'row', justifyContent: 'center', alignItems: 'center',
-      gap: spacing.sm,
-      ...shadow.lg,
-    },
-    startCallText: { ...typography.bodySemibold, color: colors.textOnPrimary },
-    section: { marginHorizontal: spacing.xl, marginBottom: spacing.xxl },
-    sectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: spacing.md },
-    sectionTitle: { ...typography.h4 },
-    sectionCount: { ...typography.h4, color: colors.textTertiary },
-    inviteButton: {
-      backgroundColor: colors.primaryLight,
-      paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: radius.full,
-    },
-    inviteButtonText: { ...typography.captionMedium, color: colors.primary, fontWeight: '700' },
-    membersCard: { backgroundColor: colors.surface, borderRadius: radius.lg, overflow: 'hidden', ...shadow.sm },
+    membersTitleRow: { flexDirection: 'row', alignItems: 'baseline', gap: spacing.sm },
+    membersTitle: { fontFamily: 'Geist_600SemiBold', fontSize: 16, color: colors.text },
+    membersCount: { fontFamily: 'GeistMono_500Medium', fontSize: 13, color: colors.textMeta },
+    inviteText: { fontFamily: 'Geist_500Medium', fontSize: 15, color: colors.text },
+    // Marigold on cream is 1.60:1 — fine as a rule, never as the text itself.
+    inviteRule: { marginTop: 2, borderBottomWidth: 1.5, borderBottomColor: colors.accent },
+
+    memberList: { height: MEMBER_LIST_HEIGHT, marginHorizontal: layout.screenPad },
     memberRow: {
-      flexDirection: 'row', alignItems: 'center',
-      padding: spacing.lg,
-      borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
+      minHeight: layout.rowHeight,
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 14,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: colors.hairline,
     },
     memberRowLast: { borderBottomWidth: 0 },
     memberInfo: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
-    memberName: { ...typography.bodyMedium },
-    ownerBadge: {
-      backgroundColor: colors.primaryLighter,
-      paddingHorizontal: spacing.sm, paddingVertical: 2,
-      borderRadius: radius.full,
-    },
-    ownerBadgeText: { ...typography.small, color: colors.primary, fontWeight: '600' },
-    removeButton: {
-      paddingHorizontal: spacing.md, paddingVertical: spacing.xs,
-      borderRadius: radius.full, borderWidth: 1, borderColor: colors.danger,
-    },
-    removeButtonText: { ...typography.small, color: colors.danger, fontWeight: '600' },
+    memberName: { flexShrink: 1, fontFamily: 'Geist_500Medium', fontSize: 16, color: colors.text },
+    ownerLabel: { fontFamily: 'GeistMono_500Medium', fontSize: 12, color: colors.textMeta },
+    removeText: { fontFamily: 'Geist_500Medium', fontSize: 14, color: colors.danger },
   });
 }

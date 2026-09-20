@@ -64,16 +64,10 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
             <Stack.Screen name="Home" component={HomeScreen} />
             {/* Pushed from the header avatar — no tab bar, no tab-navigator wrapper. */}
             <Stack.Screen name="Account" component={SettingsScreen} />
-            <Stack.Screen
-              name="GroupDetail"
-              component={GroupDetailScreen}
-              options={{ headerShown: true, title: 'Group', ...sharedHeaderOptions }}
-            />
-            <Stack.Screen
-              name="CreateGroup"
-              component={CreateGroupScreen}
-              options={{ headerShown: true, title: 'New Group', ...sharedHeaderOptions }}
-            />
+            {/* The three group screens draw their own back chevron and title, so they
+                take the stack's `headerShown: false`. */}
+            <Stack.Screen name="GroupDetail" component={GroupDetailScreen} />
+            <Stack.Screen name="CreateGroup" component={CreateGroupScreen} />
             <Stack.Screen
               name="Call"
               component={CallScreen}
@@ -97,11 +91,7 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
               component={InviteUserScreen}
               options={{ headerShown: true, title: 'Add Member', ...sharedHeaderOptions }}
             />
-            <Stack.Screen
-              name="GroupSettings"
-              component={GroupSettingsScreen}
-              options={{ headerShown: true, title: 'Group Settings', ...sharedHeaderOptions }}
-            />
+            <Stack.Screen name="GroupSettings" component={GroupSettingsScreen} />
           </>
         )}
         {/*

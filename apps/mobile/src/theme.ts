@@ -1,3 +1,5 @@
+import { withAlpha } from './utils/color';
+
 // ─── Static (no theme dependency) ────────────────────────────────────────────
 export const spacing = {
   xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 24, xxxl: 32,
@@ -123,6 +125,7 @@ function makeColors(p: Palette, isDark: boolean) {
     successDark:  isDark ? '#3a7a62' : '#2a6e52',
 
     danger:      p.danger,
+    dangerBorder: withAlpha(p.danger, 0.5), // the danger box's 1px rule
     dangerLight: isDark ? 'rgba(217,138,114,.14)' : 'rgba(140,58,42,.10)',
     dangerDark:  isDark ? '#F0B39E' : '#6B2A1E',
 
@@ -130,6 +133,9 @@ function makeColors(p: Palette, isDark: boolean) {
     warningLight: isDark ? '#2a2016' : '#fdf0e0',
 
     background:       p.background,
+    // `background` at zero alpha — the clear end of a fade into it. Not the keyword
+    // `transparent`, which is black at zero alpha and greys the gradient's middle.
+    backgroundClear:  withAlpha(p.background, 0),
     surface:          p.surface,
     surfaceSecondary: isDark ? '#3A2F20' : '#F3E9D3',
 

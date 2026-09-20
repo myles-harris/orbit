@@ -2,38 +2,74 @@ import { useState, useEffect, useMemo } from 'react';
 import {
   View,
   Text,
-  TextInput,
   TouchableOpacity,
   StyleSheet,
   Alert,
-  ScrollView,
-  Switch,
   Share,
   ActionSheetIOS,
   Platform,
   ActivityIndicator,
-  KeyboardAvoidingView,
 } from 'react-native';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
-import * as Localization from 'expo-localization';
-import { formatViewerWindow } from '@orbit/shared';
+import type { GroupDetailDTO } from '@orbit/shared';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
-import { spacing, radius } from '../theme';
+import { layout, radius, spacing } from '../theme';
 import { useTheme } from '../context/ThemeContext';
-import NumberPicker from '../components/NumberPicker';
-import { formatHour, windowStartMax, windowEndMin, durationMax, cadenceSummary } from '../utils/groupFormat';
+import { CadenceFields } from '../components/CadenceFields';
+import { CallWindowField, WindowPreview } from '../components/CallWindowField';
+import { Display } from '../components/Display';
+import { Field, TextField } from '../components/Field';
+import { FormHeader } from '../components/FormHeader';
+import { FormScreen } from '../components/FormScreen';
+import { Icon } from '../components/Icon';
+import { SettingRow } from '../components/SettingRow';
+import { formatHour, durationMax, cadenceSummary } from '../utils/groupFormat';
 
 type GroupSettingsRouteProp = RouteProp<RootStackParamList, 'GroupSettings'>;
 type GroupSettingsNavigationProp = StackNavigationProp<RootStackParamList, 'GroupSettings'>;
+
+const THUMB_SIZE = 88;
+const BADGE_SIZE = 32;
+const BADGE_RING = 2;
+const BADGE_OFFSET = -6;
+
+// The group's photo, or — until it has one — the `surface` fill with its initial,
+// the way an avatar falls back. The camera badge is drawn at full fidelity but is
+// not yet wired to anything, so it is out of the accessibility tree rather than a
+// button that announces itself and does nothing.
+function GroupPhotoThumb({ name, editable, styles }: {
+  name: string;
+  editable: boolean;
+  styles: ReturnType<typeof makeStyles>;
+}) {
+  const { theme: { colors } } = useTheme();
+  return (
+    <View style={styles.thumbWrap}>
+      <View style={styles.thumb}>
+        <Display size={26} color={colors.textMeta}>{name.trim().charAt(0)}</Display>
+      </View>
+      {editable && (
+        <View
+          pointerEvents="none"
+          accessibilityElementsHidden
+          importantForAccessibility="no-hide-descendants"
+          style={styles.badge}
+        >
+          <Icon name="camera" size={16} color={colors.onAccent} />
+        </View>
+      )}
+    </View>
+  );
+}
 
 export default function GroupSettingsScreen() {
   const route = useRoute<GroupSettingsRouteProp>();
   const navigation = useNavigation<GroupSettingsNavigationProp>();
   const { groupId, isOwner } = route.params;
-  const { theme: { colors, typography, shadow } } = useTheme();
-  const styles = useMemo(() => makeStyles(colors, typography, shadow), [colors]);
+  const { theme: { colors } } = useTheme();
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const [sharingLink, setSharingLink] = useState(false);
   const [groupName, setGroupName] = useState('');
@@ -52,7 +88,9 @@ export default function GroupSettingsScreen() {
   const [savedWindowStart, setSavedWindowStart] = useState(6);
   const [savedWindowEnd, setSavedWindowEnd] = useState(22);
   const [groupTz, setGroupTz] = useState<string>('UTC');
-  const viewerTz = Localization.getCalendars()[0]?.timeZone ?? 'UTC';
+  const [memberTimeZones, setMemberTimeZones] = useState<string[]>([]);
+  // True while a dial handle is held, so the form's ScrollView doesn't take the drag.
+  const [dialDragging, setDialDragging] = useState(false);
 
   const hasChanges =
     groupName !== savedName ||
@@ -62,17 +100,12 @@ export default function GroupSettingsScreen() {
     windowStart !== savedWindowStart ||
     windowEnd !== savedWindowEnd;
 
-  const handleCadenceChange = (value: 'daily' | 'weekly') => {
-    setCadence(value);
-    setFrequency(1);
-  };
-
   useEffect(() => { loadGroupSettings(); }, []);
 
   const loadGroupSettings = async () => {
     try {
       const client = await createAuthenticatedApiClient();
-      const group = await client.get<any>(`/groups/${groupId}`);
+      const group = await client.get<GroupDetailDTO>(`/groups/${groupId}`);
       const loadedCadence = group.cadence;
       const loadedFrequency = loadedCadence === 'weekly'
         ? (group.weekly_frequency || 1)
@@ -84,6 +117,7 @@ export default function GroupSettingsScreen() {
       setCallDuration(loadedDuration); setWindowStart(loadedWindowStart); setWindowEnd(loadedWindowEnd);
       setIsMuted(group.is_muted ?? false);
       setGroupTz(group.time_zone ?? 'UTC');
+      setMemberTimeZones(group.members.map((m) => m.time_zone));
       setSavedName(group.name); setSavedCadence(loadedCadence);
       setSavedFrequency(loadedFrequency); setSavedCallDuration(loadedDuration);
       setSavedWindowStart(loadedWindowStart); setSavedWindowEnd(loadedWindowEnd);
@@ -165,18 +199,18 @@ export default function GroupSettingsScreen() {
   const transferOwnership = async () => {
     try {
       const client = await createAuthenticatedApiClient();
-      const group = await client.get<any>(`/groups/${groupId}`);
-      const members = group.members.filter((m: any) => m.user_id !== group.owner_id);
+      const group = await client.get<GroupDetailDTO>(`/groups/${groupId}`);
+      const members = group.members.filter((m) => m.user_id !== group.owner_id);
       if (members.length === 0) { Alert.alert('No Members', 'There are no other members to transfer ownership to'); return; }
       if (Platform.OS === 'ios') {
-        const options = [...members.map((m: any) => m.username), 'Cancel'];
+        const options = [...members.map((m) => m.username), 'Cancel'];
         const cancelButtonIndex = options.length - 1;
         ActionSheetIOS.showActionSheetWithOptions(
           { title: 'Transfer Ownership', message: 'Select new owner', options, cancelButtonIndex },
           (buttonIndex) => { if (buttonIndex !== cancelButtonIndex) confirmTransfer(members[buttonIndex], client); }
         );
       } else {
-        const buttons = members.map((member: any) => ({ text: member.username, onPress: () => confirmTransfer(member, client) }));
+        const buttons = members.map((member) => ({ text: member.username, onPress: () => confirmTransfer(member, client) }));
         buttons.push({ text: 'Cancel', style: 'cancel' } as any);
         Alert.alert('Transfer Ownership', 'Select new owner:', buttons as any);
       }
@@ -237,265 +271,190 @@ export default function GroupSettingsScreen() {
     ]);
   };
 
+  const goBack = () => navigation.goBack();
+
+  // Drawn while loading too: the navigator no longer supplies a back button, and a
+  // failed load leaves this spinner up.
   if (loading) {
     return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
+      <View style={styles.flex}>
+        <FormHeader title="Group settings" onBack={goBack} />
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" color={colors.textSecondary} />
+        </View>
       </View>
     );
   }
 
   const cadenceLabel = cadenceSummary(savedCadence, savedFrequency);
   const windowSummary = `${formatHour(savedWindowStart)} – ${formatHour(savedWindowEnd)}`;
-  const windowInViewerTz = groupTz !== viewerTz
-    ? formatViewerWindow(savedWindowStart, savedWindowEnd, groupTz, viewerTz)
-    : null;
 
   return (
-    <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
-      <ScrollView style={styles.container} contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+    <FormScreen
+      title="Group settings"
+      onBack={goBack}
+      action={{
+        label: 'Save changes',
+        onPress: saveSettings,
+        disabled: !hasChanges,
+        caption: hasChanges ? undefined : 'Nothing to save yet.',
+      }}
+      scrollEnabled={!dialDragging}
+    >
+      <GroupPhotoThumb name={groupName} editable={isOwner} styles={styles} />
 
-        <Text style={styles.sectionLabel}>Group</Text>
+      <TextField
+        label="Group name"
+        value={groupName}
+        onChangeText={setGroupName}
+        placeholder="Enter group name"
+        helper="All members can update the group name"
+      />
 
-        <View style={styles.card}>
-          <Text style={styles.fieldLabel}>Group Name</Text>
-          <TextInput
-            style={styles.input}
-            value={groupName}
-            onChangeText={setGroupName}
-            placeholder="Enter group name"
-            placeholderTextColor={colors.textTertiary}
+      {!isOwner && (
+        <View>
+          <SettingRow label="Call frequency" variant={{ type: 'value', value: cadenceLabel }} />
+          <SettingRow label="Call duration" variant={{ type: 'value', value: `${savedCallDuration} min` }} />
+          <SettingRow label="Call window" variant={{ type: 'value', value: windowSummary }} last />
+          <WindowPreview start={savedWindowStart} end={savedWindowEnd} groupTz={groupTz} memberTimeZones={memberTimeZones} />
+          <Text style={styles.ownerOnlyNote}>Only the group owner can change these.</Text>
+        </View>
+      )}
+
+      {isOwner && (
+        <>
+          <CadenceFields
+            cadence={cadence}
+            onCadenceChange={setCadence}
+            frequency={frequency}
+            onFrequencyChange={setFrequency}
+            duration={callDuration}
+            onDurationChange={setCallDuration}
+            durationCeiling={durationMax(savedCallDuration)}
           />
-          <Text style={styles.helperText}>All members can update the group name</Text>
-        </View>
 
-        {!isOwner && (
-          <>
-            <View style={styles.readOnlyCard}>
-              <View style={styles.readOnlyRow}>
-                <Text style={styles.readOnlyLabel}>Call Frequency</Text>
-                <Text style={styles.readOnlyValue}>{cadenceLabel}</Text>
-              </View>
-              <View style={styles.readOnlyRow}>
-                <Text style={styles.readOnlyLabel}>Call Duration</Text>
-                <Text style={styles.readOnlyValue}>{savedCallDuration} min</Text>
-              </View>
-              <View style={[styles.readOnlyRow, styles.readOnlyRowLast]}>
-                <Text style={styles.readOnlyLabel}>Call Window</Text>
-                <View style={styles.readOnlyValueBlock}>
-                  <Text style={styles.readOnlyValue}>{windowSummary}</Text>
-                  {windowInViewerTz && (
-                    <Text style={styles.readOnlySubValue}>{windowInViewerTz} your time</Text>
-                  )}
-                </View>
-              </View>
-            </View>
-            <Text style={styles.lockNote}>Only the group owner can change these.</Text>
-          </>
-        )}
+          <CallWindowField
+            start={windowStart}
+            end={windowEnd}
+            onChangeStart={setWindowStart}
+            onChangeEnd={setWindowEnd}
+            onDragChange={setDialDragging}
+            groupTz={groupTz}
+            memberTimeZones={memberTimeZones}
+          />
 
+          <Field label="Invite link" helper="Anyone with the link can join this group. Links expire in 7 days.">
+            <TouchableOpacity
+              style={[styles.shareRow, sharingLink && styles.shareRowDisabled]}
+              onPress={shareInviteLink}
+              disabled={sharingLink}
+              activeOpacity={0.7}
+              accessibilityRole="button"
+            >
+              <Text style={styles.shareLabel}>Share invite link</Text>
+              {sharingLink
+                ? <ActivityIndicator size="small" color={colors.textSecondary} />
+                : <Icon name="share" size={20} color={colors.text} />}
+            </TouchableOpacity>
+          </Field>
+        </>
+      )}
+
+      <View>
+        <SettingRow
+          label="Mute notifications"
+          variant={{ type: 'toggle', value: isMuted, onToggle: toggleMute }}
+          last={!isOwner}
+        />
         {isOwner && (
-          <>
-            <View style={styles.card}>
-              <Text style={styles.fieldLabel}>Call Frequency</Text>
-              <View style={styles.segmentRow}>
-                <TouchableOpacity
-                  style={[styles.segment, cadence === 'daily' && styles.segmentActive]}
-                  onPress={() => handleCadenceChange('daily')}
-                >
-                  <Text style={[styles.segmentText, cadence === 'daily' && styles.segmentTextActive]}>Daily</Text>
-                </TouchableOpacity>
-                <TouchableOpacity
-                  style={[styles.segment, cadence === 'weekly' && styles.segmentActive]}
-                  onPress={() => handleCadenceChange('weekly')}
-                >
-                  <Text style={[styles.segmentText, cadence === 'weekly' && styles.segmentTextActive]}>Weekly</Text>
-                </TouchableOpacity>
-              </View>
-              {cadence === 'daily' ? (
-                <Text style={styles.helperText}>One call per day.</Text>
-              ) : (
-                <>
-                  <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Calls per Week</Text>
-                  <NumberPicker min={1} max={6} value={frequency} onChange={setFrequency} />
-                </>
-              )}
-            </View>
-
-            <View style={styles.card}>
-              <Text style={styles.fieldLabel}>Call Window</Text>
-              <Text style={styles.helperText}>
-                Calls are scheduled at a random time within this window, in the group's timezone.
-                {viewerTz !== groupTz ? ` For you: ${formatViewerWindow(windowStart, windowEnd, groupTz, viewerTz)}` : ''}
-              </Text>
-              <View style={styles.windowStack}>
-                <Text style={styles.fieldLabel}>Earliest</Text>
-                <NumberPicker
-                  min={0}
-                  max={windowStartMax(windowEnd)}
-                  value={windowStart}
-                  onChange={setWindowStart}
-                  formatValue={formatHour}
-                />
-                <Text style={[styles.fieldLabel, { marginTop: spacing.lg }]}>Latest</Text>
-                <NumberPicker
-                  min={windowEndMin(windowStart)}
-                  max={23}
-                  value={windowEnd}
-                  onChange={setWindowEnd}
-                  formatValue={formatHour}
-                />
-              </View>
-            </View>
-
-            <View style={styles.card}>
-              <Text style={styles.fieldLabel}>Call Duration</Text>
-              <NumberPicker min={2} max={durationMax(savedCallDuration)} value={callDuration} onChange={setCallDuration} suffix="min" />
-            </View>
-
-            <View style={styles.card}>
-              <Text style={styles.fieldLabel}>Invite Link</Text>
-              <TouchableOpacity
-                style={[styles.shareButton, sharingLink && styles.shareButtonDisabled]}
-                onPress={shareInviteLink}
-                disabled={sharingLink}
-              >
-                {sharingLink ? (
-                  <ActivityIndicator size="small" color={colors.primary} />
-                ) : (
-                  <Text style={styles.shareButtonText}>Share Invite Link</Text>
-                )}
-              </TouchableOpacity>
-              <Text style={styles.helperText}>Anyone with the link can join this group. Links expire in 7 days.</Text>
-            </View>
-
-            <View style={styles.card}>
-              <Text style={styles.fieldLabel}>Ownership</Text>
-              <TouchableOpacity style={styles.transferButton} onPress={transferOwnership}>
-                <Text style={styles.transferButtonText}>Transfer Ownership</Text>
-              </TouchableOpacity>
-              <Text style={styles.helperText}>Pass ownership to another group member. You will become a regular member.</Text>
-            </View>
-          </>
+          <SettingRow label="Transfer ownership" variant={{ type: 'chevron' }} onPress={transferOwnership} last />
         )}
-
-        <Text style={[styles.sectionLabel, { marginTop: spacing.md }]}>Your settings</Text>
-
-        <View style={styles.card}>
-          <View style={styles.muteRow}>
-            <View style={styles.muteTextBlock}>
-              <Text style={styles.muteLabel}>Mute Notifications</Text>
-              <Text style={styles.muteHelper}>Stop receiving call alerts for this group</Text>
-            </View>
-            <Switch
-              value={isMuted}
-              onValueChange={toggleMute}
-              trackColor={{ false: colors.background, true: colors.primary + '60' }}
-              thumbColor={isMuted ? colors.primary : colors.textTertiary}
-            />
-          </View>
-        </View>
-
-        <View style={styles.dangerCard}>
-          <Text style={styles.dangerTitle}>{isOwner ? 'Danger Zone' : 'Leave Group'}</Text>
-          {!isOwner && (
-            <>
-              <TouchableOpacity style={styles.dangerButton} onPress={leaveGroup}>
-                <Text style={styles.dangerButtonText}>Leave Group</Text>
-              </TouchableOpacity>
-              <Text style={styles.dangerHelperText}>You'll need to be re-invited to rejoin this group.</Text>
-            </>
-          )}
-          {isOwner && (
-            <>
-              <TouchableOpacity style={styles.dangerButton} onPress={deleteGroup}>
-                <Text style={styles.dangerButtonText}>Delete Group</Text>
-              </TouchableOpacity>
-              <Text style={styles.dangerHelperText}>This removes all members and call history. Cannot be undone.</Text>
-            </>
-          )}
-        </View>
-      </ScrollView>
-
-      <View style={styles.footer}>
-        <TouchableOpacity
-          style={[styles.saveButton, !hasChanges && styles.saveButtonDisabled]}
-          onPress={saveSettings}
-          activeOpacity={0.85}
-          disabled={!hasChanges}
-        >
-          <Text style={styles.saveButtonText}>Save Changes</Text>
-        </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+
+      {/* The owner's Delete is the danger zone. A member has no such thing, only
+          a way out, so theirs is the same box without the heading. */}
+      <View style={styles.dangerBox}>
+        {isOwner && <Text style={styles.dangerHeading}>Danger zone</Text>}
+        {isOwner ? (
+          <SettingRow
+            label="Delete group"
+            danger
+            last
+            onPress={deleteGroup}
+            variant={{ type: 'control', control: <Icon name="trash" size={20} color={colors.danger} /> }}
+          />
+        ) : (
+          <SettingRow label="Leave group" danger last onPress={leaveGroup} variant={{ type: 'chevron' }} />
+        )}
+      </View>
+    </FormScreen>
   );
 }
 
-function makeStyles(colors: any, typography: any, shadow: any) {
+function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
   return StyleSheet.create({
     flex: { flex: 1, backgroundColor: colors.background },
-    container: { flex: 1 },
-    loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
-    content: { padding: spacing.xl, paddingBottom: spacing.xl },
-    sectionLabel: {
-      ...typography.captionMedium,
-      color: colors.textSecondary,
-      textTransform: 'uppercase',
-      letterSpacing: 0.5,
-      fontWeight: '600',
-      marginBottom: spacing.sm,
-      marginLeft: spacing.xs,
-    },
-    card: { backgroundColor: colors.surface, borderRadius: radius.lg, padding: spacing.xl, marginBottom: spacing.md, ...shadow.sm },
-    fieldLabel: { ...typography.captionMedium, color: colors.textSecondary, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '600', marginBottom: spacing.sm },
-    input: { backgroundColor: colors.background, borderRadius: radius.md, paddingHorizontal: spacing.lg, paddingVertical: spacing.md, fontSize: 16, color: colors.text },
-    helperText: { ...typography.small, color: colors.textTertiary, marginTop: spacing.sm, marginBottom: spacing.sm },
-    windowStack: { marginTop: spacing.sm },
-    segmentRow: { flexDirection: 'row', backgroundColor: colors.background, borderRadius: radius.md, padding: 3 },
-    segment: { flex: 1, paddingVertical: spacing.sm + 2, borderRadius: radius.sm, alignItems: 'center' },
-    segmentActive: { backgroundColor: colors.surface, ...shadow.sm },
-    segmentText: { ...typography.captionMedium, color: colors.textSecondary, fontWeight: '600' },
-    segmentTextActive: { color: colors.primary },
-    readOnlyCard: {
+    centered: { flex: 1, justifyContent: 'center', alignItems: 'center' },
+
+    thumbWrap: { width: THUMB_SIZE, height: THUMB_SIZE },
+    thumb: {
+      width: THUMB_SIZE,
+      height: THUMB_SIZE,
+      borderRadius: radius.xxl,
       backgroundColor: colors.surface,
-      borderRadius: radius.lg,
-      overflow: 'hidden',
-      marginBottom: spacing.sm,
-      ...shadow.sm,
+      borderWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.hairline,
+      alignItems: 'center',
+      justifyContent: 'center',
     },
-    readOnlyRow: {
+    // A 32pt marigold disc inside a 2pt ring the colour of the page, so it reads
+    // as cut out of the thumb's corner.
+    badge: {
+      position: 'absolute',
+      right: BADGE_OFFSET,
+      bottom: BADGE_OFFSET,
+      width: BADGE_SIZE + BADGE_RING * 2,
+      height: BADGE_SIZE + BADGE_RING * 2,
+      borderRadius: radius.full,
+      backgroundColor: colors.accent,
+      borderWidth: BADGE_RING,
+      borderColor: colors.background,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+
+    ownerOnlyNote: {
+      fontFamily: 'Geist_400Regular',
+      fontSize: 12.5,
+      lineHeight: 18,
+      color: colors.textSecondary,
+      marginTop: spacing.sm,
+    },
+
+    shareRow: {
+      minHeight: layout.secondaryBtn,
+      borderRadius: radius.md,
+      borderWidth: 1,
+      borderColor: colors.borderStrong,
+      paddingHorizontal: 14,
       flexDirection: 'row',
-      alignItems: 'flex-start',
+      alignItems: 'center',
       justifyContent: 'space-between',
-      paddingHorizontal: spacing.xl,
-      paddingVertical: spacing.lg,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.border,
-      gap: spacing.md,
     },
-    readOnlyRowLast: { borderBottomWidth: 0 },
-    readOnlyLabel: { ...typography.bodyMedium, color: colors.textSecondary },
-    readOnlyValueBlock: { flexShrink: 1, alignItems: 'flex-end' },
-    readOnlyValue: { ...typography.bodyMedium, color: colors.text, flexShrink: 1, textAlign: 'right' },
-    readOnlySubValue: { ...typography.small, color: colors.textTertiary, marginTop: 2, textAlign: 'right' },
-    lockNote: { ...typography.small, color: colors.textTertiary, marginBottom: spacing.xl, marginLeft: spacing.xs },
-    muteRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
-    muteTextBlock: { flex: 1, marginRight: spacing.md },
-    muteLabel: { ...typography.bodyMedium, color: colors.text, fontWeight: '600' },
-    muteHelper: { ...typography.small, color: colors.textTertiary, marginTop: 2 },
-    shareButton: { backgroundColor: colors.primaryLight, borderRadius: radius.md, paddingVertical: spacing.md, alignItems: 'center', borderWidth: 1, borderColor: colors.primary, minHeight: 40, justifyContent: 'center' },
-    shareButtonDisabled: { opacity: 0.5 },
-    shareButtonText: { ...typography.captionMedium, color: colors.primary, fontWeight: '700' },
-    transferButton: { backgroundColor: colors.warningLight, borderRadius: radius.md, paddingVertical: spacing.md, alignItems: 'center', borderWidth: 1, borderColor: colors.warning },
-    transferButtonText: { ...typography.captionMedium, color: colors.warning, fontWeight: '700' },
-    footer: { backgroundColor: colors.background, paddingHorizontal: spacing.xl, paddingTop: spacing.md, paddingBottom: spacing.xl, borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: colors.surface },
-    saveButton: { backgroundColor: colors.primary, borderRadius: radius.full, paddingVertical: spacing.md + 2, alignItems: 'center', ...shadow.lg },
-    saveButtonDisabled: { backgroundColor: colors.textTertiary, shadowOpacity: 0, elevation: 0 },
-    saveButtonText: { ...typography.bodySemibold, color: colors.textOnPrimary },
-    dangerCard: { backgroundColor: colors.dangerLight, borderRadius: radius.lg, padding: spacing.xl, borderWidth: 1, borderColor: colors.danger, marginBottom: spacing.xl },
-    dangerTitle: { ...typography.captionMedium, color: colors.danger, textTransform: 'uppercase', letterSpacing: 0.5, fontWeight: '700', marginBottom: spacing.md },
-    dangerButton: { backgroundColor: colors.danger, borderRadius: radius.md, paddingVertical: spacing.md, alignItems: 'center' },
-    dangerButtonText: { ...typography.captionMedium, color: '#fff', fontWeight: '700' },
-    dangerHelperText: { ...typography.small, color: colors.dangerDark, marginTop: spacing.sm, textAlign: 'center' },
+    shareRowDisabled: { opacity: 0.5 },
+    shareLabel: { fontFamily: 'Geist_500Medium', fontSize: 16, color: colors.text },
+
+    dangerBox: {
+      borderWidth: 1,
+      borderColor: colors.dangerBorder,
+      borderRadius: radius.xl,
+      paddingHorizontal: 14,
+    },
+    dangerHeading: {
+      fontFamily: 'Geist_600SemiBold',
+      fontSize: 13,
+      color: colors.danger,
+      paddingTop: 14,
+    },
   });
 }

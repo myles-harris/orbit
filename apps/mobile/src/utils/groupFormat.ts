@@ -11,6 +11,12 @@ export function formatHour(h: number): string {
   return `${h - 12} PM`;
 }
 
+/** The cadence choice, in the order the segmented control draws it. */
+export const CADENCE_OPTIONS: { value: 'daily' | 'weekly'; label: string }[] = [
+  { value: 'daily', label: 'Daily' },
+  { value: 'weekly', label: 'Weekly' },
+];
+
 /** WS-6: daily is always 1x/day, so it never carries a count. */
 export function cadenceSummary(cadence: 'daily' | 'weekly', frequency: number): string {
   if (cadence === 'daily') return 'Daily';

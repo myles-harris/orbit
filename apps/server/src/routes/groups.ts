@@ -119,12 +119,16 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
     const grp = await prisma.group.findUnique({
       where: { id: req.params.id },
       include: {
-        members: { include: { user: { select: { id: true, username: true, avatar_updated_at: true } } } },
+        members: { include: { user: { select: { id: true, username: true, avatar_updated_at: true, time_zone: true } } } },
         calls: { orderBy: { started_at: 'desc' }, take: 1 },
       },
     });
     if (!grp) return res.status(404).json({ error: 'not_found' });
     const myMembership = grp.members.find((m: any) => m.user_id === userId);
+    // The roster (usernames, avatar stamps, time zones) is for members only. 404, not
+    // 403, and the same body as an unknown id: a 403 would confirm the id is real, and
+    // the invite preview hands ids to anyone holding a code.
+    if (!myMembership) return res.status(404).json({ error: 'not_found' });
     res.json({
       id: grp.id,
       name: grp.name,
@@ -136,11 +140,13 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
       call_window_start: grp.call_window_start,
       call_window_end: grp.call_window_end,
       time_zone: grp.time_zone,
-      is_muted: myMembership?.is_muted ?? false,
+      is_muted: myMembership.is_muted,
       member_count: grp.members.length,
       members: grp.members.map((m: any) => ({
         user_id: m.user_id,
         username: m.user.username,
+        // Lets the client show the call window as each member's zone sees it.
+        time_zone: m.user.time_zone,
         has_avatar: m.user.avatar_updated_at !== null,
         avatar_updated_at: m.user.avatar_updated_at?.toISOString() ?? null,
         role: m.user_id === grp.owner_id ? 'owner' : 'member',

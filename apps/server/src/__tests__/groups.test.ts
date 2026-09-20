@@ -106,6 +106,34 @@ describe('GET /groups/:id', () => {
     expect(res.body.members).toHaveLength(1);
   });
 
+  // T8 — the call-window preview shows the window as each member's zone sees it,
+  // so the client needs every member's time_zone, not just the group's.
+  it('returns each member\'s time_zone', async () => {
+    const { user: owner, token } = await createTestUserWithToken();
+    const { user: member } = await createTestUserWithToken();
+    await prisma.user.update({ where: { id: owner.id }, data: { time_zone: 'America/New_York' } });
+    await prisma.user.update({ where: { id: member.id }, data: { time_zone: 'Asia/Tokyo' } });
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Zones Group', cadence: 'daily', call_duration_minutes: 10 });
+    await prisma.groupMember.create({
+      data: { group_id: createRes.body.id, user_id: member.id, role: 'member' },
+    });
+
+    const res = await request(app)
+      .get(`/groups/${createRes.body.id}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    const zoneByUser = Object.fromEntries(res.body.members.map((m: any) => [m.user_id, m.time_zone]));
+    expect(zoneByUser).toEqual({
+      [owner.id]: 'America/New_York',
+      [member.id]: 'Asia/Tokyo',
+    });
+  });
+
   it('returns 404 for a non-existent group', async () => {
     const { token } = await createTestUserWithToken();
 
@@ -114,6 +142,51 @@ describe('GET /groups/:id', () => {
       .set('Authorization', `Bearer ${token}`);
 
     expect(res.status).toBe(404);
+  });
+
+  // The invite preview hands the group id to anyone holding a code, so an id alone
+  // must not be enough to read a roster. 404, not 403 — a 403 would confirm the id
+  // belongs to a real group — and byte-for-byte what an unknown id gets.
+  it('returns 404 to a user who is not a member, indistinguishable from an unknown id', async () => {
+    const { token: ownerToken } = await createTestUserWithToken();
+    const { token: outsiderToken } = await createTestUserWithToken();
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'Private Group', cadence: 'daily', call_duration_minutes: 10 });
+
+    const asOutsider = await request(app)
+      .get(`/groups/${createRes.body.id}`)
+      .set('Authorization', `Bearer ${outsiderToken}`);
+    const unknownId = await request(app)
+      .get('/groups/00000000-0000-0000-0000-000000000000')
+      .set('Authorization', `Bearer ${outsiderToken}`);
+
+    expect(asOutsider.status).toBe(404);
+    expect(asOutsider.body).toEqual(unknownId.body);
+    // Nothing about the group or its members leaks in the body.
+    expect(JSON.stringify(asOutsider.body)).not.toMatch(/Private Group|username|time_zone/);
+  });
+
+  it('stops serving a user once they have been removed from the group', async () => {
+    const { token: ownerToken } = await createTestUserWithToken();
+    const { user: member, token: memberToken } = await createTestUserWithToken();
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${ownerToken}`)
+      .send({ name: 'Leaving Group', cadence: 'daily', call_duration_minutes: 10 });
+    const membership = await prisma.groupMember.create({
+      data: { group_id: createRes.body.id, user_id: member.id, role: 'member' },
+    });
+
+    const before = await request(app).get(`/groups/${createRes.body.id}`).set('Authorization', `Bearer ${memberToken}`);
+    expect(before.status).toBe(200);
+
+    await prisma.groupMember.delete({ where: { id: membership.id } });
+    const after = await request(app).get(`/groups/${createRes.body.id}`).set('Authorization', `Bearer ${memberToken}`);
+    expect(after.status).toBe(404);
   });
 });
 
