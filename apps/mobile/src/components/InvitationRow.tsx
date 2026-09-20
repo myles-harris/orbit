@@ -8,16 +8,20 @@ interface InvitationRowProps {
   invitedBy: string;
   /** Formatted upstream (e.g. "Daily", "3×/wk") — this component only places it. */
   cadence: string;
-  /** A response is in flight; both actions are inert until it settles. */
+  /** A response is in flight; every action is inert until it settles. */
   busy?: boolean;
   onAccept: () => void;
   onLater: () => void;
+  /** Permanent — the caller is expected to confirm first. */
+  onDecline: () => void;
 }
 
-// The full-width, both-columns pending-invitation row. Marigold appears three ways
-// here, all of them AC-3 roles: the 1px border, the `accentSoft` wash, and Accept —
-// a fill carrying a label. Later is text-only so Accept is the row's one action.
-export function InvitationRow({ groupName, invitedBy, cadence, busy, onAccept, onLater }: InvitationRowProps) {
+// The full-width, both-columns pending-invitation row. Two rows inside: who and what
+// on top, then the three answers — three buttons do not fit beside a group name at
+// 375pt. Marigold appears three ways here, all AC-3 roles: the 1px border, the
+// `accentSoft` wash, and Accept — a fill carrying a label. Decline and Later are
+// text-only so Accept is the row's one filled action.
+export function InvitationRow({ groupName, invitedBy, cadence, busy, onAccept, onLater, onDecline }: InvitationRowProps) {
   const { theme: { colors } } = useTheme();
 
   return (
@@ -36,57 +40,73 @@ export function InvitationRow({ groupName, invitedBy, cadence, busy, onAccept, o
         </Text>
       </View>
 
-      <TouchableOpacity
-        onPress={onLater}
-        disabled={busy}
-        activeOpacity={0.7}
-        accessibilityRole="button"
-        accessibilityLabel={`Decide later about ${groupName}`}
-        style={styles.later}
-      >
-        <Text style={[styles.laterLabel, { color: colors.text }]}>Later</Text>
-      </TouchableOpacity>
+      <View style={styles.actions}>
+        <TouchableOpacity
+          onPress={onDecline}
+          disabled={busy}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`Decline invitation to ${groupName}`}
+          style={styles.textAction}
+        >
+          <Text style={[styles.textActionLabel, { color: colors.textSecondary }]}>Decline</Text>
+        </TouchableOpacity>
 
-      <TouchableOpacity
-        onPress={onAccept}
-        disabled={busy}
-        activeOpacity={0.85}
-        accessibilityRole="button"
-        accessibilityLabel={`Accept invitation to ${groupName}`}
-        style={[styles.accept, { backgroundColor: colors.accent }]}
-      >
-        <Text style={[styles.acceptLabel, { color: colors.onAccent }]}>Accept</Text>
-      </TouchableOpacity>
+        <TouchableOpacity
+          onPress={onLater}
+          disabled={busy}
+          activeOpacity={0.7}
+          accessibilityRole="button"
+          accessibilityLabel={`Decide later about ${groupName}`}
+          style={styles.textAction}
+        >
+          <Text style={[styles.textActionLabel, { color: colors.text }]}>Later</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={onAccept}
+          disabled={busy}
+          activeOpacity={0.85}
+          accessibilityRole="button"
+          accessibilityLabel={`Accept invitation to ${groupName}`}
+          style={[styles.accept, { backgroundColor: colors.accent }]}
+        >
+          <Text style={[styles.acceptLabel, { color: colors.onAccent }]}>Accept</Text>
+        </TouchableOpacity>
+      </View>
     </View>
   );
 }
 
-// Both actions are minHeights: at 150–200% system text they grow with their label.
+// Every action is a minHeight: at 150–200% system text it grows with its label.
 const styles = StyleSheet.create({
   row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    gap: 6,
     paddingVertical: 11,
     paddingHorizontal: 16,
     borderRadius: radius.xl,
     borderWidth: 1,
   },
   text: {
-    flex: 1,
     gap: 2,
   },
   meta: {
     fontFamily: 'Geist_400Regular',
     fontSize: 13,
   },
-  later: {
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  textAction: {
     minHeight: layout.touchMin,
     paddingHorizontal: 8,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  laterLabel: {
+  textActionLabel: {
     fontFamily: 'Geist_500Medium',
     fontSize: 15,
   },

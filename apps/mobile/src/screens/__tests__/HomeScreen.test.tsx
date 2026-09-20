@@ -1,9 +1,10 @@
 import { act } from 'react';
 import { Alert, RefreshControl, StyleSheet, TextInput } from 'react-native';
-import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import renderer, { type ReactTestInstance, type ReactTestRenderer, type ReactTestRendererJSON } from 'react-test-renderer';
 import type { GroupDTO } from '@orbit/shared';
 import HomeScreen from '../HomeScreen';
 import { useTheme } from '../../context/ThemeContext';
+import { GroupTile } from '../../components/GroupTile';
 import { createAuthenticatedApiClient } from '../../utils/apiClient';
 import { fetchLiveCalls, type LiveCall } from '../../utils/liveCalls';
 import { darkTheme, lightTheme } from '../../theme';
@@ -34,6 +35,12 @@ jest.mock('../../utils/liveCalls', () => ({
   fetchLiveCalls: jest.fn(),
 }));
 jest.mock('@orbit/shared', () => ({ parseApiError: () => 'Friendly error message' }));
+jest.mock('../../components/GroupTile', () => {
+  const actual = jest.requireActual('../../components/GroupTile');
+  // A pass-through spy. Tiles re-render whenever the screen does, so counting their
+  // renders counts the screen's.
+  return { ...actual, GroupTile: jest.fn(actual.GroupTile) };
+});
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
@@ -95,9 +102,14 @@ function mockApi({ groups = [], invitations = [], liveCalls = [], failLoad = fal
 
 let mounted: ReactTestRenderer[] = [];
 
+// Under fake timers a real setTimeout(0) would never fire, so let the fake clock
+// drain the microtask queue instead.
+const fakeTimersOn = () => typeof (globalThis.setTimeout as unknown as { clock?: unknown }).clock === 'object';
+
 async function flush() {
   await act(async () => {
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    if (fakeTimersOn()) await jest.advanceTimersByTimeAsync(0);
+    else await new Promise((resolve) => setTimeout(resolve, 0));
   });
 }
 
@@ -120,11 +132,23 @@ const flat = (style: unknown): Record<string, any> => (StyleSheet.flatten(style 
 // `type` is typed as a component type; host nodes are named by string.
 const isHost = (n: ReactTestInstance, name: 'Text' | 'View') => (n.type as unknown) === name;
 
-/** Text of every host <Text> — strings and numbers only, joined. */
+/**
+ * The rendered text of every <Text>. Read from the output rather than the props: a
+ * countdown is a component that renders its string, so a host node's `children`
+ * prop is that component, not the text it draws.
+ */
 function allText(tree: ReactTestRenderer): string[] {
-  return tree.root
-    .findAll((n) => isHost(n, 'Text'))
-    .map((n) => [n.props.children].flat().filter((c) => typeof c === 'string' || typeof c === 'number').join(''));
+  const out: string[] = [];
+  const content = (node: ReactTestRendererJSON | string): string =>
+    typeof node === 'string' ? node : (node.children ?? []).map(content).join('');
+  const visit = (node: ReactTestRendererJSON | string | null) => {
+    if (node === null || typeof node === 'string') return;
+    if (node.type === 'Text') out.push(content(node));
+    else (node.children ?? []).forEach(visit);
+  };
+  const json = tree.toJSON();
+  (Array.isArray(json) ? json : [json]).forEach(visit);
+  return out;
 }
 
 const hasText = (tree: ReactTestRenderer, text: string) => allText(tree).includes(text);
@@ -139,8 +163,8 @@ function pressable(tree: ReactTestRenderer, text: string, index = 0): ReactTestI
   return at;
 }
 
-async function press(tree: ReactTestRenderer, text: string) {
-  const target = pressable(tree, text);
+async function press(tree: ReactTestRenderer, text: string, index = 0) {
+  const target = pressable(tree, text, index);
   await act(async () => {
     target.props.onPress();
   });
@@ -345,7 +369,7 @@ describe('Home invitations', () => {
     invitations: [invitation('i1', 'Book Club'), invitation('i2', 'Run Club')],
   };
 
-  it('lists one row per pending invitation under Invited, with inline Accept and Later', async () => {
+  it('lists one row per pending invitation under Invited, with inline Decline, Later and Accept', async () => {
     const { tree } = await renderHome(fixture);
     await press(tree, 'Invited');
 
@@ -353,6 +377,7 @@ describe('Home invitations', () => {
     expect(hasText(tree, 'Alpha')).toBe(false); // the grid swapped to invitations
     expect(allText(tree).filter((t) => t === 'Accept')).toHaveLength(2);
     expect(allText(tree).filter((t) => t === 'Later')).toHaveLength(2);
+    expect(allText(tree).filter((t) => t === 'Decline')).toHaveLength(2);
     expect(allText(tree).some((t) => t.startsWith('Invited by jo'))).toBe(true);
   });
 
@@ -416,13 +441,27 @@ describe('Home live call', () => {
     group({ id: 'b', name: 'Bravo' }),
     group({ id: 'c', name: 'Charlie' }),
   ];
-  // ends 12:04 from T0; Alpha is a 10-minute call, so it started at T0 + 124s
-  const callA: LiveCall = { id: 'ca', group_id: 'a', ends_at: new Date(T0 + 724_000).toISOString(), participant_count: 2 };
-  // started earlier (T0 − 56s) — the hero goes to the more recent Alpha
-  const callB: LiveCall = { id: 'cb', group_id: 'b', ends_at: new Date(T0 + 544_000).toISOString(), participant_count: 1 };
+  const iso = (ms: number) => new Date(ms).toISOString();
+  // Scheduled, ends 12:04 from T0. Started a minute ago — the more recent, so the hero.
+  const callA: LiveCall = {
+    id: 'ca', group_id: 'a', call_type: 'scheduled', started_at: iso(T0 - 60_000),
+    ends_at: iso(T0 + 724_000), participant_count: 2,
+  };
+  // Scheduled, started five minutes ago.
+  const callB: LiveCall = {
+    id: 'cb', group_id: 'b', call_type: 'scheduled', started_at: iso(T0 - 300_000),
+    ends_at: iso(T0 + 544_000), participant_count: 1,
+  };
+  const looksLikeCountdown = (t: string) => /^\d+:\d{2}(:\d{2})?$/.test(t);
+  const oneSecondClocks = (spy: jest.SpyInstance) => spy.mock.calls.filter(([, ms]) => ms === 1000);
+  const longTimeouts = (spy: jest.SpyInstance) => spy.mock.calls.map(([, ms]) => ms as number).filter((ms) => ms >= 1000);
 
+  // The wall clock the screen reads, moved by hand.
+  let elapsed = 0;
+  const advanceClock = (ms: number) => { elapsed += ms; };
   beforeEach(() => {
-    jest.spyOn(Date, 'now').mockReturnValue(T0);
+    elapsed = 0;
+    jest.spyOn(Date, 'now').mockImplementation(() => T0 + elapsed);
   });
 
   it('renders the live card at the top with the joined count and a countdown', async () => {
@@ -470,24 +509,71 @@ describe('Home live call', () => {
     expect(hasText(tree, 'Join')).toBe(false);
   });
 
-  it('ticks down from ends_at, never below zero', async () => {
-    // Fake only the interval: Date stays on the spy above, and the promise/timeout
-    // machinery that flush() and the load chain rely on stays real.
-    jest.useFakeTimers({ doNotFake: ['Date', 'setTimeout', 'setImmediate', 'nextTick', 'queueMicrotask'] });
+  // Date stays on the spy above; the promise machinery the load chain relies on stays
+  // real. setTimeout and setInterval are faked — the screen uses one, the countdown
+  // the other.
+  const fakeTimers = () =>
+    jest.useFakeTimers({ doNotFake: ['Date', 'setImmediate', 'nextTick', 'queueMicrotask'] });
+
+  it('ticks the countdown down by the second, and drops the card the moment the call ends', async () => {
+    fakeTimers();
     try {
       const { tree } = await renderHome({ groups, liveCalls: [callA] });
       expect(hasText(tree, '12:04')).toBe(true);
 
-      (Date.now as jest.Mock).mockReturnValue(T0 + 5_000);
-      await act(async () => { jest.advanceTimersByTime(1000); });
+      advanceClock(5_000);
+      await act(async () => { jest.advanceTimersByTime(5_000); });
       expect(hasText(tree, '11:59')).toBe(true);
 
-      (Date.now as jest.Mock).mockReturnValue(T0 + 800_000);
-      await act(async () => { jest.advanceTimersByTime(1000); });
-      expect(hasText(tree, 'Join')).toBe(false); // ended: the card is gone rather than reading 0:00
+      // The end. The screen's own timeout — not a per-second tick — takes the card
+      // away rather than leaving it reading 0:00.
+      advanceClock(719_000);
+      await act(async () => { jest.advanceTimersByTime(719_000); });
+      expect(hasText(tree, 'Join')).toBe(false);
+      expect(allText(tree).some(looksLikeCountdown)).toBe(false);
+      expect(allText(tree).filter((t) => t === 'Alpha')).toHaveLength(1); // its tile is back
     } finally {
       jest.useRealTimers();
     }
+  });
+
+  // The point of the two clocks: the countdown text re-renders itself every second,
+  // and the screen — header, tabs, every tile — renders only when a call ends.
+  it('re-renders only the countdown each second, and the screen only when the call ends', async () => {
+    fakeTimers();
+    try {
+      const { tree } = await renderHome({ groups, liveCalls: [callA] });
+      const tileRenders = () => (GroupTile as jest.Mock).mock.calls.length;
+      const settled = tileRenders();
+      expect(settled).toBeGreaterThan(0);
+      expect(hasText(tree, '12:04')).toBe(true);
+
+      for (let second = 1; second <= 3; second += 1) {
+        advanceClock(1000);
+        await act(async () => { jest.advanceTimersByTime(1000); });
+      }
+      expect(hasText(tree, '12:01')).toBe(true); // the countdown moved…
+      expect(tileRenders()).toBe(settled); // …and no tile re-rendered, so neither did the screen
+
+      // The end: one screen render. Bravo and Charlie were tiles already; Alpha
+      // joins them, so the three tiles render once each.
+      const beforeEnd = tileRenders();
+      advanceClock(721_000);
+      await act(async () => { jest.advanceTimersByTime(721_000); });
+      expect(hasText(tree, 'Join')).toBe(false);
+      expect(tileRenders() - beforeEnd).toBe(3);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('runs one 1s clock for the countdown and one timeout, at the call\'s end, for the screen', async () => {
+    const setTimer = jest.spyOn(globalThis, 'setTimeout');
+    const setTick = jest.spyOn(globalThis, 'setInterval');
+    await renderHome({ groups, liveCalls: [callA] });
+
+    expect(oneSecondClocks(setTick)).toHaveLength(1);
+    expect(longTimeouts(setTimer)).toContain(724_000);
   });
 
   it('joins through the same join-token endpoint as group detail', async () => {
@@ -832,7 +918,8 @@ describe('Home answering invitations', () => {
 describe('Home live clock', () => {
   const groups = [group({ id: 'a', name: 'Alpha' })];
   const call: LiveCall = {
-    id: 'ca', group_id: 'a', ends_at: new Date(T0 + 724_000).toISOString(), participant_count: 2,
+    id: 'ca', group_id: 'a', call_type: 'scheduled', started_at: new Date(T0 - 60_000).toISOString(),
+    ends_at: new Date(T0 + 724_000).toISOString(), participant_count: 2,
   };
   const oneSecondClocks = (spy: jest.SpyInstance) => spy.mock.calls.filter(([, ms]) => ms === 1000);
 
@@ -859,5 +946,286 @@ describe('Home live clock', () => {
     const started = jest.spyOn(globalThis, 'setInterval');
     await renderHome({ groups });
     expect(oneSecondClocks(started)).toHaveLength(0);
+  });
+});
+
+// ─── Spontaneous calls: no countdown, only scheduled ones count down ──────────
+
+describe('Home spontaneous calls', () => {
+  const iso = (ms: number) => new Date(ms).toISOString();
+  const groups = [
+    group({ id: 'a', name: 'Alpha', member_count: 4 }),
+    group({ id: 'b', name: 'Bravo' }),
+    group({ id: 'c', name: 'Charlie', member_count: 6 }),
+  ];
+  const scheduledCall: LiveCall = {
+    id: 'ca', group_id: 'a', call_type: 'scheduled', started_at: iso(T0 - 900_000),
+    ends_at: iso(T0 + 724_000), participant_count: 2,
+  };
+  const spontaneousCall: LiveCall = {
+    id: 'cs', group_id: 'c', call_type: 'spontaneous', started_at: iso(T0 - 60_000),
+    ends_at: null, participant_count: 3,
+  };
+  const looksLikeCountdown = (t: string) => /^\d+:\d{2}(:\d{2})?$/.test(t);
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(T0);
+  });
+
+  it('shows the in-progress card for a spontaneous call, with no countdown', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [spontaneousCall] });
+
+    expect(hasText(tree, '3 of 6 joined')).toBe(true);
+    expect(hasText(tree, 'Join')).toBe(true);
+    expect(hasText(tree, 'Charlie')).toBe(true);
+    expect(allText(tree).some(looksLikeCountdown)).toBe(false);
+  });
+
+  it('runs no clock at all for it — no 1s interval and no end-of-call timeout', async () => {
+    const setTick = jest.spyOn(globalThis, 'setInterval');
+    const setTimer = jest.spyOn(globalThis, 'setTimeout');
+    await renderHome({ groups, liveCalls: [spontaneousCall] });
+
+    expect(setTick.mock.calls.filter(([, ms]) => ms === 1000)).toHaveLength(0);
+    expect(setTimer.mock.calls.filter(([, ms]) => (ms as number) >= 1000)).toHaveLength(0);
+  });
+
+  it('counts down for a scheduled call in the very same render', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [scheduledCall] });
+    expect(allText(tree).filter(looksLikeCountdown)).toEqual(['12:04']);
+  });
+
+  it('is never dropped as ended, however long it has been open — only the server ends it', async () => {
+    (Date.now as jest.Mock).mockReturnValue(T0 + 6 * 3_600_000);
+    const { tree } = await renderHome({ groups, liveCalls: [spontaneousCall] });
+
+    expect(hasText(tree, 'Join')).toBe(true);
+    expect(allText(tree).filter((t) => t === 'Charlie')).toHaveLength(1);
+  });
+
+  it('goes when the next load says it is over', async () => {
+    const { tree, client } = await renderHome({ groups, liveCalls: [spontaneousCall] });
+    expect(hasText(tree, 'Join')).toBe(true);
+
+    (fetchLiveCalls as jest.Mock).mockResolvedValue([]);
+    await act(async () => mockListeners.focus());
+    await flush();
+
+    expect(hasText(tree, 'Join')).toBe(false);
+    expect(groupLoads(client)).toBe(2);
+  });
+
+  it('joins like any other call, with no end time to pass along', async () => {
+    const { tree, client } = await renderHome({ groups, liveCalls: [spontaneousCall] });
+    client.post.mockResolvedValue({ room_url: 'https://room', token: 'tok', ends_at: null });
+
+    await press(tree, 'Join');
+
+    expect(client.post).toHaveBeenCalledWith('/groups/c/calls/cs/join-token', {});
+    expect(mockNavigate).toHaveBeenCalledWith('Call', {
+      callId: 'cs', groupId: 'c', roomUrl: 'https://room', token: 'tok', endsAt: undefined,
+    });
+  });
+
+  it('ranks it against a scheduled call by when it started: the more recent takes the card', async () => {
+    // Spontaneous started a minute ago, scheduled fifteen minutes ago.
+    const { tree } = await renderHome({ groups, liveCalls: [scheduledCall, spontaneousCall] });
+
+    expect(hasText(tree, '3 of 6 joined')).toBe(true); // Charlie's card
+    expect(allText(tree).some(looksLikeCountdown)).toBe(false);
+    // The scheduled call keeps Alpha's tile, marked live — and it has no countdown either.
+    expect(flat(pressable(tree, 'Alpha').props.style)).toMatchObject({ borderWidth: 1, borderColor: MARIGOLD });
+    expect(allText(tree).filter((t) => t === 'live')).toHaveLength(1);
+  });
+
+  it('keeps a spontaneous call as a live tile when a scheduled one holds the card', async () => {
+    const olderSpontaneous: LiveCall = { ...spontaneousCall, started_at: iso(T0 - 1_800_000) };
+    const { tree } = await renderHome({ groups, liveCalls: [scheduledCall, olderSpontaneous] });
+
+    expect(allText(tree).filter(looksLikeCountdown)).toEqual(['12:04']); // only the card's
+    expect(flat(pressable(tree, 'Charlie').props.style)).toMatchObject({ borderWidth: 1, borderColor: MARIGOLD });
+    expect(allText(tree).filter((t) => t === 'live')).toHaveLength(1);
+  });
+
+  it('gives the screen a timeout only for the scheduled call among both', async () => {
+    const setTimer = jest.spyOn(globalThis, 'setTimeout');
+    await renderHome({ groups, liveCalls: [scheduledCall, spontaneousCall] });
+    expect(setTimer.mock.calls.map(([, ms]) => ms as number).filter((ms) => ms >= 1000)).toEqual([724_000]);
+  });
+});
+
+// ─── Declining an invitation ──────────────────────────────────────────────────
+
+describe('Home declining invitations', () => {
+  const two = {
+    groups: [group({ id: 'a', name: 'Alpha' })],
+    invitations: [invitation('i1', 'Book Club'), invitation('i2', 'Run Club')],
+  };
+
+  type AlertButton = { text: string; style?: string; onPress?: () => void };
+  const confirmDialog = (alert: jest.SpyInstance) => {
+    const [title, message, buttons] = alert.mock.calls[alert.mock.calls.length - 1] as [string, string, AlertButton[]];
+    return { title, message, buttons };
+  };
+  const chooseInDialog = async (alert: jest.SpyInstance, text: string) => {
+    const button = confirmDialog(alert).buttons.find((b) => b.text === text)!;
+    await act(async () => { button.onPress?.(); });
+    await flush();
+  };
+
+  let alert: jest.SpyInstance;
+  beforeEach(() => {
+    alert = jest.spyOn(Alert, 'alert').mockImplementation(() => {});
+  });
+
+  it('asks first, and says the decision is permanent', async () => {
+    const { tree, client } = await renderHome(two);
+    await press(tree, 'Invited');
+
+    await press(tree, 'Decline');
+
+    const { title, message, buttons } = confirmDialog(alert);
+    expect(title).toBe('Decline invitation?');
+    expect(message).toContain('jo'); // who would have to invite them again
+    expect(message).toContain('Book Club');
+    expect(buttons.map((b) => b.text)).toEqual(['Cancel', 'Decline']);
+    expect(buttons[0].style).toBe('cancel');
+    expect(buttons[1].style).toBe('destructive');
+    expect(client.respondToInvitation).not.toHaveBeenCalled(); // nothing sent yet
+  });
+
+  it('Cancel changes nothing', async () => {
+    const { tree, client } = await renderHome(two);
+    await press(tree, 'Invited');
+    await press(tree, 'Decline');
+
+    await chooseInDialog(alert, 'Cancel');
+
+    expect(client.respondToInvitation).not.toHaveBeenCalled();
+    expect(hasText(tree, 'Book Club') && hasText(tree, 'Run Club')).toBe(true);
+  });
+
+  it('declines that invitation when confirmed, and the row goes', async () => {
+    const { tree, client } = await renderHome(two);
+    await press(tree, 'Invited');
+    await press(tree, 'Decline'); // Book Club's
+
+    await chooseInDialog(alert, 'Decline');
+
+    expect(client.respondToInvitation).toHaveBeenCalledTimes(1);
+    expect(client.respondToInvitation).toHaveBeenCalledWith('i1', 'decline');
+    expect(hasText(tree, 'Book Club')).toBe(false);
+    expect(hasText(tree, 'Run Club')).toBe(true);
+    expect(alert).toHaveBeenCalledTimes(1); // just the confirmation — no success alert on top
+  });
+
+  it('declines the row whose Decline was pressed, not the first', async () => {
+    const { tree, client } = await renderHome(two);
+    await press(tree, 'Invited');
+    await press(tree, 'Decline', 1); // Run Club's
+
+    await chooseInDialog(alert, 'Decline');
+
+    expect(client.respondToInvitation).toHaveBeenCalledWith('i2', 'decline');
+    expect(hasText(tree, 'Run Club')).toBe(false);
+    expect(hasText(tree, 'Book Club')).toBe(true);
+  });
+
+  it('leaves the Invited tab for the groups when the last invitation is declined', async () => {
+    const { tree } = await renderHome({ ...two, invitations: [invitation('i1', 'Book Club')] });
+    await press(tree, 'Invited');
+    await press(tree, 'Decline');
+
+    await chooseInDialog(alert, 'Decline');
+
+    expect(hasText(tree, 'No pending invitations')).toBe(false);
+    expect(hasText(tree, 'Alpha')).toBe(true);
+  });
+
+  it('lands a first-run user on the first-run screen after declining their only invitation', async () => {
+    const { tree } = await renderHome({ invitations: [invitation('i1', 'Book Club')] });
+    await press(tree, 'Invited');
+    await press(tree, 'Decline');
+
+    await chooseInDialog(alert, 'Decline');
+
+    expect(hasText(tree, 'No pending invitations')).toBe(false);
+    expect(hasText(tree, 'No groups yet')).toBe(true);
+    expect(hasText(tree, 'Create a group')).toBe(true);
+  });
+
+  it('explains a rejected decline in plain words and resyncs', async () => {
+    const { tree, client } = await renderHome(two);
+    await press(tree, 'Invited');
+    await press(tree, 'Decline');
+    client.respondToInvitation.mockRejectedValueOnce(new Error('HTTP 400: {"error":"already responded"}'));
+    const before = groupLoads(client);
+
+    await chooseInDialog(alert, 'Decline');
+
+    expect(alert).toHaveBeenLastCalledWith('Error', 'Friendly error message');
+    expect(groupLoads(client)).toBe(before + 1);
+    expect(hasText(tree, 'Book Club')).toBe(true); // the resync, not a guess, decides what is left
+  });
+
+  it('holds every action on the row inert while the decline is in flight', async () => {
+    const { tree, client } = await renderHome(two);
+    await press(tree, 'Invited');
+    let settle!: () => void;
+    client.respondToInvitation.mockImplementationOnce(
+      () => new Promise((resolve) => { settle = () => resolve({ success: true, action: 'ok' }); }),
+    );
+    await press(tree, 'Decline');
+
+    await chooseInDialog(alert, 'Decline');
+
+    for (const label of ['Decline', 'Later', 'Accept']) {
+      expect(pressable(tree, label, 0).props.disabled).toBe(true);
+    }
+    // The other row is untouched.
+    expect(pressable(tree, 'Accept', 1).props.disabled).toBeFalsy();
+
+    await act(async () => settle());
+    await flush();
+    expect(hasText(tree, 'Book Club')).toBe(false);
+  });
+
+  it('is labelled for a screen reader with the group it would decline', async () => {
+    const { tree } = await renderHome(two);
+    await press(tree, 'Invited');
+
+    const decline = pressable(tree, 'Decline', 0);
+    expect(decline.props.accessibilityLabel).toBe('Decline invitation to Book Club');
+    expect(decline.props.accessibilityRole).toBe('button');
+  });
+
+  it.each<Mode>(['light', 'dark'])('draws Decline as plain text, never marigold (%s)', async (mode) => {
+    const { tree } = await renderHome(two, mode);
+    await press(tree, 'Invited');
+    const { colors } = THEMES[mode];
+
+    const decline = pressable(tree, 'Decline', 0);
+    expect(JSON.stringify(flat(decline.props.style))).not.toContain(colors.accent);
+    const label = decline.findAll((n) => isHost(n, 'Text'))[0];
+    expect(flat(label.props.style).color).toBe(colors.textSecondary);
+  });
+
+  it('lays the row out in two: who and what on top, then Decline, Later and Accept, right-aligned', async () => {
+    const { tree } = await renderHome(two);
+    await press(tree, 'Invited');
+
+    const accept = pressable(tree, 'Accept', 0);
+    // RN's TouchableOpacity is a forwardRef around a class, so climb past both.
+    let actions: ReactTestInstance | null = accept.parent;
+    while (actions && !flat(actions.props.style).flexDirection) actions = actions.parent;
+    expect(flat(actions!.props.style)).toMatchObject({ flexDirection: 'row', justifyContent: 'flex-end' });
+    // Decline and Later sit beside Accept, in that order, Accept last.
+    const order = actions!.findAll((n) => isHost(n, 'Text')).map((n) => [n.props.children].flat().join(''));
+    expect(order).toEqual(['Decline', 'Later', 'Accept']);
+
+    // The row itself stacks — its group name and meta line are above, not beside.
+    let row: ReactTestInstance | null = actions!.parent;
+    while (row && !(isHost(row, 'View') && flat(row.props.style).borderColor)) row = row.parent;
+    expect(flat(row!.props.style).flexDirection).not.toBe('row');
   });
 });

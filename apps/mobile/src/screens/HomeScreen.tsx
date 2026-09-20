@@ -14,11 +14,12 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { GroupDTO, UserDTO, parseApiError } from '@orbit/shared';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
-import { formatCountdown, secondsRemaining, useNow } from '../utils/countdown';
-import { LiveCall, fetchLiveCalls, pickHeroCall } from '../utils/liveCalls';
+import { useClockAt } from '../utils/countdown';
+import { LiveCall, fetchLiveCalls, hasCountdown, isLive, pickHeroCall } from '../utils/liveCalls';
 import { layout, spacing } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { BottomActionBar } from '../components/BottomActionBar';
+import { Countdown } from '../components/Countdown';
 import { Display } from '../components/Display';
 import { FilterTabs } from '../components/FilterTabs';
 import { GroupTile } from '../components/GroupTile';
@@ -134,22 +135,20 @@ export default function HomeScreen() {
 
   // ─── Live calls ─────────────────────────────────────────────────────────────
 
-  // The clock only runs while the screen is focused and a call has time left, and
-  // every reading is `Date.now()` — never a decrement — so a backgrounded app is
-  // correct the moment it returns (see utils/countdown.ts).
-  const latestEnd = useMemo(
-    () => liveCalls.reduce((max, c) => Math.max(max, new Date(c.ends_at).getTime() || 0), 0),
-    [liveCalls],
-  );
-  const now = useNow({ active: isFocused && liveCalls.length > 0, until: latestEnd });
+  // Which calls are live changes only when a scheduled call's end time passes, so
+  // this clock sleeps until the next one instead of ticking: the screen re-renders
+  // when a call ends, not every second. The per-second countdown lives in
+  // <Countdown/>, which re-renders alone. Spontaneous calls have no end time, so
+  // they add no deadline and no timer. Every reading is Date.now(), never a
+  // decrement, so a backgrounded app is right the moment it returns.
+  const endTimes = liveCalls.filter(hasCountdown).map((c) => new Date(c.ends_at).getTime());
+  const now = useClockAt(endTimes, isFocused);
 
   const groupsById = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
-  const activeCalls = liveCalls.filter(
-    (c) => groupsById.has(c.group_id) && secondsRemaining(c.ends_at, now) > 0,
-  );
+  const activeCalls = liveCalls.filter((c) => groupsById.has(c.group_id) && isLive(c, now));
   // The card is a live-call surface, not a list row, so it stays put across the
   // cadence filters. The Invited tab swaps the whole grid, and the card with it.
-  const heroCall = activeCalls.length > 0 && activeFilter !== 'Invited' ? pickHeroCall(activeCalls, groups) : null;
+  const heroCall = activeCalls.length > 0 && activeFilter !== 'Invited' ? pickHeroCall(activeCalls) : null;
   const heroGroup = heroCall ? groupsById.get(heroCall.group_id) : undefined;
   const otherLiveGroupIds = new Set(activeCalls.filter((c) => c !== heroCall).map((c) => c.group_id));
 
@@ -192,25 +191,42 @@ export default function HomeScreen() {
       return next;
     });
 
-  const acceptInvitation = async (invitation: Invitation) => {
+  // Accept and Decline share everything that matters: one in-flight flag per row,
+  // the reload landing before the row goes, and a rejected response resyncing.
+  const answerInvitation = async (invitation: Invitation, action: 'accept' | 'decline') => {
     setResponding(invitation.id, true);
     try {
       const client = await createAuthenticatedApiClient();
-      await client.respondToInvitation(invitation.id, 'accept');
+      await client.respondToInvitation(invitation.id, action);
     } catch (error) {
-      // The server is the source of truth. A rejected accept (already a member
-      // through a link, expired) leaves a row that can only fail again, so resync
-      // rather than strand it.
+      // The server is the source of truth. A rejected answer (already a member
+      // through a link, already answered, expired) leaves a row that can only fail
+      // again, so resync rather than strand it.
       Alert.alert('Error', parseApiError(error));
       loadData();
       setResponding(invitation.id, false);
       return;
     }
-    // The row stays, dimmed, until the reload lands — so it hands over to the new
-    // tile in one render instead of flashing the empty state in between.
+    // The row stays, dimmed, until the reload lands — so an accepted invite hands
+    // over to its new tile in one render instead of flashing the empty state.
     await loadData();
     hideInvite(invitation.id);
     setResponding(invitation.id, false);
+  };
+
+  const acceptInvitation = (invitation: Invitation) => answerInvitation(invitation, 'accept');
+
+  // Permanent: the server marks the invite 'declined', and the inviter has to send
+  // a new one. So it asks first. No success alert — the row leaving is the answer.
+  const declineInvitation = (invitation: Invitation) => {
+    Alert.alert(
+      'Decline invitation?',
+      `You'll need ${invitation.invited_by} to invite you again to join ${invitation.group.name}.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Decline', style: 'destructive', onPress: () => answerInvitation(invitation, 'decline') },
+      ],
+    );
   };
 
   const laterInvitation = (invitation: Invitation) => {
@@ -282,6 +298,7 @@ export default function HomeScreen() {
               busy={respondingIds.has(inv.id)}
               onAccept={() => acceptInvitation(inv)}
               onLater={() => laterInvitation(inv)}
+              onDecline={() => declineInvitation(inv)}
             />
           ))}
         </View>
@@ -323,7 +340,8 @@ export default function HomeScreen() {
             groupName={heroGroup.name}
             joinedCount={heroCall.participant_count}
             totalCount={heroGroup.member_count}
-            countdown={formatCountdown(heroCall.ends_at, now)}
+            // A spontaneous call has no end time, so no countdown and no clock.
+            countdown={hasCountdown(heroCall) ? <Countdown endsAt={heroCall.ends_at} active={isFocused} /> : undefined}
             onJoin={() => joinLiveCall(heroCall)}
           />
         ) : null}

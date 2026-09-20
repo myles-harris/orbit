@@ -48,7 +48,10 @@ export function useNow({ active, until = Infinity, intervalMs = 1000 }: UseNowOp
   // mount or from when the screen was last blurred: a call that arrived ten minutes
   // in would otherwise flash a stale countdown, and an ended one a Join button.
   useLayoutEffect(() => {
-    if (active) setNow(Date.now());
+    if (!active) return;
+    const t = Date.now();
+    // A set that changes nothing still costs React a spare render pass.
+    if (t !== now) setNow(t);
   }, [active, until]);
 
   useEffect(() => {
@@ -66,6 +69,55 @@ export function useNow({ active, until = Infinity, intervalMs = 1000 }: UseNowOp
       subscription.remove();
     };
   }, [active, until, intervalMs]);
+
+  return now;
+}
+
+/**
+ * Wall-clock time that moves only when a deadline passes — for a caller that needs
+ * to know *whether* something has ended, not how long is left. `useNow` ticks every
+ * second, and a screen driven by that beat redraws everything on it once a second.
+ *
+ * It sets one timeout for the earliest deadline still ahead of `now`. When that
+ * fires, `now` moves past it and the next deadline, if any, is scheduled; with none
+ * ahead there is no timer at all. Foregrounding and re-activating refresh at once,
+ * because timers are throttled while away and a deadline may have passed unseen.
+ *
+ * `deadlines` is read fresh each render, so passing a new array every time is fine.
+ */
+export function useClockAt(deadlines: number[], active: boolean): number {
+  const [now, setNow] = useState(() => Date.now());
+
+  let next = Infinity;
+  for (const deadline of deadlines) {
+    if (deadline > now && deadline < next) next = deadline;
+  }
+
+  // Before paint, for the same reason as in useNow.
+  useLayoutEffect(() => {
+    if (!active) return;
+    const t = Date.now();
+    if (t !== now) setNow(t);
+  }, [active]);
+
+  useEffect(() => {
+    if (!active) return;
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') setNow(Date.now());
+    });
+    return () => subscription.remove();
+  }, [active]);
+
+  useEffect(() => {
+    if (!active || next === Infinity) return;
+    const timer = setTimeout(
+      // Never land short of the deadline: were the clock a hair behind the timer,
+      // `next` would not change, the effect would not re-run, and it would be lost.
+      () => setNow(Math.max(Date.now(), next)),
+      Math.max(0, next - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [active, next]);
 
   return now;
 }
