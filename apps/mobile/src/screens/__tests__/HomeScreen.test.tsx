@@ -61,6 +61,10 @@ const group = (over: Partial<GroupDTO> & { id: string; name: string }): GroupDTO
   cadence: 'daily',
   weekly_frequency: null,
   call_duration_minutes: 10,
+  // The server's own defaults — GroupDTO declares the call window as always present.
+  call_window_start: 6,
+  call_window_end: 22,
+  time_zone: 'UTC',
   member_count: 4,
   members: [],
   created_at: '2026-01-01T00:00:00Z',

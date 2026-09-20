@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { type ReactNode, useEffect, useRef } from 'react';
 import { Animated, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { useTheme } from '../context/ThemeContext';
 import { layout, radius } from '../theme';
@@ -8,24 +8,28 @@ type SettingRowVariant =
   | { type: 'value'; value: string }
   | { type: 'toggle'; value: boolean; onToggle: (next: boolean) => void }
   | { type: 'chevron' }
-  | { type: 'menu'; value: string };
+  | { type: 'menu'; value: string }
+  // Anything else that lives at the row's trailing edge: a stepper, an icon.
+  | { type: 'control'; control: ReactNode };
 
 interface SettingRowProps {
   label: string;
   variant: SettingRowVariant;
   onPress?: () => void;
   danger?: boolean;
+  /** No rule beneath — the closing row of a group, or of a bordered box. */
+  last?: boolean;
 }
 
 // The hairline-separated row shared by Group Settings, Create Group, and
 // Account. The row heights are minHeights, not heights, so 150%/200% system
 // text grows the row instead of clipping it. The design draws toggle rows at 60.
-export function SettingRow({ label, variant, onPress, danger }: SettingRowProps) {
+export function SettingRow({ label, variant, onPress, danger, last }: SettingRowProps) {
   const { theme: { colors } } = useTheme();
   const minHeight = variant.type === 'toggle' ? layout.toggleRowHeight : layout.rowHeight;
 
   const content = (
-    <View style={[styles.row, { borderBottomColor: colors.hairline, minHeight }]}>
+    <View style={[styles.row, { borderBottomColor: colors.hairline, minHeight }, last && styles.rowLast]}>
       <Text style={[styles.label, { color: danger ? colors.danger : colors.text }]} numberOfLines={1}>
         {label}
       </Text>
@@ -61,6 +65,8 @@ function RowControl({ variant }: { variant: SettingRowVariant }) {
       return <Icon name="chevron-right" size={18} color={colors.textSecondary} />;
     case 'toggle':
       return <Toggle value={variant.value} onToggle={variant.onToggle} />;
+    case 'control':
+      return <>{variant.control}</>;
   }
 }
 
@@ -109,6 +115,9 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
     borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  rowLast: {
+    borderBottomWidth: 0,
   },
   label: {
     flex: 1,

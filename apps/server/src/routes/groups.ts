@@ -119,7 +119,7 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
     const grp = await prisma.group.findUnique({
       where: { id: req.params.id },
       include: {
-        members: { include: { user: { select: { id: true, username: true, avatar_updated_at: true } } } },
+        members: { include: { user: { select: { id: true, username: true, avatar_updated_at: true, time_zone: true } } } },
         calls: { orderBy: { started_at: 'desc' }, take: 1 },
       },
     });
@@ -141,6 +141,8 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
       members: grp.members.map((m: any) => ({
         user_id: m.user_id,
         username: m.user.username,
+        // Lets the client show the call window as each member's zone sees it.
+        time_zone: m.user.time_zone,
         has_avatar: m.user.avatar_updated_at !== null,
         avatar_updated_at: m.user.avatar_updated_at?.toISOString() ?? null,
         role: m.user_id === grp.owner_id ? 'owner' : 'member',

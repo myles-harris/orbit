@@ -106,6 +106,34 @@ describe('GET /groups/:id', () => {
     expect(res.body.members).toHaveLength(1);
   });
 
+  // T8 — the call-window preview shows the window as each member's zone sees it,
+  // so the client needs every member's time_zone, not just the group's.
+  it('returns each member\'s time_zone', async () => {
+    const { user: owner, token } = await createTestUserWithToken();
+    const { user: member } = await createTestUserWithToken();
+    await prisma.user.update({ where: { id: owner.id }, data: { time_zone: 'America/New_York' } });
+    await prisma.user.update({ where: { id: member.id }, data: { time_zone: 'Asia/Tokyo' } });
+
+    const createRes = await request(app)
+      .post('/groups')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Zones Group', cadence: 'daily', call_duration_minutes: 10 });
+    await prisma.groupMember.create({
+      data: { group_id: createRes.body.id, user_id: member.id, role: 'member' },
+    });
+
+    const res = await request(app)
+      .get(`/groups/${createRes.body.id}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    const zoneByUser = Object.fromEntries(res.body.members.map((m: any) => [m.user_id, m.time_zone]));
+    expect(zoneByUser).toEqual({
+      [owner.id]: 'America/New_York',
+      [member.id]: 'Asia/Tokyo',
+    });
+  });
+
   it('returns 404 for a non-existent group', async () => {
     const { token } = await createTestUserWithToken();
 

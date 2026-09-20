@@ -22,6 +22,9 @@ export type GroupDTO = {
     daily_frequency?: number | null;
     weekly_frequency?: number | null;
     call_duration_minutes: number;
+    call_window_start: number;
+    call_window_end: number;
+    time_zone: string;
     is_muted?: boolean;
     member_count: number;
     members: GroupMember[];

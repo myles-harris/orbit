@@ -103,6 +103,11 @@ export const liveGlow = {
 
 // ─── Derived tokens ───────────────────────────────────────────────────────────
 
+// `#RRGGBB` at the given alpha, in React Native's 8-digit `#RRGGBBAA` form.
+function withAlpha(hex: string, alpha: number): string {
+  return `${hex}${Math.round(alpha * 255).toString(16).padStart(2, '0')}`;
+}
+
 function makeColors(p: Palette, isDark: boolean) {
   return {
     // Marigold — reserved. See AC-3 for the exhaustive list of roles.
@@ -123,6 +128,7 @@ function makeColors(p: Palette, isDark: boolean) {
     successDark:  isDark ? '#3a7a62' : '#2a6e52',
 
     danger:      p.danger,
+    dangerBorder: withAlpha(p.danger, 0.5), // the danger box's 1px rule
     dangerLight: isDark ? 'rgba(217,138,114,.14)' : 'rgba(140,58,42,.10)',
     dangerDark:  isDark ? '#F0B39E' : '#6B2A1E',
 
@@ -130,6 +136,9 @@ function makeColors(p: Palette, isDark: boolean) {
     warningLight: isDark ? '#2a2016' : '#fdf0e0',
 
     background:       p.background,
+    // `background` at zero alpha — the clear end of a fade into it. Not the keyword
+    // `transparent`, which is black at zero alpha and greys the gradient's middle.
+    backgroundClear:  withAlpha(p.background, 0),
     surface:          p.surface,
     surfaceSecondary: isDark ? '#3A2F20' : '#F3E9D3',
 
