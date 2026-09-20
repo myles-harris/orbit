@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { View, Text, Image } from 'react-native';
 import { API_URL, getAccessToken, peekAccessToken } from '../utils/apiClient';
 import { radius } from '../theme';
+import { Display } from './Display';
 
 interface Props {
   userId: string;
@@ -9,8 +10,6 @@ interface Props {
   hasAvatar: boolean;
   size: number;
   colors: any;
-  /** Ownership is shown by a separate Owner pill at the call site, not by fill. */
-  isOwner?: boolean;
   /** ISO timestamp from the API. Versions the URL so it can be cached indefinitely. */
   avatarUpdatedAt?: string | null;
   /** Local file URI shown instead of the remote avatar (optimistic preview after upload). */
@@ -26,7 +25,8 @@ export function UserAvatar({
   const [token, setToken] = useState<string | null>(() => peekAccessToken());
   const [loadFailed, setLoadFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const borderRadius = size >= 60 ? radius.full : radius.xl;
+  const large = size >= 60;
+  const borderRadius = large ? radius.full : radius.xl;
   const bgColor = colors.surface;
   const textColor = colors.textMeta;
   const fontSize = Math.round(size * 0.4);
@@ -88,7 +88,13 @@ export function UserAvatar({
         alignItems: 'center',
       }}
     >
-      <Text style={{ fontSize, fontWeight: '700', color: textColor }}>{initial}</Text>
+      {large ? (
+        // The design draws the Account avatar's initial in the display face (26 on the
+        // 68pt avatar) and every small one in the sans.
+        <Display size={Math.round(size * 0.38)} color={textColor}>{initial}</Display>
+      ) : (
+        <Text style={{ fontSize, fontWeight: '700', color: textColor }}>{initial}</Text>
+      )}
     </View>
   );
 }

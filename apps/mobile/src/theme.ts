@@ -75,6 +75,16 @@ type Palette = typeof darkPalette;
 // Fixed in both modes — these sit over a dark photo scrim, never over a surface.
 export const onPhoto = {
   title: cream, meta: cream, sub: wheat, accent: marigold,
+  // Sign-in only: the space-black behind the sky while it decodes, and the glass the
+  // phone field floats on over it. `placeholder` is undrawn — the mockup shows a
+  // filled field — so it is wheat at the strength that stays legible over the scrim.
+  backdrop: '#0D0A12',
+  field: {
+    fill:        'rgba(13,10,18,.55)',
+    border:      'rgba(226,196,141,.45)',
+    divider:     'rgba(226,196,141,.30)',
+    placeholder: 'rgba(226,196,141,.70)',
+  },
   textShadow:      { textShadowColor: 'rgba(0,0,0,.45)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 4 },
   textShadowLarge: { textShadowColor: 'rgba(0,0,0,.50)', textShadowOffset: { width: 0, height: 1 }, textShadowRadius: 6 },
 };
@@ -89,6 +99,7 @@ export const scrim = {
   liveCard:     ['rgba(26,20,14,.88)', 'rgba(26,20,14,.70)', 'rgba(26,20,14,.48)'] as const, // →right, 0 / .58 / 1
   spotlight:    ['rgba(26,20,14,.60)', 'rgba(26,20,14,.78)', 'rgba(26,20,14,.92)'] as const, // ↓down, 0 / .46 / 1
   detailHeader: ['rgba(26,20,14,.55)', 'rgba(26,20,14,0)'] as const,                          // ↓down over 112pt
+  signIn:       ['rgba(13,10,18,.35)', 'rgba(13,10,18,.10)', 'rgba(13,10,18,.55)', 'rgba(13,10,18,.86)'] as const, // ↓down, 0 / .30 / .72 / 1
 };
 
 // The live card's designed glow is `0 14px 20px -14px rgba(246,191,16,.4)` — a
@@ -126,7 +137,6 @@ function makeColors(p: Palette, isDark: boolean) {
 
     danger:      p.danger,
     dangerBorder: withAlpha(p.danger, 0.5), // the danger box's 1px rule
-    dangerLight: isDark ? 'rgba(217,138,114,.14)' : 'rgba(140,58,42,.10)',
     dangerDark:  isDark ? '#F0B39E' : '#6B2A1E',
 
     warning:      isDark ? '#c99460' : '#a06c30',

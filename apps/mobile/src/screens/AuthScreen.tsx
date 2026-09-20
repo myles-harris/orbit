@@ -11,40 +11,55 @@ import {
   ScrollView,
   Image,
 } from 'react-native';
-const bgGradient = require('../../assets/background-gradient-4.jpeg');
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { ApiClient } from '@orbit/shared';
 import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../context/AuthContext';
 import { setAccessToken } from '../utils/apiClient';
+import { toE164 } from '../utils/phone';
 import { API_URL } from '../config';
-import { spacing, radius } from '../theme';
+import { layout, onPhoto, radius, scrim } from '../theme';
 import { useTheme } from '../context/ThemeContext';
-import { Display } from '../components/Display';
+import { OrbitLogo } from '../components/OrbitLogo';
 import { LightStatusBar } from '../components/LightStatusBar';
+
+const signInSky = require('../../assets/signin-sky.jpg');
 
 const client = new ApiClient(API_URL, () => null);
 
-// AuthScreen always overlays the dark gradient image, so cream text is correct
-// regardless of the app's light/dark mode preference.
+type Step = 'phone' | 'verify' | 'username';
 
-function GlassButton({ label, onPress, style }: { label: string; onPress: () => void; style?: object }) {
-  return (
-    <TouchableOpacity onPress={onPress} style={[styles.glassButtonOuter, style]} activeOpacity={0.75}>
-      <Text style={styles.glassButtonText}>{label}</Text>
-    </TouchableOpacity>
-  );
-}
+// The mockup places the logo at y=112 under a 54pt status bar and the field block
+// at y=330 under a 180pt logo box. Flow layout keeps both gaps and swaps the status
+// bar for the real inset.
+const LOGO_TOP_GAP = 112 - 54;
+const FORM_TOP_GAP = 330 - (112 + 180);
+const SIDE_PAD = 28;
+const FOOTER_MIN_BOTTOM = 26;
+// The scrim's stops at 0 / 30% / 72% / 100% — expo-linear-gradient takes 0–1.
+const SCRIM_LOCATIONS = [0, 0.3, 0.72, 1] as const;
+
+// AuthScreen always overlays the sky photo, so cream and wheat are correct whatever
+// the app's light/dark preference. The one screen where fixed colours are right;
+// they come from `onPhoto` rather than being written out here.
 
 export default function AuthScreen() {
   const { onLogin } = useAuth();
-  useTheme(); // subscribe to ensure context is available, but we use fixed cream styles
+  const { theme: { colors } } = useTheme();
+  const insets = useSafeAreaInsets();
 
-  const [phone, setPhone] = useState('+1');
+  // The mockup draws `+1` as a label, but the field has always been editable, and the
+  // server accepts any E.164 number — so it stays editable, in the drawn chrome.
+  const [countryCode, setCountryCode] = useState('+1');
+  const [number, setNumber] = useState('');
   const [code, setCode] = useState('');
   const [username, setUsername] = useState('');
   const [signupToken, setSignupToken] = useState('');
-  const [mode, setMode] = useState<'signup' | 'login' | null>(null);
-  const [step, setStep] = useState<'choose' | 'phone' | 'verify' | 'username'>('choose');
+  const [step, setStep] = useState<Step>('phone');
+
+  // Whatever was typed or pasted — "(404) 555-0117", a whole "+44 7911 123456" — as E.164.
+  const phone = toE164(countryCode, number);
 
   const requestOtp = async () => {
     try {
@@ -102,81 +117,131 @@ export default function AuthScreen() {
     }
   };
 
-  return (
-    <View style={[styles.flex, { overflow: 'hidden' }]}>
-      {/* Always over the dark gradient, regardless of the app's mode — see the
-          note above AuthScreen. */}
-      <LightStatusBar />
-      <Image source={bgGradient} style={styles.bgImage} resizeMode="cover" />
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      >
-        <ScrollView
-          contentContainerStyle={styles.container}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View style={styles.brandContainer}>
-            <Display size={71} color={CREAM} style={styles.logoText}>orbit</Display>
-          </View>
+  // The design draws only the phone step. The other two reuse its background,
+  // scrim, logo, field and footer; only the label, the field's contents and the
+  // button change.
+  const action =
+    step === 'phone' ? { label: 'Send code', onPress: requestOtp }
+    : step === 'verify' ? { label: 'Verify', onPress: verifyOtp }
+    : { label: 'Continue', onPress: submitUsername };
 
-          <View style={styles.card}>
-            {step === 'choose' ? (
+  return (
+    <View style={styles.screen}>
+      {/* Always over the sky, regardless of the app's mode — see the note above. */}
+      <LightStatusBar />
+      <Image source={signInSky} style={StyleSheet.absoluteFill} resizeMode="cover" />
+      <LinearGradient
+        colors={scrim.signIn}
+        locations={SCRIM_LOCATIONS}
+        style={StyleSheet.absoluteFill}
+        pointerEvents="none"
+      />
+      <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
+        <ScrollView
+          contentContainerStyle={[
+            styles.content,
+            { paddingTop: insets.top + LOGO_TOP_GAP, paddingBottom: Math.max(insets.bottom, FOOTER_MIN_BOTTOM) },
+          ]}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <OrbitLogo capHeight={161} />
+
+          <View style={styles.form}>
+            {step === 'phone' ? (
               <>
-                <GlassButton label="Create Account" onPress={() => { setMode('signup'); setStep('phone'); }} />
-                <GlassButton label="Log In" onPress={() => { setMode('login'); setStep('phone'); }} style={{ marginTop: spacing.md }} />
-              </>
-            ) : step === 'phone' ? (
-              <>
-                <Text style={styles.fieldLabel}>Phone Number</Text>
-                <TextInput
-                  style={styles.input}
-                  placeholder="+1 (555) 000-0000"
-                  placeholderTextColor="rgba(230, 221, 200, 0.45)"
-                  value={phone}
-                  onChangeText={setPhone}
-                  keyboardType="phone-pad"
-                />
-                <GlassButton label="Send Code" onPress={requestOtp} />
-                <TouchableOpacity style={styles.linkButton} onPress={() => setStep('choose')}>
-                  <Text style={styles.linkText}>← Back</Text>
-                </TouchableOpacity>
+                <Text style={styles.label}>Phone number</Text>
+                <View style={styles.field}>
+                  <TextInput
+                    style={[styles.input, styles.prefix]}
+                    value={countryCode}
+                    onChangeText={setCountryCode}
+                    keyboardType="phone-pad"
+                    maxLength={4}
+                    accessibilityLabel="Country code"
+                    maxFontSizeMultiplier={1.3}
+                  />
+                  <View style={styles.divider} />
+                  <TextInput
+                    style={[styles.input, styles.value]}
+                    placeholder="(555) 000-0000"
+                    placeholderTextColor={onPhoto.field.placeholder}
+                    value={number}
+                    onChangeText={setNumber}
+                    keyboardType="phone-pad"
+                    accessibilityLabel="Phone number"
+                    maxFontSizeMultiplier={1.3}
+                  />
+                </View>
+                <Text style={styles.note}>Standard message rates apply.</Text>
               </>
             ) : step === 'verify' ? (
               <>
-                <Text style={styles.fieldLabel}>Verification Code</Text>
-                <TextInput
-                  key="otp-input"
-                  style={[styles.input, styles.codeInput]}
-                  placeholder="000000"
-                  placeholderTextColor="rgba(230, 221, 200, 0.45)"
-                  value={code}
-                  onChangeText={setCode}
-                  keyboardType="number-pad"
-                  maxLength={6}
-                />
-                <GlassButton label="Verify & Continue" onPress={verifyOtp} />
-                <TouchableOpacity style={styles.linkButton} onPress={() => setStep('phone')}>
-                  <Text style={styles.linkText}>← Back</Text>
+                <Text style={styles.label}>Verification code</Text>
+                <View style={styles.field}>
+                  <TextInput
+                    key="otp-input"
+                    style={[styles.input, styles.value]}
+                    placeholder="000000"
+                    placeholderTextColor={onPhoto.field.placeholder}
+                    value={code}
+                    onChangeText={setCode}
+                    keyboardType="number-pad"
+                    maxLength={6}
+                    accessibilityLabel="Verification code"
+                    maxFontSizeMultiplier={1.3}
+                  />
+                </View>
+                <TouchableOpacity
+                  onPress={() => setStep('phone')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back to phone number"
+                  hitSlop={8}
+                >
+                  <Text style={styles.note}>← Back</Text>
                 </TouchableOpacity>
               </>
             ) : (
               <>
-                <Text style={styles.fieldLabel}>Username</Text>
-                <TextInput
-                  key="username-input"
-                  style={styles.input}
-                  placeholder="Choose a username"
-                  placeholderTextColor="rgba(230, 221, 200, 0.45)"
-                  value={username}
-                  onChangeText={setUsername}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  autoFocus
-                />
-                <GlassButton label="Create Account" onPress={submitUsername} />
+                <Text style={styles.label}>Username</Text>
+                <View style={styles.field}>
+                  <TextInput
+                    key="username-input"
+                    style={[styles.input, styles.value]}
+                    placeholder="Choose a username"
+                    placeholderTextColor={onPhoto.field.placeholder}
+                    value={username}
+                    onChangeText={setUsername}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    autoFocus
+                    accessibilityLabel="Username"
+                    maxFontSizeMultiplier={1.3}
+                  />
+                </View>
               </>
             )}
+          </View>
+
+          <View style={styles.footer}>
+            {/* Not yet tappable: there is no Terms or Privacy page to open. */}
+            <Text style={styles.consent}>
+              By continuing you agree to the{' '}
+              <Text style={styles.consentLink}>Terms of Service</Text> and{' '}
+              <Text style={styles.consentLink}>Privacy Policy</Text>.
+            </Text>
+            <TouchableOpacity
+              onPress={action.onPress}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              // Marigold and its espresso label are the same in both themes, so reading
+              // them from the theme keeps this screen identical in light and dark.
+              style={[styles.button, { backgroundColor: colors.accent }]}
+            >
+              <Text style={[styles.buttonLabel, { color: colors.onAccent }]} maxFontSizeMultiplier={1.3}>
+                {action.label}
+              </Text>
+            </TouchableOpacity>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
@@ -184,91 +249,84 @@ export default function AuthScreen() {
   );
 }
 
-// AuthScreen styles are static (always over the dark gradient image)
-const CREAM = '#e6ddc8';
-
 const styles = StyleSheet.create({
+  screen: { flex: 1, backgroundColor: onPhoto.backdrop },
   flex: { flex: 1 },
-  bgImage: {
-    position: 'absolute',
-    bottom: 0,
-    left: 0,
-    width: '150%',
-    height: '150%',
-  },
-  container: {
+  content: {
     flexGrow: 1,
-    justifyContent: 'center',
-    padding: spacing.xl,
-    paddingBottom: 60,
+    paddingHorizontal: SIDE_PAD,
   },
-  brandContainer: {
+  form: { marginTop: FORM_TOP_GAP },
+  label: {
+    fontFamily: 'Geist_500Medium',
+    fontSize: 13,
+    includeFontPadding: false,
+    color: onPhoto.sub,
+  },
+  // A row of one or two TextInputs on glass. Height, not minHeight: the inputs
+  // are single-line and centred, and their text is capped below.
+  field: {
+    marginTop: 8,
+    flexDirection: 'row',
     alignItems: 'center',
-    marginBottom: spacing.xxxl,
-  },
-  logoText: {
-    marginBottom: spacing.lg,
-  },
-  subtitle: {
-    fontSize: 14,
-    fontFamily: 'GeistMono_500Medium',
-    color: CREAM,
-    textAlign: 'center',
-  },
-  card: {
-    padding: spacing.xxl,
-  },
-  fieldLabel: {
-    fontSize: 14,
-    fontFamily: 'GeistMono_500Medium',
-    color: CREAM,
-    marginBottom: spacing.sm,
-    textTransform: 'uppercase',
-    letterSpacing: 0.5,
+    gap: 10,
+    height: 54,
+    paddingHorizontal: 14,
+    borderRadius: radius.md,
+    backgroundColor: onPhoto.field.fill,
+    borderWidth: 1,
+    borderColor: onPhoto.field.border,
   },
   input: {
-    backgroundColor: 'rgba(0, 0, 0, 0.3)',
-    borderRadius: radius.md,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md + 2,
-    fontSize: 16,
+    padding: 0,
     fontFamily: 'GeistMono_500Medium',
-    color: CREAM,
-    marginBottom: spacing.md,
+    fontSize: 17,
+    includeFontPadding: false,
   },
-  codeInput: {
-    fontSize: 24,
-    fontFamily: 'GeistMono_500Medium',
-    textAlign: 'center',
-    letterSpacing: 8,
+  prefix: { color: onPhoto.sub },
+  value: {
+    flex: 1,
+    color: onPhoto.title,
+    letterSpacing: 0.34, // 0.02em at 17pt; React Native takes points
   },
-  glassButtonOuter: {
-    borderRadius: radius.full,
-    overflow: 'hidden',
-    marginTop: spacing.sm,
-    paddingVertical: spacing.md + 2,
-    alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.28)',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.6)',
-    shadowColor: '#FFFFFF',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.3,
-    shadowRadius: 4,
+  divider: {
+    width: 1,
+    height: 22,
+    backgroundColor: onPhoto.field.divider,
   },
-  glassButtonText: {
-    fontSize: 16,
-    fontFamily: 'GeistMono_500Medium',
-    fontWeight: '700',
-    color: CREAM,
-  },
-  linkButton: {
-    marginTop: spacing.lg,
-    alignItems: 'center',
-  },
-  linkText: {
+  note: {
+    marginTop: 10,
+    fontFamily: 'Gelasio_400Regular',
     fontSize: 14,
-    fontFamily: 'GeistMono_500Medium',
-    color: CREAM,
+    lineHeight: 21,
+    color: onPhoto.sub,
+  },
+  // `marginTop: 'auto'` pushes the footer to the bottom when the form is short; the
+  // padding is its floor when the keyboard leaves no room to spare.
+  footer: {
+    marginTop: 'auto',
+    paddingTop: 24,
+  },
+  consent: {
+    marginBottom: 14,
+    fontFamily: 'Gelasio_400Regular',
+    fontSize: 12.5,
+    lineHeight: 19,
+    color: onPhoto.sub,
+  },
+  consentLink: {
+    color: onPhoto.title,
+    textDecorationLine: 'underline',
+  },
+  button: {
+    minHeight: layout.primaryBtn,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  buttonLabel: {
+    fontFamily: 'Geist_600SemiBold',
+    fontSize: 17,
+    includeFontPadding: false,
   },
 });

@@ -7,7 +7,7 @@ import { IconButton } from './IconButton';
 import { LightStatusBar } from './LightStatusBar';
 
 interface GroupPhotoHeaderProps {
-  /** Absent until a group has a photo — every group starts on the `surface` fill. */
+  /** Absent until a group has a photo. Without one the header is only its two glyphs. */
   photoUri?: string | null;
   onBack: () => void;
   onSettings: () => void;
@@ -24,39 +24,62 @@ const TITLE_TOP = 296;
 // Buttons sit at y=56 under a 54pt status bar.
 const CHROME_TOP_GAP = 56 - 54;
 const CHROME_SIDE = 12;
+// Without a photo the title follows the glyphs directly. 12pt is the gap a form
+// screen leaves between its back chevron and its title (112 − (56 + 44)), so both
+// kinds of screen start their titles at the same height.
+const PLAIN_TITLE_GAP = 112 - (56 + 44);
 
-// The full-bleed header of Group Detail: a photo (or a `surface` fill) that fades
-// into the page, with back and settings glyphs over it.
+// The header of Group Detail. With a photo it is full-bleed: the photo fades into
+// the page, with back and settings glyphs over it. Without one there is nothing to
+// fill 300pt with, so it is only the glyphs, on the page itself, and the title and
+// everything under it move up into the space.
 export function GroupPhotoHeader({ photoUri, onBack, onSettings }: GroupPhotoHeaderProps) {
-  const { theme: { colors }, mode } = useTheme();
+  const { theme: { colors } } = useTheme();
   const insets = useSafeAreaInsets();
-  const hasPhoto = !!photoUri;
+  const glyphsTop = insets.top + CHROME_TOP_GAP;
 
-  // Cream chrome and a light status bar belong over something dark: a photo, or the
-  // dark theme's surface. On the light theme's white surface cream is ~1.05:1, so
-  // the glyphs are `text` there and the status bar follows the app's own.
-  const overDark = hasPhoto || mode === 'dark';
-  const chrome = overDark ? onPhoto.title : colors.text;
+  if (!photoUri) {
+    // The glyphs sit on the page background, so they take its text colour in both
+    // themes, and the app's own theme-following status bar already suits it.
+    return (
+      <View
+        style={[
+          styles.glyphs,
+          { marginTop: glyphsTop, marginHorizontal: CHROME_SIDE, marginBottom: PLAIN_TITLE_GAP },
+        ]}
+      >
+        <Glyphs color={colors.text} onBack={onBack} onSettings={onSettings} />
+      </View>
+    );
+  }
 
   return (
     <View style={styles.header}>
-      {overDark ? <LightStatusBar /> : null}
+      {/* Cream glyphs and a light status bar belong over a dark photo, in either theme. */}
+      <LightStatusBar />
 
       <View style={[styles.backdrop, { backgroundColor: colors.surface }]}>
-        {hasPhoto ? <Image source={{ uri: photoUri! }} resizeMode="cover" style={StyleSheet.absoluteFillObject} /> : null}
+        <Image source={{ uri: photoUri }} resizeMode="cover" style={StyleSheet.absoluteFillObject} />
       </View>
 
-      {/* The scrim exists to keep the glyphs legible over a photo; over a plain
-          surface it would only smudge it. */}
-      {hasPhoto ? <LinearGradient colors={scrim.detailHeader} style={styles.topScrim} /> : null}
+      {/* Keeps the glyphs legible over the photo. */}
+      <LinearGradient colors={scrim.detailHeader} style={styles.topScrim} />
 
       <LinearGradient colors={[colors.backgroundClear, colors.background] as const} style={styles.fade} />
 
-      <View style={[styles.chrome, { top: insets.top + CHROME_TOP_GAP }]}>
-        <IconButton name="chevron-left" color={chrome} onPress={onBack} accessibilityLabel="Back" />
-        <IconButton name="settings" color={chrome} onPress={onSettings} accessibilityLabel="Group settings" />
+      <View style={[styles.glyphs, styles.glyphsOverPhoto, { top: glyphsTop }]}>
+        <Glyphs color={onPhoto.title} onBack={onBack} onSettings={onSettings} />
       </View>
     </View>
+  );
+}
+
+function Glyphs({ color, onBack, onSettings }: { color: string; onBack: () => void; onSettings: () => void }) {
+  return (
+    <>
+      <IconButton name="chevron-left" color={color} onPress={onBack} accessibilityLabel="Back" />
+      <IconButton name="settings" color={color} onPress={onSettings} accessibilityLabel="Group settings" />
+    </>
   );
 }
 
@@ -86,11 +109,13 @@ const styles = StyleSheet.create({
     right: 0,
     height: FADE_END - FADE_START,
   },
-  chrome: {
+  glyphs: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  glyphsOverPhoto: {
     position: 'absolute',
     left: CHROME_SIDE,
     right: CHROME_SIDE,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
   },
 });

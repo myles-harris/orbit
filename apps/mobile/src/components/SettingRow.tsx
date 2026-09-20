@@ -26,14 +26,22 @@ interface SettingRowProps {
 // text grows the row instead of clipping it. The design draws toggle rows at 60.
 export function SettingRow({ label, variant, onPress, danger, last }: SettingRowProps) {
   const { theme: { colors } } = useTheme();
-  const minHeight = variant.type === 'toggle' ? layout.toggleRowHeight : layout.rowHeight;
+  const isToggle = variant.type === 'toggle';
+  const minHeight = isToggle ? layout.toggleRowHeight : layout.rowHeight;
 
   const content = (
     <View style={[styles.row, { borderBottomColor: colors.hairline, minHeight }, last && styles.rowLast]}>
-      <Text style={[styles.label, { color: danger ? colors.danger : colors.text }]} numberOfLines={1}>
+      <Text
+        style={[styles.label, { color: danger ? colors.danger : colors.text }]}
+        numberOfLines={1}
+        // A toggle's switch carries the label along with its state, so the row's own
+        // text is not read a second time beside it.
+        accessibilityElementsHidden={isToggle}
+        importantForAccessibility={isToggle ? 'no' : 'auto'}
+      >
         {label}
       </Text>
-      <RowControl variant={variant} />
+      <RowControl variant={variant} label={label} />
     </View>
   );
 
@@ -43,13 +51,15 @@ export function SettingRow({ label, variant, onPress, danger, last }: SettingRow
   if (!onPress) return content;
 
   return (
-    <TouchableOpacity onPress={onPress} activeOpacity={0.7}>
+    // No button role on a toggle row: its switch is the accessible element, and one
+    // accessible element nested in another is not reachable on iOS.
+    <TouchableOpacity onPress={onPress} activeOpacity={0.7} accessibilityRole={isToggle ? undefined : 'button'}>
       {content}
     </TouchableOpacity>
   );
 }
 
-function RowControl({ variant }: { variant: SettingRowVariant }) {
+function RowControl({ variant, label }: { variant: SettingRowVariant; label: string }) {
   const { theme: { colors } } = useTheme();
   switch (variant.type) {
     case 'value':
@@ -64,7 +74,7 @@ function RowControl({ variant }: { variant: SettingRowVariant }) {
     case 'chevron':
       return <Icon name="chevron-right" size={18} color={colors.textSecondary} />;
     case 'toggle':
-      return <Toggle value={variant.value} onToggle={variant.onToggle} />;
+      return <Toggle label={label} value={variant.value} onToggle={variant.onToggle} />;
     case 'control':
       return <>{variant.control}</>;
   }
@@ -79,7 +89,7 @@ const KNOB_SIZE = 27;
 const KNOB_INSET = 2;
 const KNOB_TRAVEL = TRACK_WIDTH - KNOB_SIZE - KNOB_INSET * 2;
 
-function Toggle({ value, onToggle }: { value: boolean; onToggle: (next: boolean) => void }) {
+function Toggle({ label, value, onToggle }: { label: string; value: boolean; onToggle: (next: boolean) => void }) {
   const { theme: { colors } } = useTheme();
   const anim = useRef(new Animated.Value(value ? 1 : 0)).current;
 
@@ -93,6 +103,9 @@ function Toggle({ value, onToggle }: { value: boolean; onToggle: (next: boolean)
     <TouchableOpacity
       onPress={() => onToggle(!value)}
       activeOpacity={0.85}
+      accessibilityRole="switch"
+      accessibilityLabel={label}
+      accessibilityState={{ checked: value }}
       style={[
         styles.track,
         { backgroundColor: value ? colors.accent : colors.toggleTrack },

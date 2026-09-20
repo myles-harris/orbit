@@ -9,7 +9,7 @@ import HomeScreen from '../screens/HomeScreen';
 import GroupDetailScreen from '../screens/GroupDetailScreen';
 import CreateGroupScreen from '../screens/CreateGroupScreen';
 import CallScreen from '../screens/CallScreen';
-import SettingsScreen from '../screens/SettingsScreen';
+import AccountScreen from '../screens/AccountScreen';
 import InviteUserScreen from '../screens/InviteUserScreen';
 import GroupSettingsScreen from '../screens/GroupSettingsScreen';
 import JoinInviteScreen from '../screens/JoinInviteScreen';
@@ -63,7 +63,7 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
           <>
             <Stack.Screen name="Home" component={HomeScreen} />
             {/* Pushed from the header avatar — no tab bar, no tab-navigator wrapper. */}
-            <Stack.Screen name="Account" component={SettingsScreen} />
+            <Stack.Screen name="Account" component={AccountScreen} />
             {/* The three group screens draw their own back chevron and title, so they
                 take the stack's `headerShown: false`. */}
             <Stack.Screen name="GroupDetail" component={GroupDetailScreen} />

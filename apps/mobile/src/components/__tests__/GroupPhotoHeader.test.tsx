@@ -29,35 +29,51 @@ async function render(mode: Mode, photoUri?: string | null, handlers = { onBack:
 
 const glyphColors = (tree: ReactTestRenderer) => tree.root.findAllByType(Icon).map((i) => i.props.color);
 const gradients = (tree: ReactTestRenderer) => tree.root.findAllByType(LinearGradient);
+const outermost = (tree: ReactTestRenderer) => tree.root.findAll((n) => typeof n.type === 'string')[0];
 
+// With no photo there is nothing to fill 300pt with. The header is the two glyphs and
+// the title, and everything under it, moves up into the space.
 describe('GroupPhotoHeader without a photo', () => {
-  it('fills the 288pt backdrop with the surface colour', async () => {
-    const { tree } = await render('dark');
-    const backdrop = tree.root.findAll((n) => {
-      const s = StyleSheet.flatten(n.props.style);
-      return typeof n.type === 'string' && s?.height === 288;
-    })[0];
-    expect(StyleSheet.flatten(backdrop.props.style).backgroundColor).toBe(darkTheme.colors.surface);
+  it.each<Mode>(['light', 'dark'])('is only its two glyphs — no backdrop, photo, scrim or fade (%s)', async (mode) => {
+    const { tree } = await render(mode);
     expect(tree.root.findAllByType(Image)).toHaveLength(0);
+    expect(gradients(tree)).toHaveLength(0);
+    expect(tree.root.findAllByType(Icon)).toHaveLength(2);
   });
 
-  it('is cream chrome and a light status bar on the dark theme’s surface', async () => {
-    (LightStatusBar as jest.Mock).mockClear();
+  it('is no taller than its buttons — none of the 288pt of empty surface it used to draw', async () => {
     const { tree } = await render('dark');
-    expect(glyphColors(tree)).toEqual([onPhoto.title, onPhoto.title]);
-    expect(tree.root.findAllByType(LightStatusBar)).toHaveLength(1);
+    const heights = tree.root
+      .findAll((n) => typeof n.type === 'string')
+      .map((n) => StyleSheet.flatten(n.props.style)?.height)
+      .filter((h): h is number => typeof h === 'number');
+    expect(Math.max(...heights)).toBe(44);
+    expect(StyleSheet.flatten(outermost(tree).props.style).height).toBeUndefined();
   });
 
-  it('is text-coloured chrome on the light theme’s white surface, where cream would be ~1.05:1', async () => {
-    const { tree } = await render('light');
-    expect(glyphColors(tree)).toEqual([lightTheme.colors.text, lightTheme.colors.text]);
-    // The app's own theme-following bar stays; a light one would vanish into the cream.
+  it('puts the glyphs 2pt under the status bar inset, and starts what follows 12pt below them', async () => {
+    const { tree } = await render('dark');
+    expect(StyleSheet.flatten(outermost(tree).props.style)).toMatchObject({
+      flexDirection: 'row',
+      marginTop: 47 + 2,
+      marginHorizontal: 12,
+      marginBottom: 12,
+    });
+  });
+
+  it.each<Mode>(['light', 'dark'])('draws the glyphs in the page’s text colour, with the app’s own status bar (%s)', async (mode) => {
+    (LightStatusBar as jest.Mock).mockClear();
+    const { tree } = await render(mode);
+    // They sit on the page background now, not on a dark surface: a light bar or cream
+    // glyphs would vanish into the light theme's cream.
+    expect(glyphColors(tree)).toEqual([THEMES[mode].colors.text, THEMES[mode].colors.text]);
     expect(tree.root.findAllByType(LightStatusBar)).toHaveLength(0);
   });
 
-  it('draws no top scrim — it would only smudge a plain surface', async () => {
-    const { tree } = await render('dark');
-    expect(gradients(tree).map((g) => g.props.colors)).not.toContainEqual(scrim.detailHeader);
+  it('treats an empty photo the same as none', async () => {
+    const { tree } = await render('dark', '');
+    expect(tree.root.findAllByType(Image)).toHaveLength(0);
+    expect(gradients(tree)).toHaveLength(0);
   });
 });
 
@@ -69,11 +85,29 @@ describe('GroupPhotoHeader with a photo', () => {
     expect(tree.root.findAllByType(LightStatusBar)).toHaveLength(1);
   });
 
+  it('lays the photo over a 288pt backdrop in the surface colour, so it is not blank while it loads', async () => {
+    const { tree } = await render('dark', PHOTO);
+    const backdrop = tree.root.findAll((n) => typeof n.type === 'string' && StyleSheet.flatten(n.props.style)?.height === 288)[0];
+    expect(StyleSheet.flatten(backdrop.props.style).backgroundColor).toBe(darkTheme.colors.surface);
+    expect(backdrop.findAllByType(Image)).toHaveLength(1);
+  });
+
   it('lays the detail scrim over the top 112pt', async () => {
     const { tree } = await render('light', PHOTO);
     const top = gradients(tree).find((g) => g.props.colors === scrim.detailHeader)!;
     expect(top).toBeDefined();
     expect(StyleSheet.flatten(top.props.style)).toMatchObject({ top: 0, height: 112 });
+  });
+
+  it('takes 300pt but hands 4 back, so the title starts at 296', async () => {
+    const { tree } = await render('dark', PHOTO);
+    expect(StyleSheet.flatten(outermost(tree).props.style)).toMatchObject({ height: 300, marginBottom: -4 });
+  });
+
+  it('places the buttons 2pt under the status bar inset, 12pt in from each side', async () => {
+    const { tree } = await render('dark', PHOTO);
+    const chrome = tree.root.findAll((n) => StyleSheet.flatten(n.props.style)?.position === 'absolute' && StyleSheet.flatten(n.props.style)?.flexDirection === 'row')[0];
+    expect(StyleSheet.flatten(chrome.props.style)).toMatchObject({ top: 47 + 2, left: 12, right: 12 });
   });
 });
 
@@ -88,21 +122,12 @@ describe.each<Mode>(['light', 'dark'])('GroupPhotoHeader fade in %s mode', (mode
   });
 });
 
-describe('GroupPhotoHeader geometry and controls', () => {
-  it('takes 300pt but hands 4 back, so the title starts at 296', async () => {
-    const { tree } = await render('dark');
-    const outermost = tree.root.findAll((n) => typeof n.type === 'string')[0];
-    expect(StyleSheet.flatten(outermost.props.style)).toMatchObject({ height: 300, marginBottom: -4 });
-  });
-
-  it('places the buttons 2pt under the status bar inset, 12pt in from each side', async () => {
-    const { tree } = await render('dark');
-    const chrome = tree.root.findAll((n) => StyleSheet.flatten(n.props.style)?.position === 'absolute' && StyleSheet.flatten(n.props.style)?.flexDirection === 'row')[0];
-    expect(StyleSheet.flatten(chrome.props.style)).toMatchObject({ top: 47 + 2, left: 12, right: 12 });
-  });
-
+describe.each([
+  ['a photo', PHOTO],
+  ['no photo', undefined],
+])('GroupPhotoHeader controls with %s', (_label, photoUri) => {
   it('wires the two glyphs to back and settings', async () => {
-    const { tree, onBack, onSettings } = await render('dark');
+    const { tree, onBack, onSettings } = await render('dark', photoUri);
     const back = tree.root.findByProps({ accessibilityLabel: 'Back' });
     const settings = tree.root.findByProps({ accessibilityLabel: 'Group settings' });
     act(() => { back.props.onPress(); });

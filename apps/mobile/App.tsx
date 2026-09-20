@@ -97,7 +97,7 @@ function AppContent() {
   // tone and the user's mute preference are lost. Sync from cached prefs first so an
   // offline launch still lands on the right channel, then reconcile with the server.
   // syncCallChannel serializes concurrent callers internally (this fires from two different
-  // effects below plus SettingsScreen's manual toggles), so overlapping invocations here are
+  // effects below plus AccountScreen's manual toggles), so overlapping invocations here are
   // safe — they queue rather than racing each other's channel create/delete.
   const syncCallChannelFromServer = useCallback(async () => {
     if (Platform.OS !== 'android') return;
