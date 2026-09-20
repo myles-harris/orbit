@@ -1,12 +1,41 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { Prisma } from '@prisma/client';
 import { requireJwt } from '../util/requireJwt.js';
 import { prisma } from '../db/prisma.js';
 import { notifications, INVITE_PUSH } from '../services/notifications.js';
 import { scheduler } from '../services/scheduler.js';
 import { calendarDateInTz, addDays, dayBoundsUtc } from '../util/scheduleTime.js';
+import { imageUploadSchema, decodeImageUpload } from '../util/imageUpload.js';
 
 export const groupsRouter = Router();
+
+// Every Group scalar the client needs — deliberately excludes `photo`, a BYTEA of up to
+// 2 MB that Prisma would otherwise select along with every other scalar on an `include`.
+// `has_photo` derives from `photo_updated_at`; the two columns are written together and
+// the `group_photo_consistency` CHECK constraint enforces it. The bytes are read by
+// GET /:id/photo and nothing else.
+const GROUP_PUBLIC_SELECT = {
+  id: true,
+  name: true,
+  owner_id: true,
+  cadence: true,
+  daily_frequency: true,
+  weekly_frequency: true,
+  call_duration_minutes: true,
+  call_window_start: true,
+  call_window_end: true,
+  time_zone: true,
+  photo_updated_at: true,
+  created_at: true,
+} satisfies Prisma.GroupSelect;
+
+function photoFields(group: { photo_updated_at: Date | null }) {
+  return {
+    has_photo: group.photo_updated_at !== null,
+    photo_updated_at: group.photo_updated_at?.toISOString() ?? null,
+  };
+}
 
 const validTz = (tz: string) => {
   try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; } catch { return false; }
@@ -50,7 +79,7 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
         time_zone: groupTz,
         members: { create: { user_id: userId, role: 'owner' } },
       },
-      include: { members: true },
+      select: { ...GROUP_PUBLIC_SELECT, members: true },
     });
 
     // WS-8: schedule first call for today if the window is still open
@@ -76,6 +105,7 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
       call_window_start: group.call_window_start,
       call_window_end: group.call_window_end,
       time_zone: group.time_zone,
+      ...photoFields(group),
       member_count: group.members.length,
       members: group.members.map((m: any) => ({ user_id: m.user_id, role: m.role })),
       created_at: group.created_at,
@@ -89,8 +119,13 @@ groupsRouter.post('/', requireJwt, async (req, res) => {
 groupsRouter.get('/', requireJwt, async (req, res) => {
   try {
     const userId = (req as any).userId as string;
-    const memberships = await prisma.groupMember.findMany({ where: { user_id: userId }, include: { group: { include: { members: true } } } });
-    const groups = memberships.map((m: any) => ({
+    // Explicit select, not `include`: an include would pull every group's photo BYTEA
+    // into memory just to have the serializer below ignore it.
+    const memberships = await prisma.groupMember.findMany({
+      where: { user_id: userId },
+      select: { is_muted: true, group: { select: { ...GROUP_PUBLIC_SELECT, members: true } } },
+    });
+    const groups = memberships.map((m) => ({
       id: m.group.id,
       name: m.group.name,
       owner_id: m.group.owner_id,
@@ -101,6 +136,7 @@ groupsRouter.get('/', requireJwt, async (req, res) => {
       call_window_start: m.group.call_window_start,
       call_window_end: m.group.call_window_end,
       time_zone: m.group.time_zone,
+      ...photoFields(m.group),
       is_muted: m.is_muted,
       member_count: m.group.members.length,
       members: m.group.members.map((mm: any) => ({ user_id: mm.user_id, role: mm.role })),
@@ -118,7 +154,8 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
     const userId = (req as any).userId as string;
     const grp = await prisma.group.findUnique({
       where: { id: req.params.id },
-      include: {
+      select: {
+        ...GROUP_PUBLIC_SELECT,
         members: { include: { user: { select: { id: true, username: true, avatar_updated_at: true, time_zone: true } } } },
         calls: { orderBy: { started_at: 'desc' }, take: 1 },
       },
@@ -140,6 +177,7 @@ groupsRouter.get('/:id', requireJwt, async (req, res) => {
       call_window_start: grp.call_window_start,
       call_window_end: grp.call_window_end,
       time_zone: grp.time_zone,
+      ...photoFields(grp),
       is_muted: myMembership.is_muted,
       member_count: grp.members.length,
       members: grp.members.map((m: any) => ({
@@ -197,7 +235,7 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       return res.status(403).json({ error: 'You must be a member to edit group settings' });
     }
 
-    const group = await prisma.group.findUnique({ where: { id: groupId } });
+    const group = await prisma.group.findUnique({ where: { id: groupId }, select: { owner_id: true } });
 
     if (!group) {
       return res.status(404).json({ error: 'Group not found' });
@@ -254,6 +292,7 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
     const updated = await prisma.group.update({
       where: { id: groupId },
       data: updateData,
+      select: GROUP_PUBLIC_SELECT,
     });
 
     console.log(`[update-group] User ${userId} updated group ${groupId}`);
@@ -306,10 +345,121 @@ groupsRouter.put('/:id', requireJwt, async (req, res) => {
       call_window_start: updated.call_window_start,
       call_window_end: updated.call_window_end,
       time_zone: updated.time_zone,
+      ...photoFields(updated),
     });
   } catch (error) {
     console.error('[update-group] Error:', error);
     res.status(500).json({ error: 'Failed to update group' });
+  }
+});
+
+// ─── Group photo ──────────────────────────────────────────────────────────────
+// A port of the avatar pipeline (PUT/DELETE /me/avatar, GET /users/:id/avatar): same
+// body, same 2 MB cap and magic-byte check, same metadata-first read with ETag/304.
+
+// A versioned URL (?v=<photo_updated_at ms>) is content-addressed: it changes whenever
+// the photo does, so it can be cached indefinitely. One that is unversioned, or names a
+// version other than the current one, revalidates.
+const PHOTO_CACHE_IMMUTABLE = 'private, max-age=31536000, immutable';
+const PHOTO_CACHE_REVALIDATE = 'private, max-age=60';
+
+/**
+ * The caller's standing in a group, for the photo routes. Anyone who is not a member —
+ * including a caller asking about an id that does not exist — is 'none', and the routes
+ * answer 404: a 403 would confirm the id is real.
+ */
+async function groupRole(groupId: string, userId: string): Promise<'owner' | 'member' | 'none'> {
+  const group = await prisma.group.findUnique({
+    where: { id: groupId },
+    select: { owner_id: true, members: { where: { user_id: userId }, select: { id: true } } },
+  });
+  if (!group || group.members.length === 0) return 'none';
+  return group.owner_id === userId ? 'owner' : 'member';
+}
+
+groupsRouter.put('/:id/photo', requireJwt, async (req, res) => {
+  const parsed = imageUploadSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  try {
+    const groupId = req.params.id;
+    const userId = (req as any).userId as string;
+
+    const role = await groupRole(groupId, userId);
+    if (role === 'none') return res.status(404).json({ error: 'not_found' });
+    if (role !== 'owner') return res.status(403).json({ error: 'Only the group owner can change the group photo' });
+
+    const image = decodeImageUpload(parsed.data);
+    if (!image.ok) {
+      return res.status(400).json({ error: image.reason === 'too_large' ? 'photo_too_large' : 'invalid_image' });
+    }
+
+    const now = new Date();
+    await prisma.group.update({
+      where: { id: groupId },
+      data: { photo: image.buf, photo_mime_type: parsed.data.mime_type, photo_updated_at: now },
+      select: { id: true },
+    });
+    res.json({ ok: true, photo_updated_at: now.toISOString() });
+  } catch (error) {
+    console.error('[PUT /groups/:id/photo] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+groupsRouter.delete('/:id/photo', requireJwt, async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    const userId = (req as any).userId as string;
+
+    const role = await groupRole(groupId, userId);
+    if (role === 'none') return res.status(404).json({ error: 'not_found' });
+    if (role !== 'owner') return res.status(403).json({ error: 'Only the group owner can change the group photo' });
+
+    await prisma.group.update({
+      where: { id: groupId },
+      data: { photo: null, photo_mime_type: null, photo_updated_at: null },
+      select: { id: true },
+    });
+    res.json({ ok: true });
+  } catch (error) {
+    console.error('[DELETE /groups/:id/photo] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+groupsRouter.get('/:id/photo', requireJwt, async (req, res) => {
+  try {
+    const groupId = req.params.id;
+    const userId = (req as any).userId as string;
+
+    // Membership and metadata in one query, and never the BYTEA — so a conditional
+    // request (the common case) is answered without detoasting the blob. Membership is
+    // decided before any header is set: a non-member gets a bare 404, with no ETag to
+    // compare against and no cache policy that could outlive their access.
+    const meta = await prisma.group.findFirst({
+      where: { id: groupId, members: { some: { user_id: userId } } },
+      select: { photo_mime_type: true, photo_updated_at: true },
+    });
+    if (!meta?.photo_updated_at) return res.status(404).end();
+
+    const version = meta.photo_updated_at.getTime();
+    const etag = `"${version}"`;
+    res.setHeader('ETag', etag);
+    // Immutable only for the version the URL names. `?v=` is the client's claim about
+    // which photo it wants; when it is stale the bytes served are a different photo, and
+    // a year-long cache would pin them to a URL that says otherwise.
+    res.setHeader('Cache-Control', String(req.query.v) === String(version) ? PHOTO_CACHE_IMMUTABLE : PHOTO_CACHE_REVALIDATE);
+
+    if (req.headers['if-none-match'] === etag) return res.status(304).end();
+
+    const blob = await prisma.group.findUnique({ where: { id: groupId }, select: { photo: true } });
+    if (!blob?.photo) return res.status(404).end();
+
+    res.setHeader('Content-Type', meta.photo_mime_type ?? 'application/octet-stream');
+    res.end(blob.photo);
+  } catch (error) {
+    console.error('[GET /groups/:id/photo] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
   }
 });
 

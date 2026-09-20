@@ -64,6 +64,8 @@ const GROUP = {
   call_window_start: 6,
   call_window_end: 22,
   time_zone: 'America/New_York',
+  has_photo: false,
+  photo_updated_at: null,
   is_muted: false,
   member_count: 14,
   members,
@@ -271,7 +273,7 @@ describe('GroupDetailScreen owner controls', () => {
   it.each<Mode>(['light', 'dark'])('leaves no empty block above the title when the group has no photo (%s)', async (mode) => {
     const { tree } = await renderDetail({}, mode);
 
-    expect(tree.root.findByType(GroupPhotoHeader).props.photoUri).toBeUndefined();
+    expect(tree.root.findByType(GroupPhotoHeader).props.hasPhoto).toBe(false);
     const heights = tree.root
       .findAll((n) => typeof n.type === 'string')
       .map((n) => StyleSheet.flatten(n.props.style)?.height)
@@ -279,6 +281,22 @@ describe('GroupDetailScreen owner controls', () => {
     expect(heights).not.toContain(288); // the photo backdrop's height
     expect(heights).not.toContain(300); // the whole photo header's
     expect(has(tree, 'Track Club')).toBe(true);
+  });
+
+  it("draws the photo header from the group's has_photo and photo_updated_at", async () => {
+    const stamp = '2026-09-02T00:00:00.000Z';
+    const { tree } = await renderDetail({ group: { ...GROUP, has_photo: true, photo_updated_at: stamp } });
+
+    expect(tree.root.findByType(GroupPhotoHeader).props).toMatchObject({
+      groupId: 'g1',
+      hasPhoto: true,
+      photoUpdatedAt: stamp,
+    });
+    const sources = tree.root.findAllByType(Image).map((i) => i.props.source);
+    expect(sources).toContainEqual({
+      uri: `http://test/groups/g1/photo?v=${Date.parse(stamp)}`,
+      headers: { Authorization: 'Bearer tok' },
+    });
   });
 
   it('goes back from the header chevron', async () => {

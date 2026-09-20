@@ -25,6 +25,10 @@ export type GroupDTO = {
   call_window_start: number;
   call_window_end: number;
   time_zone: string;
+  // Derived from `photo_updated_at`, as `has_avatar` is on `UserDTO`. The image itself is
+  // `GET /groups/:id/photo?v=<photo_updated_at in ms>`, never part of a group payload.
+  has_photo: boolean;
+  photo_updated_at: string | null;
   is_muted?: boolean;
   member_count: number;
   members: GroupMember[];

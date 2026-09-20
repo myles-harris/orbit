@@ -31,7 +31,7 @@ export function parseApiError(error) {
     if (status === 409 || body === 'username_taken')
         return 'That username is already taken.';
     // Uploads
-    if (body === 'avatar_too_large')
+    if (body === 'avatar_too_large' || body === 'photo_too_large')
         return 'That image is too large. Try a different photo.';
     if (body === 'invalid_image')
         return "Orbit couldn't read that image. Try a different photo.";

@@ -1,5 +1,5 @@
 import { act } from 'react';
-import { StyleSheet, TouchableOpacity } from 'react-native';
+import { Image, StyleSheet, TouchableOpacity } from 'react-native';
 import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { LinearGradient } from 'expo-linear-gradient';
 import { GroupTile } from '../GroupTile';
@@ -7,22 +7,34 @@ import { useTheme } from '../../context/ThemeContext';
 import { darkTheme, layout, lightTheme, onPhoto, scrim } from '../../theme';
 
 jest.mock('../../context/ThemeContext', () => ({ useTheme: jest.fn() }));
+jest.mock('../../utils/apiClient', () => ({
+  API_URL: 'http://test',
+  peekAccessToken: jest.fn(() => 'tok'),
+  getAccessToken: jest.fn(async () => 'tok'),
+}));
 
 const THEMES = { light: lightTheme, dark: darkTheme } as const;
 type Mode = keyof typeof THEMES;
 
-const PHOTO = 'https://example.com/group-photo.jpg';
+const STAMP = '2026-09-01T12:00:00.000Z';
 const WHEAT = '#E2C48D'; // the design's fixed over-photo sub-label colour
 
 async function render(
   mode: Mode,
-  props: { photoUri?: string | null; subLabel?: string; live?: boolean } = {},
+  props: { hasPhoto?: boolean; subLabel?: string; live?: boolean } = {},
 ): Promise<ReactTestRenderer> {
   (useTheme as jest.Mock).mockReturnValue({ theme: THEMES[mode], mode });
   let tree!: ReactTestRenderer;
   await act(async () => {
     tree = renderer.create(
-      <GroupTile name="Track Club" cadence="Daily" onPress={() => {}} {...props} />,
+      <GroupTile
+        name="Track Club"
+        cadence="Daily"
+        groupId="g1"
+        photoUpdatedAt={STAMP}
+        onPress={() => {}}
+        {...props}
+      />,
     );
   });
   return tree;
@@ -39,9 +51,9 @@ function textColor(tree: ReactTestRenderer, text: string): string | undefined {
 // T4 — one snapshot per state the tile can be in. Every state carries a subLabel,
 // so all three slots (name, subLabel, cadence) are covered in each.
 describe('GroupTile snapshots (T4)', () => {
-  const cases: [string, Mode, { photoUri?: string; subLabel: string }][] = [
-    ['photo / light', 'light', { photoUri: PHOTO, subLabel: 'call ended 4 minutes ago' }],
-    ['photo / dark', 'dark', { photoUri: PHOTO, subLabel: 'call ended 4 minutes ago' }],
+  const cases: [string, Mode, { hasPhoto?: boolean; subLabel: string }][] = [
+    ['photo / light', 'light', { hasPhoto: true, subLabel: 'call ended 4 minutes ago' }],
+    ['photo / dark', 'dark', { hasPhoto: true, subLabel: 'call ended 4 minutes ago' }],
     ['no photo / light', 'light', { subLabel: 'muted' }],
     ['no photo / dark', 'dark', { subLabel: 'muted' }],
   ];
@@ -55,7 +67,7 @@ describe('GroupTile snapshots (T4)', () => {
 // T5 — the subLabel is wheat over a photo and textSecondary on a surface tile.
 describe('GroupTile subLabel colour (T5)', () => {
   it.each<Mode>(['light', 'dark'])('is wheat over a photo in %s mode', async (mode) => {
-    const tree = await render(mode, { photoUri: PHOTO, subLabel: 'call ended 4 minutes ago' });
+    const tree = await render(mode, { hasPhoto: true, subLabel: 'call ended 4 minutes ago' });
     expect(textColor(tree, 'call ended 4 minutes ago')).toBe(WHEAT);
   });
 
@@ -67,7 +79,7 @@ describe('GroupTile subLabel colour (T5)', () => {
   });
 
   it('renders no subLabel node when none is given', async () => {
-    const tree = await render('light', { photoUri: PHOTO });
+    const tree = await render('light', { hasPhoto: true });
     const stray = tree.root.findAll(
       (n: ReactTestInstance) => typeof n.type === 'string' && n.props.children === 'muted',
     );
@@ -80,7 +92,7 @@ describe('GroupTile subLabel colour (T5)', () => {
 // bottom-anchored scrim with no start/end silently darkens the wrong edge.
 describe('GroupTile scrims', () => {
   it('stacks tileTop from the top and tileBottom from the bottom over a photo', async () => {
-    const tree = await render('dark', { photoUri: PHOTO });
+    const tree = await render('dark', { hasPhoto: true });
     const gradients = tree.root.findAllByType(LinearGradient);
     expect(gradients).toHaveLength(2);
 
@@ -114,18 +126,18 @@ describe('GroupTile live (concurrent call)', () => {
     expect(border(tree)).toEqual({ width: 1, color: THEMES[mode].colors.hairline });
   });
 
-  it.each<[Mode, string | undefined]>([
-    ['light', undefined],
-    ['light', PHOTO],
-    ['dark', undefined],
-    ['dark', PHOTO],
-  ])('draws a 1px marigold border in %s mode (photo: %s)', async (mode, photoUri) => {
-    const tree = await render(mode, { live: true, photoUri });
+  it.each<[Mode, boolean]>([
+    ['light', false],
+    ['light', true],
+    ['dark', false],
+    ['dark', true],
+  ])('draws a 1px marigold border in %s mode (photo: %s)', async (mode, hasPhoto) => {
+    const tree = await render(mode, { live: true, hasPhoto });
     expect(border(tree)).toEqual({ width: 1, color: MARIGOLD });
   });
 
   it.each<Mode>(['light', 'dark'])('labels a photo tile in marigold over the scrim in %s mode', async (mode) => {
-    const tree = await render(mode, { live: true, photoUri: PHOTO });
+    const tree = await render(mode, { live: true, hasPhoto: true });
     expect(textColor(tree, 'live')).toBe(onPhoto.accent);
   });
 
@@ -164,5 +176,36 @@ describe('GroupTile live (concurrent call)', () => {
       const node = tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === text)[0];
       expect(StyleSheet.flatten(node.props.style)?.position).not.toBe('absolute');
     });
+  });
+});
+
+// The photo is behind the group's membership check, so the tile fetches it with the
+// token and falls back to the designed no-photo tile when it cannot.
+describe('GroupTile photo fetch', () => {
+  it("fetches the group's versioned photo URL with the bearer token", async () => {
+    const tree = await render('dark', { hasPhoto: true });
+    expect(tree.root.findByType(Image).props.source).toEqual({
+      uri: `http://test/groups/g1/photo?v=${Date.parse(STAMP)}`,
+      headers: { Authorization: 'Bearer tok' },
+    });
+  });
+
+  it('draws the surface tile and requests no image when the group has no photo', async () => {
+    const tree = await render('dark', { hasPhoto: false });
+    expect(tree.root.findAllByType(Image)).toHaveLength(0);
+    expect(tree.root.findAllByType(LinearGradient)).toHaveLength(0);
+    expect(textColor(tree, 'Track Club')).toBe(darkTheme.colors.text);
+  });
+
+  it('falls back to the designed no-photo tile when the image cannot be loaded', async () => {
+    const tree = await render('dark', { hasPhoto: true });
+    expect(tree.root.findAllByType(Image)).toHaveLength(1);
+
+    // The token has not changed since mount, so there is nothing to retry with.
+    await act(async () => { await tree.root.findByType(Image).props.onError(); });
+
+    expect(tree.root.findAllByType(Image)).toHaveLength(0);
+    expect(tree.root.findAllByType(LinearGradient)).toHaveLength(0);
+    expect(textColor(tree, 'Track Club')).toBe(darkTheme.colors.text); // not the over-photo cream
   });
 });

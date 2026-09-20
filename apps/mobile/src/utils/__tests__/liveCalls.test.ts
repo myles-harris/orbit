@@ -1,8 +1,7 @@
-import type { GroupDTO } from '@orbit/shared';
-import { fetchLiveCalls, hasCountdown, isLive, pickHeroCall, type CallType, type LiveCall } from '../liveCalls';
+import { fetchLiveCalls, hasCountdown, isLive, pickHeroCall, type LiveCall } from '../liveCalls';
+import { createAuthenticatedApiClient } from '../apiClient';
 
-const group = (id: string, call_duration_minutes = 10): GroupDTO =>
-  ({ id, name: id, call_duration_minutes }) as GroupDTO;
+jest.mock('../apiClient', () => ({ createAuthenticatedApiClient: jest.fn() }));
 
 const T0 = Date.parse('2026-09-19T12:00:00.000Z');
 
@@ -20,7 +19,7 @@ const spontaneous = (id: string, over: Partial<LiveCall> = {}) =>
   call({ id, call_type: 'spontaneous', ends_at: null, ...over });
 
 // Only scheduled calls count down. This is the rule every live surface asks — Home's
-// card now, the Spotlight overlay in PR 6 — so it is pinned here, once.
+// card now, the Spotlight overlay once it exists — so it is pinned here, once.
 describe('hasCountdown', () => {
   it('is true for a scheduled call with an end time', () => {
     expect(hasCountdown(scheduled('c'))).toBe(true);
@@ -106,62 +105,46 @@ describe('pickHeroCall', () => {
   });
 });
 
-describe('fetchLiveCalls stub', () => {
-  const original = process.env.EXPO_PUBLIC_STUB_LIVE_CALLS;
-  afterEach(() => {
-    if (original === undefined) delete process.env.EXPO_PUBLIC_STUB_LIVE_CALLS;
-    else process.env.EXPO_PUBLIC_STUB_LIVE_CALLS = original;
+describe('fetchLiveCalls', () => {
+  const respond = (body: unknown) => {
+    const client = { get: jest.fn(async () => body) };
+    (createAuthenticatedApiClient as jest.Mock).mockResolvedValue(client);
+    return client;
+  };
+
+  it('asks /me/calls/active once, for every group at once, and returns its calls', async () => {
+    const calls = [scheduled('a'), spontaneous('b')];
+    const client = respond({ callIds: ['a', 'b'], calls });
+
+    await expect(fetchLiveCalls()).resolves.toEqual(calls);
+
+    expect(client.get).toHaveBeenCalledTimes(1);
+    expect(client.get).toHaveBeenCalledWith('/me/calls/active');
   });
 
-  const groups = [group('a'), group('b'), group('c')];
+  it('keeps a spontaneous call\'s null end time as null, so it never counts down', async () => {
+    respond({ callIds: ['b'], calls: [spontaneous('b')] });
 
-  it('reports no live calls by default, so no live card renders', async () => {
-    delete process.env.EXPO_PUBLIC_STUB_LIVE_CALLS;
-    await expect(fetchLiveCalls(groups)).resolves.toEqual([]);
+    const [live] = await fetchLiveCalls();
+
+    expect(live.ends_at).toBeNull();
+    expect(hasCountdown(live)).toBe(false);
   });
 
-  it('fakes one group per listed type, in order, when the dev flag is set', async () => {
-    process.env.EXPO_PUBLIC_STUB_LIVE_CALLS = 'scheduled, spontaneous';
-    const calls = await fetchLiveCalls(groups);
-
-    expect(calls.map((c) => [c.group_id, c.call_type])).toEqual([
-      ['a', 'scheduled'],
-      ['b', 'spontaneous'],
-    ]);
+  it('returns no calls when none are live', async () => {
+    respond({ callIds: [], calls: [] });
+    await expect(fetchLiveCalls()).resolves.toEqual([]);
   });
 
-  it('matches the target shape: a scheduled fake counts down, a spontaneous one has no end time', async () => {
-    process.env.EXPO_PUBLIC_STUB_LIVE_CALLS = 'scheduled,spontaneous';
-    const [sched, spont] = await fetchLiveCalls(groups);
-
-    expect(Object.keys(sched).sort()).toEqual(
-      ['call_type', 'ends_at', 'group_id', 'id', 'participant_count', 'started_at'],
-    );
-    expect(hasCountdown(sched)).toBe(true);
-    expect(new Date(sched.ends_at as string).getTime()).toBeGreaterThan(Date.now());
-    expect(spont.ends_at).toBeNull();
-    expect(hasCountdown(spont)).toBe(false);
+  it('shows no live card, rather than crashing, against a server that only sends callIds', async () => {
+    respond({ callIds: ['a'] });
+    await expect(fetchLiveCalls()).resolves.toEqual([]);
   });
 
-  it('starts the first listed call most recently, so it is the hero', async () => {
-    process.env.EXPO_PUBLIC_STUB_LIVE_CALLS = 'spontaneous,scheduled';
-    const calls = await fetchLiveCalls(groups);
-    expect(pickHeroCall(calls)).toBe(calls[0]);
-  });
-
-  it.each<[string, CallType[]]>([
-    ['scheduled', ['scheduled']],
-    ['spontaneous', ['spontaneous']],
-    ['bogus,scheduled', ['scheduled']], // unknown entries are ignored, not faked
-    ['', []],
-  ])('reads "%s"', async (flag, types) => {
-    process.env.EXPO_PUBLIC_STUB_LIVE_CALLS = flag;
-    const calls = await fetchLiveCalls(groups);
-    expect(calls.map((c) => c.call_type)).toEqual(types);
-  });
-
-  it('never fakes more calls than there are groups', async () => {
-    process.env.EXPO_PUBLIC_STUB_LIVE_CALLS = 'scheduled,scheduled,scheduled,scheduled';
-    expect(await fetchLiveCalls([group('a')])).toHaveLength(1);
+  it('lets a failed request reject, for the caller to decide what a failure means', async () => {
+    (createAuthenticatedApiClient as jest.Mock).mockResolvedValue({
+      get: jest.fn(async () => { throw new Error('offline'); }),
+    });
+    await expect(fetchLiveCalls()).rejects.toThrow('offline');
   });
 });

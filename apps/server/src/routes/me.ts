@@ -6,6 +6,7 @@ import { prisma } from '../db/prisma.js';
 import { scheduler } from '../services/scheduler.js';
 import { dailyVideo } from '../services/dailyVideo.js';
 import { broadcastCallPresence, sendPresenceToToken } from '../services/callPresence.js';
+import { imageUploadSchema, decodeImageUpload } from '../util/imageUpload.js';
 
 export const meRouter = Router();
 
@@ -87,35 +88,19 @@ meRouter.patch('/', requireJwt, async (req, res) => {
   }
 });
 
-const AVATAR_MAX_BYTES = 2 * 1024 * 1024; // 2 MB — keep in sync with the boundary tests in api.test.ts
-
-// Magic bytes for accepted image types
-const MAGIC_BYTES: Array<{ mime: string; check: (b: Buffer) => boolean }> = [
-  { mime: 'image/jpeg', check: b => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff },
-  { mime: 'image/png',  check: b => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47 },
-  { mime: 'image/webp', check: b => b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50 },
-  { mime: 'image/gif',  check: b => b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46 },
-];
-
-const avatarUploadSchema = z.object({
-  data: z.string().min(1),
-  mime_type: z.enum(['image/jpeg', 'image/png', 'image/webp', 'image/gif']),
-});
 meRouter.put('/avatar', requireJwt, async (req, res) => {
-  const parsed = avatarUploadSchema.safeParse(req.body);
+  const parsed = imageUploadSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
   try {
     const userId = (req as any).userId as string;
-    const buf = Buffer.from(parsed.data.data, 'base64');
-    if (buf.length > AVATAR_MAX_BYTES) return res.status(400).json({ error: 'avatar_too_large' });
-    const magic = MAGIC_BYTES.find(m => m.mime === parsed.data.mime_type);
-    if (!magic || buf.length < 12 || !magic.check(buf)) {
-      return res.status(400).json({ error: 'invalid_image' });
+    const image = decodeImageUpload(parsed.data);
+    if (!image.ok) {
+      return res.status(400).json({ error: image.reason === 'too_large' ? 'avatar_too_large' : 'invalid_image' });
     }
     const now = new Date();
     await prisma.user.update({
       where: { id: userId },
-      data: { avatar: buf, avatar_mime_type: parsed.data.mime_type, avatar_updated_at: now },
+      data: { avatar: image.buf, avatar_mime_type: parsed.data.mime_type, avatar_updated_at: now },
       select: { id: true },
     });
     res.json({ ok: true, avatar_updated_at: now.toISOString() });
@@ -332,9 +317,17 @@ meRouter.post('/calls/leave', requireJwt, async (req, res) => {
 });
 
 /**
- * Active calls across all of the user's groups. The client uses this to reconcile
- * iOS Live Activities on launch: any activity whose callId is absent here is
- * orphaned (crash, force-quit) and safe to end.
+ * Active calls across all of the user's groups. Two consumers:
+ *
+ *  - Home's live card reads `calls`. Only a scheduled call has a fixed `ends_at`; a
+ *    spontaneous call runs until its last participant leaves, so its `ends_at` is
+ *    `null` (never absent, never ''), and the client branches on `call_type`.
+ *  - The client reconciles iOS Live Activities on launch from `callIds`: any activity
+ *    whose callId is absent here is orphaned (crash, force-quit) and safe to end.
+ *
+ * `callIds` is the shape this endpoint had before `calls` existed. TestFlight builds
+ * that predate it still read it, so both are returned for one release; drop `callIds`
+ * once those builds have aged out.
  */
 meRouter.get('/calls/active', requireJwt, async (req, res) => {
   try {
@@ -344,9 +337,31 @@ meRouter.get('/calls/active', requireJwt, async (req, res) => {
         status: 'active',
         group: { members: { some: { user_id: userId } } },
       },
-      select: { id: true },
+      select: {
+        id: true,
+        group_id: true,
+        call_type: true,
+        started_at: true,
+        ends_at: true,
+        // Who is in the call right now, as on GET /groups/:id/calls/current.
+        _count: { select: { participants: { where: { left_at: null } } } },
+      },
     });
-    res.json({ callIds: calls.map((c) => c.id) });
+    res.json({
+      callIds: calls.map((c) => c.id),
+      // Every path that sets status 'active' also sets started_at (scheduler activation,
+      // call-now), so the column being nullable never drops a row here in practice. The
+      // guard is for the type: `calls` promises a string, and callIds above still lists
+      // the call either way.
+      calls: calls.flatMap((c) => c.started_at ? [{
+        id: c.id,
+        group_id: c.group_id,
+        call_type: c.call_type,
+        started_at: c.started_at.toISOString(),
+        ends_at: c.ends_at?.toISOString() ?? null,
+        participant_count: c._count.participants,
+      }] : []),
+    });
   } catch (error) {
     console.error('[GET /me/calls/active] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });

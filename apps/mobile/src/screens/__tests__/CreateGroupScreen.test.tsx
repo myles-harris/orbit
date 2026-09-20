@@ -20,7 +20,13 @@ import { darkTheme, lightTheme } from '../../theme';
 const mockGoBack = jest.fn();
 
 jest.mock('../../context/ThemeContext', () => ({ useTheme: jest.fn() }));
-jest.mock('../../utils/apiClient', () => ({ createAuthenticatedApiClient: jest.fn() }));
+jest.mock('../../utils/apiClient', () => ({
+  createAuthenticatedApiClient: jest.fn(),
+  // The settings screen this file also renders draws a group photo, which fetches with a token.
+  API_URL: 'http://test',
+  peekAccessToken: () => 'tok',
+  getAccessToken: async () => 'tok',
+}));
 jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
@@ -39,6 +45,7 @@ function mockApi() {
     get: jest.fn(async () => ({
       id: 'g1', name: 'Track Club', owner_id: 'me', cadence: 'daily', weekly_frequency: null,
       call_duration_minutes: 5, call_window_start: 6, call_window_end: 22, time_zone: 'America/Chicago',
+      has_photo: false, photo_updated_at: null,
       members: [{ user_id: 'me', username: 'me', role: 'owner', time_zone: 'America/Chicago' }],
     })),
   };

@@ -68,6 +68,9 @@ model Group {
   call_window_start     Int           @default(6)   // Hour (0–23) in group's time_zone
   call_window_end       Int           @default(22)  // Hour (0–23) exclusive, in group's time_zone
   created_at            DateTime      @default(now()) @db.Timestamptz(6)
+  photo                 Bytes?
+  photo_mime_type       String?
+  photo_updated_at      DateTime?     @db.Timestamptz(6)
 
   // Relations
   members GroupMember[]
