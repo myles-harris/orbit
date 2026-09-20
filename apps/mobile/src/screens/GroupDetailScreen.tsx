@@ -171,7 +171,7 @@ export default function GroupDetailScreen() {
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
-        // The photo runs to the top edge; a bounce would open a gap above it.
+        // A photo runs to the top edge, and a bounce would open a gap above it.
         bounces={false}
         overScrollMode="never"
       >

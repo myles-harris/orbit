@@ -4,6 +4,7 @@ import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-
 import GroupDetailScreen from '../GroupDetailScreen';
 import { useTheme } from '../../context/ThemeContext';
 import { BottomActionBar } from '../../components/BottomActionBar';
+import { GroupPhotoHeader } from '../../components/GroupPhotoHeader';
 import { createAuthenticatedApiClient } from '../../utils/apiClient';
 import { allText, textOf } from '../../testUtils/tree';
 import { darkTheme, lightTheme } from '../../theme';
@@ -263,6 +264,21 @@ describe('GroupDetailScreen owner controls', () => {
     const member = await renderDetail({ me: 'u2' });
     await press(member.tree, 'Group settings');
     expect(mockNavigate).toHaveBeenLastCalledWith('GroupSettings', { groupId: 'g1', isOwner: false });
+  });
+
+  // The photo header reserves 300pt, and with no photo that was an empty block above the
+  // title. Now the header is only its glyphs and the title moves up under them.
+  it.each<Mode>(['light', 'dark'])('leaves no empty block above the title when the group has no photo (%s)', async (mode) => {
+    const { tree } = await renderDetail({}, mode);
+
+    expect(tree.root.findByType(GroupPhotoHeader).props.photoUri).toBeUndefined();
+    const heights = tree.root
+      .findAll((n) => typeof n.type === 'string')
+      .map((n) => StyleSheet.flatten(n.props.style)?.height)
+      .filter((h): h is number => typeof h === 'number');
+    expect(heights).not.toContain(288); // the photo backdrop's height
+    expect(heights).not.toContain(300); // the whole photo header's
+    expect(has(tree, 'Track Club')).toBe(true);
   });
 
   it('goes back from the header chevron', async () => {
