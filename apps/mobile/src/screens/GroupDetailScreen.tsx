@@ -16,6 +16,7 @@ import { parseApiError } from '@orbit/shared';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
+import { LightStatusBar } from '../components/LightStatusBar';
 import { UserAvatar } from '../components/UserAvatar';
 
 type GroupDetailRouteProp = RouteProp<RootStackParamList, 'GroupDetail'>;
@@ -138,26 +139,29 @@ export default function GroupDetailScreen() {
 
   const isOwner = group?.owner_id === currentUserId;
 
+  // GroupDetail always overlays a dark photo, in both twins of the design, so its
+  // status bar is light regardless of mode — but only while it is the focused screen.
   if (!group) {
-    if (loadError) {
-      return (
-        <View style={styles.loadingContainer}>
-          <Text style={{ color: colors.textSecondary, marginBottom: 16, textAlign: 'center' }}>{loadError}</Text>
-          <TouchableOpacity onPress={loadGroupDetails}>
-            <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 16 }}>Retry</Text>
-          </TouchableOpacity>
-        </View>
-      );
-    }
     return (
       <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color={colors.primary} />
+        <LightStatusBar />
+        {loadError ? (
+          <>
+            <Text style={{ color: colors.textSecondary, marginBottom: 16, textAlign: 'center' }}>{loadError}</Text>
+            <TouchableOpacity onPress={loadGroupDetails}>
+              <Text style={{ color: colors.primary, fontWeight: '600', fontSize: 16 }}>Retry</Text>
+            </TouchableOpacity>
+          </>
+        ) : (
+          <ActivityIndicator size="large" color={colors.primary} />
+        )}
       </View>
     );
   }
 
   return (
     <ScrollView style={styles.container} showsVerticalScrollIndicator={false}>
+      <LightStatusBar />
       {/* Header card */}
       <View style={styles.headerCard}>
         <Text style={styles.groupName}>{group.name}</Text>

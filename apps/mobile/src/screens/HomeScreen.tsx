@@ -6,9 +6,11 @@ import {
   TouchableOpacity,
   StyleSheet,
   RefreshControl,
+  Alert,
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/AppNavigator';
 import { GroupDTO } from '@orbit/shared';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
@@ -16,7 +18,7 @@ import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Ionicons } from '@expo/vector-icons';
 
-type HomeScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Main'>;
+type HomeScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Home'>;
 
 interface Invitation {
   id: string;
@@ -185,6 +187,7 @@ function GroupGrid({ items, colors, onPressGroup, onPressInvitation }: GroupGrid
 export default function HomeScreen() {
   const navigation = useNavigation<HomeScreenNavigationProp>();
   const { theme: { colors, shadow } } = useTheme();
+  const insets = useSafeAreaInsets();
   const [groups, setGroups] = useState<GroupDTO[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -221,6 +224,34 @@ export default function HomeScreen() {
     setRefreshing(false);
   };
 
+  // Stands in for the now-deleted dedicated invite-response screen until
+  // PR 3 gives the invite row its own inline Accept/Later actions.
+  const onPressInvitation = (invitationId: string) => {
+    const invitation = invitations.find((inv) => inv.id === invitationId);
+    if (!invitation) return;
+    Alert.alert(`Join ${invitation.group.name}?`, `Invited by ${invitation.invited_by}`, [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Decline', style: 'destructive', onPress: () => respondToInvitation(invitation, 'decline') },
+      { text: 'Accept', onPress: () => respondToInvitation(invitation, 'accept') },
+    ]);
+  };
+
+  const respondToInvitation = async (invitation: Invitation, action: 'accept' | 'decline') => {
+    try {
+      const client = await createAuthenticatedApiClient();
+      const result = await client.respondToInvitation(invitation.id, action);
+      // Same confirmations the deleted InvitationsScreen showed.
+      if (action === 'accept') {
+        Alert.alert('Joined!', `You joined ${result.group?.name ?? invitation.group.name}!`);
+      } else {
+        Alert.alert('Declined', 'Invitation declined');
+      }
+      loadData();
+    } catch (error: any) {
+      Alert.alert('Error', error.message || 'Failed to respond to invitation');
+    }
+  };
+
   const gridItems: AnyGridItem[] = (() => {
     if (activeFilter === 'Invited') {
       return invitations.map((inv) => ({ type: 'pending' as const, data: inv }));
@@ -247,6 +278,20 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
+      {/* Minimal stand-in for the designed header/avatar (PR 3) — without this,
+          deleting the Settings tab in this PR would leave Account (and Log Out)
+          completely unreachable. */}
+      <View style={[styles.headerRow, { paddingTop: insets.top + spacing.md }]}>
+        <Text style={styles.headerTitle}>Groups</Text>
+        <TouchableOpacity
+          onPress={() => navigation.navigate('Account')}
+          activeOpacity={0.7}
+          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+        >
+          <Ionicons name="person-circle-outline" size={30} color={colors.text} />
+        </TouchableOpacity>
+      </View>
+
       <View style={styles.filterRow}>
         {FILTER_TABS.map((tab) => {
           const isActive = activeFilter === tab;
@@ -298,13 +343,13 @@ export default function HomeScreen() {
             items={gridItems}
             colors={colors}
             onPressGroup={(groupId) => navigation.navigate('GroupDetail', { groupId })}
-            onPressInvitation={() => navigation.navigate('Invitations')}
+            onPressInvitation={onPressInvitation}
           />
         )}
       </ScrollView>
 
       <TouchableOpacity
-        style={styles.fab}
+        style={[styles.fab, { bottom: spacing.xxxl + insets.bottom }]}
         onPress={() => navigation.navigate('CreateGroup')}
         activeOpacity={0.85}
       >
@@ -359,6 +404,20 @@ const cardStyles = StyleSheet.create({
 function makeStyles(colors: any, shadow: any) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
+    headerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
+      paddingBottom: spacing.sm,
+      backgroundColor: colors.surface,
+    },
+    headerTitle: {
+      fontSize: 20,
+      fontWeight: '700',
+      color: colors.text,
+    },
     filterRow: {
       flexDirection: 'row',
       gap: spacing.sm,

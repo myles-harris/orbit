@@ -98,7 +98,7 @@ export default function JoinInviteScreen() {
 
   const goHome = () => {
     if (navigation.canGoBack()) navigation.goBack();
-    else if (isAuthenticated) navigation.replace('Main');
+    else if (isAuthenticated) navigation.replace('Home');
     else navigation.navigate('Auth');
   };
 

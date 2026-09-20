@@ -20,6 +20,7 @@ import { API_URL } from '../config';
 import { spacing, radius } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { Display } from '../components/Display';
+import { LightStatusBar } from '../components/LightStatusBar';
 
 const client = new ApiClient(API_URL, () => null);
 
@@ -103,6 +104,9 @@ export default function AuthScreen() {
 
   return (
     <View style={[styles.flex, { overflow: 'hidden' }]}>
+      {/* Always over the dark gradient, regardless of the app's mode — see the
+          note above AuthScreen. */}
+      <LightStatusBar />
       <Image source={bgGradient} style={styles.bgImage} resizeMode="cover" />
       <KeyboardAvoidingView
         style={styles.flex}

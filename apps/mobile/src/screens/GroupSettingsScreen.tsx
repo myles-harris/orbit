@@ -210,7 +210,7 @@ export default function GroupSettingsScreen() {
           try {
             const client = await createAuthenticatedApiClient();
             await client.post(`/groups/${groupId}/leave`, {});
-            navigation.navigate('Main');
+            navigation.navigate('Home');
           } catch (error: any) {
             Alert.alert('Error', error.message || 'Failed to leave group');
           }
@@ -228,7 +228,7 @@ export default function GroupSettingsScreen() {
           try {
             const client = await createAuthenticatedApiClient();
             await client.delete(`/groups/${groupId}`);
-            navigation.navigate('Main');
+            navigation.navigate('Home');
           } catch (error: any) {
             Alert.alert('Error', error.message || 'Failed to delete group');
           }
