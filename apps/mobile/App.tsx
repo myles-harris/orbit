@@ -8,6 +8,7 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Localization from 'expo-localization';
 import * as Notifications from 'expo-notifications';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { useFonts, Cormorant_700Bold_Italic } from '@expo-google-fonts/cormorant';
 import {
   Geist_400Regular,
@@ -457,13 +458,15 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <ThemeProvider>
-        <AuthProvider>
-          <TutorialProvider>
-            <AppContent />
-          </TutorialProvider>
-        </AuthProvider>
-      </ThemeProvider>
+      <SafeAreaProvider>
+        <ThemeProvider>
+          <AuthProvider>
+            <TutorialProvider>
+              <AppContent />
+            </TutorialProvider>
+          </AuthProvider>
+        </ThemeProvider>
+      </SafeAreaProvider>
     </ErrorBoundary>
   );
 }

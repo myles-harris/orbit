@@ -20,7 +20,8 @@ export const radius = {
 export const layout = {
   screenPad: 20, gridPad: 16, gridGap: 10,
   headerHeight: 56, filterHeight: 46,
-  rowHeight: 56,        // 60 where the design draws a toggle. Apply as minHeight.
+  rowHeight: 56,        // Apply as minHeight.
+  toggleRowHeight: 60,  // Where the design draws a toggle. Apply as minHeight.
   tilePad: 14, barTopPad: 12,
   primaryBtn: 52, secondaryBtn: 50, touchMin: 44,
 };
@@ -77,12 +78,27 @@ export const onPhoto = {
 };
 
 // Gradient stops for expo-linear-gradient. `locations` are 0–1, not CSS percentages.
+// `as const` so each stop list is a fixed-length tuple, matching
+// expo-linear-gradient's `colors` prop (`[ColorValue, ColorValue, ...]`)
+// without a consuming component having to cast through `unknown`.
 export const scrim = {
-  tileTop:      ['rgba(26,20,14,.86)', 'rgba(26,20,14,.34)', 'rgba(26,20,14,.10)'], // 0 / .52 / 1
-  tileBottom:   ['rgba(26,20,14,.66)', 'rgba(26,20,14,.40)', 'rgba(26,20,14,0)'],   // 0 / .30 / .55
-  liveCard:     ['rgba(26,20,14,.88)', 'rgba(26,20,14,.70)', 'rgba(26,20,14,.48)'], // →right, 0 / .58 / 1
-  spotlight:    ['rgba(26,20,14,.60)', 'rgba(26,20,14,.78)', 'rgba(26,20,14,.92)'], // ↓down, 0 / .46 / 1
-  detailHeader: ['rgba(26,20,14,.55)', 'rgba(26,20,14,0)'],                          // ↓down over 112pt
+  tileTop:      ['rgba(26,20,14,.86)', 'rgba(26,20,14,.34)', 'rgba(26,20,14,.10)'] as const, // 0 / .52 / 1
+  tileBottom:   ['rgba(26,20,14,.66)', 'rgba(26,20,14,.40)', 'rgba(26,20,14,0)'] as const,   // 0 / .30 / .55
+  liveCard:     ['rgba(26,20,14,.88)', 'rgba(26,20,14,.70)', 'rgba(26,20,14,.48)'] as const, // →right, 0 / .58 / 1
+  spotlight:    ['rgba(26,20,14,.60)', 'rgba(26,20,14,.78)', 'rgba(26,20,14,.92)'] as const, // ↓down, 0 / .46 / 1
+  detailHeader: ['rgba(26,20,14,.55)', 'rgba(26,20,14,0)'] as const,                          // ↓down over 112pt
+};
+
+// The live card's designed glow is `0 14px 20px -14px rgba(246,191,16,.4)` — a
+// negative spread, which React Native cannot express. This approximates it, and
+// Android renders it neutral below API 28. Do not simulate the spread with a
+// nested inset view; the halo is not load-bearing. Same in both modes.
+export const liveGlow = {
+  shadowColor: marigold,
+  shadowOffset: { width: 0, height: 8 },
+  shadowOpacity: 0.35,
+  shadowRadius: 12,
+  elevation: 6,
 };
 
 // ─── Derived tokens ───────────────────────────────────────────────────────────
