@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -15,7 +15,7 @@ import { RootStackParamList } from '../navigation/AppNavigator';
 import { GroupDTO, UserDTO, parseApiError } from '@orbit/shared';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { useClockAt } from '../utils/countdown';
-import { Invitation, readHomeCache, writeHomeCache } from '../utils/homeCache';
+import { Invitation, homeCacheEpoch, readHomeCache, writeHomeCache } from '../utils/homeCache';
 import { LiveCall, fetchLiveCalls, hasCountdown, isLive, pickHeroCall } from '../utils/liveCalls';
 import { formatSavedAt } from '../utils/timeFormat';
 import { layout, spacing } from '../theme';
@@ -107,6 +107,8 @@ export default function HomeScreen() {
     // Only the newest load may write state: an older one landing late would replace
     // fresher data, or re-raise an error the newer load had already cleared.
     const seq = ++loadSeq.current;
+    // A sign-out clears the copy; a load that began before it must not write one back.
+    const cacheEpoch = homeCacheEpoch();
     setLoadError(null);
     try {
       const client = await createAuthenticatedApiClient();
@@ -125,16 +127,18 @@ export default function HomeScreen() {
       setInvitations(invitationsRes.invitations);
       if (meRes) setMe(meRes);
       if (calls) setLiveCalls(calls);
+      // These two come last on purpose. The spotlight effect keys off them and reads
+      // the groups and calls set above, so they have to be in place by the render in
+      // which either of these changes.
       setSavedAt(null); // live again: the banner goes
       setHasLoaded(true);
       // Fire and forget: writeHomeCache never rejects, and a slow disk must not hold
       // up the render. Only the newest load reaches here, so the copy is never older
       // than one already saved.
-      writeHomeCache({
-        groups: groupsRes.groups,
-        invitations: invitationsRes.invitations,
-        fetchedAt: Date.now(),
-      });
+      writeHomeCache(
+        { groups: groupsRes.groups, invitations: invitationsRes.invitations, fetchedAt: Date.now() },
+        cacheEpoch,
+      );
     } catch (error) {
       if (seq !== loadSeq.current) return;
       console.error('Failed to load data:', error);
@@ -159,8 +163,9 @@ export default function HomeScreen() {
     const unsubscribe = navigation.addListener('focus', loadData);
     return () => {
       unsubscribe();
-      // Leaving (or signing out) makes any load still in flight stale, so it cannot
-      // write a saved copy after the logout that just cleared it.
+      // Leaving Home makes any load still in flight stale, so it sets no state on a
+      // screen that is gone. (Not what stops it writing a copy after a sign-out: Home
+      // is still mounted while the sign-out clears the cache. That is the epoch's job.)
       loadSeq.current += 1;
     };
   }, [navigation]);
@@ -179,7 +184,14 @@ export default function HomeScreen() {
   // <CallTimer/>, which re-renders alone. Spontaneous calls have no end time, so
   // they add no deadline and no timer. Every reading is Date.now(), never a
   // decrement, so a backgrounded app is right the moment it returns.
-  const endTimes = liveCalls.filter(hasCountdown).map((c) => new Date(c.ends_at).getTime());
+  //
+  // Offline there are none. What is live is the server's to say and Home cannot reach
+  // it, so a saved copy shows no live card, no live tile and no overlay — whether Home
+  // started offline (there never were any) or lost the connection with a call up. The
+  // two must agree, and "nothing is live, so nothing is marigold". The calls stay in
+  // state, so Retry shows the freshest set without waiting for the next poll.
+  const shownCalls = offline ? [] : liveCalls;
+  const endTimes = shownCalls.filter(hasCountdown).map((c) => new Date(c.ends_at).getTime());
   const now = useClockAt(endTimes, isFocused);
 
   // Which calls are live is the server's to say, so ask again every 15s while the
@@ -202,7 +214,7 @@ export default function HomeScreen() {
   }, [isFocused]);
 
   const groupsById = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
-  const activeCalls = liveCalls.filter((c) => groupsById.has(c.group_id) && isLive(c, now));
+  const activeCalls = shownCalls.filter((c) => groupsById.has(c.group_id) && isLive(c, now));
   // The card is a live-call surface, not a list row, so it stays put across the
   // cadence filters. The Invited tab swaps the whole grid, and the card with it.
   const heroCall = activeCalls.length > 0 && activeFilter !== 'Invited' ? pickHeroCall(activeCalls) : null;
@@ -216,7 +228,20 @@ export default function HomeScreen() {
   // waits, and the question is asked the moment it can be answered. Kept in component
   // state, not storage: a call that is still live at the next cold start earns the
   // overlay again.
-  useEffect(() => {
+  //
+  // If the live-call request itself failed on that load there is nothing to judge by
+  // either, and the decision is spent: the card turns up at the next poll instead. That
+  // is deliberate. Waiting for a poll to decide would raise the overlay for a call that
+  // started after the user had already opened the app.
+  //
+  // The overlay is for the spotlighted group's *card*. The design's background tile
+  // carries a 22pt marigold "ringing" label for that group, but here the group on the
+  // call is the hero — drawn as the live card, not as a tile — so there is no tile to
+  // label and none is drawn; the card stands behind the overlay in its place. (The 13pt
+  // "live" on GroupTile is for a live group that is *not* the hero.)
+  //
+  // Before paint, so Home never shows one un-dimmed frame before the overlay lands.
+  useLayoutEffect(() => {
     if (!hasLoaded || offline || !isFocused || spotlightDecided.current) return;
     spotlightDecided.current = true;
     const call = pickHeroCall(activeCalls);

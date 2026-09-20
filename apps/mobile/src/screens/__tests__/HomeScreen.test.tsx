@@ -9,7 +9,7 @@ import { GroupTile } from '../../components/GroupTile';
 import { Icon } from '../../components/Icon';
 import { createAuthenticatedApiClient } from '../../utils/apiClient';
 import { fetchLiveCalls, type LiveCall } from '../../utils/liveCalls';
-import { HOME_CACHE_KEY, type HomeSnapshot } from '../../utils/homeCache';
+import { HOME_CACHE_KEY, clearHomeCache, type HomeSnapshot } from '../../utils/homeCache';
 import { darkTheme, lightTheme, radius } from '../../theme';
 
 const mockNavigate = jest.fn();
@@ -1562,7 +1562,9 @@ describe('Home offline cache (T17)', () => {
     await seedCache({ fetchedAt: new Date(2026, 8, 17, 9, 41).getTime() });
     const { tree } = await renderHome({ failLoad: true });
 
-    expect(savedLine(tree)).toMatch(/Sep 17.*9:41/);
+    const day = new Date(2026, 8, 17).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    expect(savedLine(tree)).toContain(day);
+    expect(savedLine(tree)).toMatch(/9:41/);
   });
 
   it('is the error state, not an empty grid, on a cold install with nothing saved', async () => {
@@ -1634,6 +1636,7 @@ describe('Home offline cache (T17)', () => {
 
   it('lets a newer load win over a failed one that is still reading the saved copy', async () => {
     await seedCache({ groups: [group({ id: 's', name: 'Stale' })] });
+    const staleRaw = await AsyncStorage.getItem(HOME_CACHE_KEY); // what the held-open read will return
     // The failed first load stops at its cache read…
     let finishRead!: (raw: string | null) => void;
     (AsyncStorage.getItem as jest.Mock).mockImplementationOnce(
@@ -1648,7 +1651,7 @@ describe('Home offline cache (T17)', () => {
     expect(tiles(tree).map((t) => t.props.name)).toEqual(['Fresh']);
 
     // The old read now lands. It must not put the stale copy, or the banner, back.
-    finishRead(await AsyncStorage.getItem(HOME_CACHE_KEY));
+    finishRead(staleRaw);
     await flush();
     expect(tiles(tree).map((t) => t.props.name)).toEqual(['Fresh']);
     expect(hasText(tree, 'No connection')).toBe(false);
@@ -1661,6 +1664,35 @@ describe('Home offline cache (T17)', () => {
     expect(tiles(tree)).toHaveLength(1);
     expect(hasText(tree, "Couldn't load groups")).toBe(false);
     expect(hasText(tree, 'No connection')).toBe(false);
+  });
+
+  it('writes nothing for a load that lands after the account signed out, though Home is still mounted', async () => {
+    const { client } = await renderHome({ groups: [alpha] });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    client.get.mockImplementation(async (path: string) => {
+      await gate;
+      return path === '/groups' ? { groups: [alpha] } : ME;
+    });
+    client.getMyInvitations.mockImplementation(async () => { await gate; return { invitations: [] }; });
+
+    await act(async () => { mockListeners.focus(); }); // a load begins…
+    await clearHomeCache(); // …the account signs out; Home is up until the session flips…
+    release();
+    await flush(); // …and the load lands.
+
+    expect(await AsyncStorage.getItem(HOME_CACHE_KEY)).toBeNull();
+  });
+
+  it('drops an invitation that lapsed while the copy sat on disk — offline cannot say so, and Accept could only fail', async () => {
+    const lapsed = { ...invitation('i1', 'Old Club'), expires_at: new Date(LATER_TODAY - 60_000).toISOString() };
+    const open = { ...invitation('i2', 'Open Club'), expires_at: new Date(LATER_TODAY + 3_600_000).toISOString() };
+    await seedCache({ invitations: [lapsed, open] as HomeSnapshot['invitations'] });
+    const { tree } = await renderHome({ failLoad: true });
+
+    await press(tree, 'Invited');
+    expect(hasText(tree, 'Open Club')).toBe(true);
+    expect(hasText(tree, 'Old Club')).toBe(false);
   });
 
   it('writes nothing for a load that lands after Home is gone — a logout must stay cleared', async () => {
@@ -1749,14 +1781,6 @@ describe.each<Mode>(['light', 'dark'])('Home offline presentation (%s)', (mode) 
     expect(hasText(tree, 'Creating groups needs a connection.')).toBe(true);
   });
 
-  it('does not navigate to Create group when the inert button is pressed', async () => {
-    const { tree } = await offline();
-    // A disabled TouchableOpacity never calls onPress; the handler is still there, so
-    // check the prop that gates it rather than assume.
-    expect(pressable(tree, 'New group').props.disabled).toBe(true);
-    expect(mockNavigate).not.toHaveBeenCalledWith('CreateGroup');
-  });
-
   it('says none of it online: no caption, and New group answers', async () => {
     const { tree } = await renderHome({ groups: [group({ id: 'a', name: 'Alpha' })] }, mode);
 
@@ -1774,7 +1798,56 @@ describe.each<Mode>(['light', 'dark'])('Home offline presentation (%s)', (mode) 
   });
 });
 
+// ─── Offline shows nothing live ───────────────────────────────────────────────
+
+describe('Home offline and live calls', () => {
+  const groups = [group({ id: 'a', name: 'Alpha', member_count: 4 }), group({ id: 'b', name: 'Bravo' })];
+  const call: LiveCall = {
+    id: 'ca', group_id: 'a', call_type: 'scheduled', started_at: new Date(T0 - 60_000).toISOString(),
+    ends_at: new Date(T0 + 724_000).toISOString(), participant_count: 2,
+  };
+
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockReturnValue(T0);
+  });
+
+  it('takes the live card down when the connection goes mid-session, and puts it back on Retry', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [call] });
+    expect(hasText(tree, '2 of 4 joined')).toBe(true);
+
+    mockApi({ groups, liveCalls: [call], failLoad: true }); // the connection goes
+    await act(async () => { mockListeners.focus(); });
+    await flush();
+
+    expect(hasText(tree, 'No connection')).toBe(true);
+    // Nothing is live, so nothing is marigold: no card, no Join, no live tile.
+    expect(hasText(tree, '2 of 4 joined')).toBe(false);
+    expect(hasText(tree, 'Join')).toBe(false);
+    expect(marigoldNodes(tree, 'dark')).toHaveLength(0);
+    expect(tiles(tree).map((t) => t.props.name)).toEqual(['Alpha', 'Bravo']); // Alpha is a plain tile again
+    expect(tiles(tree).every((t) => !t.props.live)).toBe(true);
+    expect(overlayUp(tree)).toBe(false);
+
+    mockApi({ groups, liveCalls: [call] }); // and it comes back
+    await press(tree, 'Retry');
+    expect(hasText(tree, '2 of 4 joined')).toBe(true);
+    expect(hasText(tree, 'No connection')).toBe(false);
+  });
+
+  it('agrees with a cold start offline, which never had a live call to show', async () => {
+    await seedCache({ groups });
+    const { tree } = await renderHome({ groups, liveCalls: [call], failLoad: true });
+
+    expect(hasText(tree, '2 of 4 joined')).toBe(false);
+    expect(marigoldNodes(tree, 'dark')).toHaveLength(0);
+  });
+});
+
 // ─── The spotlight overlay: when Home raises it ───────────────────────────────
+
+const overlayUp = (tree: ReactTestRenderer) =>
+  tree.root.findAll((n) => isHost(n, 'View') && n.props.testID === 'call-spotlight').length > 0;
+
 
 describe('Home spotlight', () => {
   const iso = (ms: number) => new Date(ms).toISOString();

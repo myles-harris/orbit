@@ -1,5 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { HOME_CACHE_KEY, clearHomeCache, readHomeCache, writeHomeCache, type HomeSnapshot } from '../homeCache';
+import {
+  HOME_CACHE_KEY, clearHomeCache, homeCacheEpoch, readHomeCache, writeHomeCache, type HomeSnapshot,
+} from '../homeCache';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
@@ -98,6 +100,63 @@ describe('home cache (T17)', () => {
     it('clear resolves instead of rejecting', async () => {
       (AsyncStorage.removeItem as jest.Mock).mockRejectedValueOnce(new Error('locked'));
       await expect(clearHomeCache()).resolves.toBeUndefined();
+    });
+  });
+
+  // A sign-out clears the copy. A load that began before it must not write one back, even
+  // if it lands before Home has unmounted.
+  describe('the clear epoch', () => {
+    it('drops a write from a load that began before a clear', async () => {
+      const began = homeCacheEpoch();
+      await clearHomeCache();
+      await writeHomeCache(snapshot(), began);
+      expect(await AsyncStorage.getItem(HOME_CACHE_KEY)).toBeNull();
+    });
+
+    it('keeps a write from a load that began after it', async () => {
+      await clearHomeCache();
+      await writeHomeCache(snapshot(), homeCacheEpoch());
+      expect(await readHomeCache()).toEqual(snapshot());
+    });
+
+    it('moves the moment a clear is called, before its removal has even finished', () => {
+      const before = homeCacheEpoch();
+      const clearing = clearHomeCache(); // deliberately not awaited
+      expect(homeCacheEpoch()).toBe(before + 1);
+      return clearing;
+    });
+
+    it('writes when no epoch is given', async () => {
+      await writeHomeCache(snapshot());
+      expect(await readHomeCache()).toEqual(snapshot());
+    });
+  });
+
+  describe('invitations that lapsed while the copy sat on disk', () => {
+    const NOW = Date.parse('2026-09-19T12:00:00.000Z');
+    const invite = (id: string, expires_at?: string) => ({ ...snapshot().invitations[0], id, expires_at });
+    const save = (...invitations: ReturnType<typeof invite>[]) => writeHomeCache(snapshot({ invitations }));
+    const ids = async () => (await readHomeCache(NOW))?.invitations.map((i) => i.id);
+
+    it('are dropped on read; the ones still open are kept', async () => {
+      await save(
+        invite('gone', '2026-09-19T11:59:59.000Z'),
+        invite('now', '2026-09-19T12:00:00.000Z'), // expires exactly now: lapsed
+        invite('open', '2026-09-19T12:00:01.000Z'),
+      );
+      expect(await ids()).toEqual(['open']);
+    });
+
+    it('keep an invitation whose expiry is missing or unreadable — only a certain lapse drops one', async () => {
+      await save(invite('none'), invite('junk', 'not a date'));
+      expect(await ids()).toEqual(['none', 'junk']);
+    });
+
+    it('leave the groups and the timestamp alone', async () => {
+      await save(invite('gone', '2026-01-01T00:00:00.000Z'));
+      const read = await readHomeCache(NOW);
+      expect(read?.groups).toEqual(snapshot().groups);
+      expect(read?.fetchedAt).toBe(snapshot().fetchedAt);
     });
   });
 });

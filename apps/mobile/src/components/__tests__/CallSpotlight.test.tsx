@@ -1,5 +1,5 @@
 import { act, type ComponentProps } from 'react';
-import { AppState, BackHandler, Image, StyleSheet } from 'react-native';
+import { AccessibilityInfo, AppState, BackHandler, Image, StyleSheet } from 'react-native';
 import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { BlurView } from 'expo-blur';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -296,8 +296,9 @@ describe('CallSpotlight timer (T18)', () => {
 
     for (let i = 0; i < 60; i += 1) {
       seen.push(textOf(timerNode(tree)));
-      // The node's style is the same object-for-object at every tick: same face, same
-      // size, same line box, same tabular figures — only the digits change.
+      // How the slot is drawn never depends on its digits, so its style is constant tick to
+      // tick. That guards against someone keying the style on the text; it does not prove
+      // the glyphs are one width — that is the font's `tnum` feature, and needs a device.
       expect(flat(timerNode(tree).props.style)).toEqual(style0);
       await tick(1000);
     }
@@ -347,5 +348,45 @@ describe('CallSpotlight on Android back', () => {
 
     act(() => tree.unmount());
     expect(back.remove).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── For a screen reader ──────────────────────────────────────────────────────
+
+describe('CallSpotlight for a screen reader', () => {
+  it('announces itself on mount, since Home hides everything behind it', async () => {
+    // RN's jest setup already provides this as a shared mock, so spyOn hands back the same one
+    // and its calls pile up across every earlier render in the file.
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => {});
+    announce.mockClear();
+    await render(scheduled());
+
+    expect(announce).toHaveBeenCalledTimes(1);
+    expect(announce.mock.calls[0][0]).toContain('Track Club');
+  });
+
+  it('does not announce again on the timer\'s ticks', async () => {
+    const announce = jest.spyOn(AccessibilityInfo, 'announceForAccessibility').mockImplementation(() => {});
+    announce.mockClear();
+    await render(scheduled());
+    await tick(5_000);
+    expect(announce).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes on the VoiceOver escape gesture, as a Modal would', async () => {
+    const { tree, onDismiss } = await render(scheduled());
+    const root = tree.root.findAll((n) => isHost(n, 'View') && n.props.accessibilityViewIsModal === true)[0];
+
+    await act(async () => { root.props.onAccessibilityEscape(); });
+
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it('says which way the timer is running, since "12:04" alone does not', async () => {
+    const down = await render(scheduled());
+    expect(timerNode(down.tree).props.accessibilityHint).toBe('Time remaining');
+
+    const up = await render(spontaneous());
+    expect(timerNode(up.tree).props.accessibilityHint).toBe('Time since the call started');
   });
 });

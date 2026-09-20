@@ -12,7 +12,7 @@ interface LiveCallCardProps {
   totalCount: number;
   /**
    * The countdown — text such as "12:04", or a component that renders it and owns
-   * its own clock (`<Countdown/>`), so a tick re-renders that text and not this
+   * its own clock (`<CallTimer/>`), so a tick re-renders that text and not this
    * card. Omit it for a spontaneous call, which has no end time to count toward:
    * the Join pill then takes the row on its own.
    */
