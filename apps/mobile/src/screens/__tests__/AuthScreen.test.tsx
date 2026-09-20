@@ -133,6 +133,19 @@ describe('AuthScreen phone step', () => {
     expect(mockRequest).toHaveBeenCalledWith('POST', '/auth/request-otp', { phone: '+447911123456' });
   });
 
+  it.each([
+    ['a whole E.164 number', '+14045550117', '+14045550117'],
+    ['a whole number with its formatting', '+1 (404) 555-0117', '+14045550117'],
+    ['a whole international number, with the code still on +1', '+44 7911 123456', '+447911123456'],
+  ])('does not add a second country code when %s is pasted into the number field', async (_label, pasted, expected) => {
+    const tree = render();
+    mockRequest.mockResolvedValueOnce({ status: 'sent' });
+    typeInto(tree, 'Phone number', pasted);
+    await tap(tree, 'Send code');
+
+    expect(mockRequest).toHaveBeenCalledWith('POST', '/auth/request-otp', { phone: expected });
+  });
+
   it('starts the country code at +1', () => {
     const tree = render();
     expect(input(tree, 'Country code').props.value).toBe('+1');

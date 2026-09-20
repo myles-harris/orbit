@@ -267,6 +267,8 @@ export default function AccountScreen() {
         <View style={styles.profile}>
           <TouchableOpacity
             onPress={handleAvatarPress}
+            // A second press mid-upload would start a second upload alongside it.
+            disabled={uploadingAvatar}
             activeOpacity={0.75}
             accessibilityRole="button"
             accessibilityLabel="Change profile photo"
@@ -334,7 +336,8 @@ export default function AccountScreen() {
                   >
                     {/* The one icon stroke marigold gets: the moon, in dark mode only. */}
                     <Icon name={currentOption.icon} size={15} color={mode === 'dark' ? colors.accent : colors.text} />
-                    <Text style={styles.themeTriggerLabel}>{currentOption.label}</Text>
+                    {/* The pill is a fixed 40pt, so its label is capped rather than left to grow out of it. */}
+                    <Text style={styles.themeTriggerLabel} maxFontSizeMultiplier={1.3}>{currentOption.label}</Text>
                     <Icon name="chevron-up" size={14} color={colors.textSecondary} />
                   </TouchableOpacity>
                 </View>
@@ -353,6 +356,8 @@ export default function AccountScreen() {
         <Text style={styles.version}>Orbit 0.1.0</Text>
       </ScrollView>
 
+      {/* Not BottomActionBar's secondary variant: the design letters Log out in the quieter
+          textMeta (that variant uses `text`) and draws no rule above this bar. */}
       <View style={[styles.logoutBar, { paddingBottom: Math.max(insets.bottom, layout.barTopPad) }]}>
         <TouchableOpacity
           onPress={logout}

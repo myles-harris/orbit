@@ -323,6 +323,23 @@ describe('AccountScreen avatar', () => {
     expect(client.uploadAvatar).toHaveBeenCalledWith('BASE64', 'image/jpeg');
   });
 
+  it('cannot be pressed again while a photo is uploading, and can once it has finished', async () => {
+    (ImagePicker.launchImageLibraryAsync as jest.Mock).mockResolvedValue({
+      canceled: false,
+      assets: [{ uri: 'file:///picked.jpg', width: 2000 }],
+    });
+    const { tree, client } = await renderAccount();
+    let finishUpload!: () => void;
+    client.uploadAvatar.mockReturnValueOnce(new Promise<object>((resolve) => { finishUpload = () => resolve({}); }));
+
+    // Still uploading: a second press here would start a second upload alongside it.
+    await act(async () => { byLabel(tree, 'Change profile photo').props.onPress(); });
+    expect(byLabel(tree, 'Change profile photo').props.disabled).toBe(true);
+
+    await act(async () => { finishUpload(); });
+    expect(byLabel(tree, 'Change profile photo').props.disabled).toBeFalsy();
+  });
+
   it('uploads nothing when the picker is cancelled', async () => {
     (ImagePicker.launchImageLibraryAsync as jest.Mock).mockResolvedValueOnce({ canceled: true, assets: null });
     const { tree, client } = await renderAccount();

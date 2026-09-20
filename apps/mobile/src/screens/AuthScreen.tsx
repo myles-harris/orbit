@@ -17,6 +17,7 @@ import { ApiClient } from '@orbit/shared';
 import * as SecureStore from 'expo-secure-store';
 import { useAuth } from '../context/AuthContext';
 import { setAccessToken } from '../utils/apiClient';
+import { toE164 } from '../utils/phone';
 import { API_URL } from '../config';
 import { layout, onPhoto, radius, scrim } from '../theme';
 import { useTheme } from '../context/ThemeContext';
@@ -39,8 +40,6 @@ const FOOTER_MIN_BOTTOM = 26;
 // The scrim's stops at 0 / 30% / 72% / 100% — expo-linear-gradient takes 0–1.
 const SCRIM_LOCATIONS = [0, 0.3, 0.72, 1] as const;
 
-const digitsOnly = (value: string) => value.replace(/\D/g, '');
-
 // AuthScreen always overlays the sky photo, so cream and wheat are correct whatever
 // the app's light/dark preference. The one screen where fixed colours are right;
 // they come from `onPhoto` rather than being written out here.
@@ -59,8 +58,8 @@ export default function AuthScreen() {
   const [signupToken, setSignupToken] = useState('');
   const [step, setStep] = useState<Step>('phone');
 
-  // Whatever was typed or pasted — "(404) 555-0117", "44", "+44" — as E.164.
-  const phone = `+${digitsOnly(countryCode)}${digitsOnly(number)}`;
+  // Whatever was typed or pasted — "(404) 555-0117", a whole "+44 7911 123456" — as E.164.
+  const phone = toE164(countryCode, number);
 
   const requestOtp = async () => {
     try {
@@ -193,7 +192,12 @@ export default function AuthScreen() {
                     maxFontSizeMultiplier={1.3}
                   />
                 </View>
-                <TouchableOpacity onPress={() => setStep('phone')} accessibilityRole="button" hitSlop={8}>
+                <TouchableOpacity
+                  onPress={() => setStep('phone')}
+                  accessibilityRole="button"
+                  accessibilityLabel="Back to phone number"
+                  hitSlop={8}
+                >
                   <Text style={styles.note}>← Back</Text>
                 </TouchableOpacity>
               </>
@@ -230,6 +234,8 @@ export default function AuthScreen() {
               onPress={action.onPress}
               activeOpacity={0.85}
               accessibilityRole="button"
+              // Marigold and its espresso label are the same in both themes, so reading
+              // them from the theme keeps this screen identical in light and dark.
               style={[styles.button, { backgroundColor: colors.accent }]}
             >
               <Text style={[styles.buttonLabel, { color: colors.onAccent }]} maxFontSizeMultiplier={1.3}>
