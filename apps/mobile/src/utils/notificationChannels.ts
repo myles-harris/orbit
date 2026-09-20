@@ -92,7 +92,7 @@ export async function clearCachedCallPrefs(): Promise<void> {
 }
 
 // Callers can legitimately overlap — App.tsx auto-syncs on auth/foreground while
-// SettingsScreen syncs on a manual toggle. pruneCallChannels deletes every calls-*
+// AccountScreen syncs on a manual toggle. pruneCallChannels deletes every calls-*
 // channel except the one it just created, so two interleaved runs can each delete
 // the channel the other just made (or race the AsyncStorage cache write out of
 // order). Chain every call onto whichever is already in flight so they run one at
