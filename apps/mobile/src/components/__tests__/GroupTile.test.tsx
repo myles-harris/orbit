@@ -1,10 +1,10 @@
 import { act } from 'react';
-import { StyleSheet } from 'react-native';
+import { StyleSheet, TouchableOpacity } from 'react-native';
 import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import { LinearGradient } from 'expo-linear-gradient';
 import { GroupTile } from '../GroupTile';
 import { useTheme } from '../../context/ThemeContext';
-import { darkTheme, lightTheme, scrim } from '../../theme';
+import { darkTheme, layout, lightTheme, onPhoto, scrim } from '../../theme';
 
 jest.mock('../../context/ThemeContext', () => ({ useTheme: jest.fn() }));
 
@@ -16,7 +16,7 @@ const WHEAT = '#E2C48D'; // the design's fixed over-photo sub-label colour
 
 async function render(
   mode: Mode,
-  props: { photoUri?: string | null; subLabel?: string } = {},
+  props: { photoUri?: string | null; subLabel?: string; live?: boolean } = {},
 ): Promise<ReactTestRenderer> {
   (useTheme as jest.Mock).mockReturnValue({ theme: THEMES[mode], mode });
   let tree!: ReactTestRenderer;
@@ -95,5 +95,74 @@ describe('GroupTile scrims', () => {
   it('draws no scrim on a surface tile', async () => {
     const tree = await render('dark');
     expect(tree.root.findAllByType(LinearGradient)).toHaveLength(0);
+  });
+});
+
+const MARIGOLD = '#F6BF10';
+
+// A second concurrent live call: the hero card takes the first, and any other
+// live group keeps its tile with a 1px marigold border and a "live" label.
+describe('GroupTile live (concurrent call)', () => {
+  const border = (tree: ReactTestRenderer) => {
+    const style = StyleSheet.flatten(tree.root.findByType(TouchableOpacity).props.style);
+    return { width: style.borderWidth, color: style.borderColor };
+  };
+
+  it.each<Mode>(['light', 'dark'])('is unmarked when not live, in %s mode', async (mode) => {
+    const tree = await render(mode);
+    expect(tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === 'live')).toHaveLength(0);
+    expect(border(tree)).toEqual({ width: 1, color: THEMES[mode].colors.hairline });
+  });
+
+  it.each<[Mode, string | undefined]>([
+    ['light', undefined],
+    ['light', PHOTO],
+    ['dark', undefined],
+    ['dark', PHOTO],
+  ])('draws a 1px marigold border in %s mode (photo: %s)', async (mode, photoUri) => {
+    const tree = await render(mode, { live: true, photoUri });
+    expect(border(tree)).toEqual({ width: 1, color: MARIGOLD });
+  });
+
+  it.each<Mode>(['light', 'dark'])('labels a photo tile in marigold over the scrim in %s mode', async (mode) => {
+    const tree = await render(mode, { live: true, photoUri: PHOTO });
+    expect(textColor(tree, 'live')).toBe(onPhoto.accent);
+  });
+
+  it('labels a dark surface tile in marigold — 8.96:1 on the dark surface', async () => {
+    const tree = await render('dark', { live: true });
+    expect(textColor(tree, 'live')).toBe(MARIGOLD);
+  });
+
+  it('does not put marigold text on the light surface, where it is 1.60:1', async () => {
+    const tree = await render('light', { live: true });
+    expect(textColor(tree, 'live')).toBe(lightTheme.colors.text);
+    expect(textColor(tree, 'live')).not.toBe(MARIGOLD);
+  });
+
+  // The label must not join the tile's space-between flow, or the name and cadence
+  // slots move: it is pinned to the bottom-left corner, out of flow.
+  it('pins the label out of flow, in the bottom-left corner, so the other slots do not move', async () => {
+    const tree = await render('dark', { subLabel: 'muted', live: true });
+    const label = tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === 'live')[0];
+    expect(StyleSheet.flatten(label.props.style)).toMatchObject({
+      position: 'absolute',
+      left: layout.tilePad,
+      bottom: layout.tilePad,
+    });
+
+    // The name, sub-label and cadence still render, coloured as on a plain tile.
+    const plain = await render('dark', { subLabel: 'muted' });
+    ['Track Club', 'muted', 'Daily'].forEach((text) => {
+      expect(textColor(tree, text)).toBe(textColor(plain, text));
+    });
+  });
+
+  it('keeps the name, sub-label and cadence in flow', async () => {
+    const tree = await render('dark', { subLabel: 'muted', live: true });
+    ['Track Club', 'muted', 'Daily'].forEach((text) => {
+      const node = tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === text)[0];
+      expect(StyleSheet.flatten(node.props.style)?.position).not.toBe('absolute');
+    });
   });
 });

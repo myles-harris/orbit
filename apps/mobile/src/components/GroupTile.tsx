@@ -14,6 +14,13 @@ interface GroupTileProps {
    */
   subLabel?: string;
   photoUri?: string | null;
+  /**
+   * A live call on a group that is not the hero. The live card takes the most
+   * recent call; any other live group keeps its square tile and gains a 1px
+   * marigold border and a "live" label — the vocabulary the spotlight screen's
+   * background tile already uses.
+   */
+  live?: boolean;
   onPress: () => void;
 }
 
@@ -23,9 +30,13 @@ interface GroupTileProps {
 // Layout: name (and subLabel) top-left, cadence bottom-right. That is what the
 // two scrims in the design imply — one anchored to each edge, `tileTop` behind
 // the name and `tileBottom` behind the cadence.
-export function GroupTile({ name, cadence, subLabel, photoUri, onPress }: GroupTileProps) {
-  const { theme: { colors } } = useTheme();
+export function GroupTile({ name, cadence, subLabel, photoUri, live, onPress }: GroupTileProps) {
+  const { theme: { colors }, mode } = useTheme();
   const hasPhoto = !!photoUri;
+  // Marigold text is legal only over a dark ground (AC-3): a photo scrim in either
+  // mode, or the dark surface. On the light surface it is 1.60:1, so the label
+  // falls back to `text` there and the marigold border carries the signal alone.
+  const liveLabelColor = hasPhoto ? onPhoto.accent : mode === 'dark' ? colors.accent : colors.text;
 
   return (
     <TouchableOpacity
@@ -36,8 +47,8 @@ export function GroupTile({ name, cadence, subLabel, photoUri, onPress }: GroupT
         {
           borderRadius: radius.xl,
           backgroundColor: hasPhoto ? colors.background : colors.surface,
-          borderWidth: hasPhoto ? 0 : 1,
-          borderColor: colors.hairline,
+          borderWidth: hasPhoto && !live ? 0 : 1,
+          borderColor: live ? colors.accent : colors.hairline,
         },
       ]}
     >
@@ -92,6 +103,14 @@ export function GroupTile({ name, cadence, subLabel, photoUri, onPress }: GroupT
         ) : null}
       </View>
 
+      {live ? (
+        <Text
+          style={[styles.liveLabel, { color: liveLabelColor }, hasPhoto ? onPhoto.textShadow : undefined]}
+        >
+          live
+        </Text>
+      ) : null}
+
       <Text
         style={[
           styles.cadence,
@@ -122,6 +141,16 @@ const styles = StyleSheet.create({
   },
   cadence: {
     alignSelf: 'flex-end',
+    fontFamily: 'GeistMono_500Medium',
+    fontSize: 13,
+  },
+  // Out of flow, on the cadence's baseline, so the label never changes how the name
+  // and cadence slots lay out. (The 1px border a live photo tile gains does inset its
+  // content by 1px against photo neighbours — that is the border, not the label.)
+  liveLabel: {
+    position: 'absolute',
+    left: layout.tilePad,
+    bottom: layout.tilePad,
     fontFamily: 'GeistMono_500Medium',
     fontSize: 13,
   },

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -8,15 +8,24 @@ import {
   RefreshControl,
   Alert,
 } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useIsFocused, useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/AppNavigator';
-import { GroupDTO } from '@orbit/shared';
+import { GroupDTO, UserDTO, parseApiError } from '@orbit/shared';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
-import { spacing, radius } from '../theme';
+import { formatCountdown, secondsRemaining, useNow } from '../utils/countdown';
+import { LiveCall, fetchLiveCalls, pickHeroCall } from '../utils/liveCalls';
+import { layout, spacing } from '../theme';
 import { useTheme } from '../context/ThemeContext';
-import { Ionicons } from '@expo/vector-icons';
+import { BottomActionBar } from '../components/BottomActionBar';
+import { Display } from '../components/Display';
+import { FilterTabs } from '../components/FilterTabs';
+import { GroupTile } from '../components/GroupTile';
+import { InvitationRow } from '../components/InvitationRow';
+import { LiveCallCard } from '../components/LiveCallCard';
+import { PasteInviteModal } from '../components/PasteInviteModal';
+import { UserAvatar } from '../components/UserAvatar';
 
 type HomeScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Home'>;
 
@@ -36,8 +45,9 @@ interface Invitation {
 type FilterTab = 'All' | 'Daily' | 'Weekly' | 'Invited';
 const FILTER_TABS: FilterTab[] = ['All', 'Daily', 'Weekly', 'Invited'];
 
-const GAP = 8;
-const CARD_HEIGHT = 150;
+// Screen 05 puts the first-run headline at y=188 on a 390×844 canvas whose status
+// bar is 54pt. With the filter row gone, the gap under the header is what's left.
+const FIRST_RUN_TOP_GAP = 188 - 54 - layout.headerHeight;
 
 function getCadenceLabel(cadence: string, weekly_frequency?: number | null) {
   if (cadence === 'daily') return 'Daily';
@@ -45,168 +55,66 @@ function getCadenceLabel(cadence: string, weekly_frequency?: number | null) {
   return 'Weekly';
 }
 
-// ─── GroupTile ────────────────────────────────────────────────────────────────
-
-interface GroupTileProps {
-  name: string;
-  cadenceLabel: string;
-  memberCount: number;
-  isMuted?: boolean;
-  colors: any;
-  onPress: () => void;
-}
-
-// Flat surface + hairline — the no-photo tile treatment. The per-group hashed
-// colour system this replaced is retired; group photos are the real identity
-// signal now (see 00-CONTEXT.md, "Group photos").
-function GroupTile({ name, cadenceLabel, memberCount, isMuted, colors, onPress }: GroupTileProps) {
-  return (
-    <TouchableOpacity
-      style={[cardStyles.card, { backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline, height: CARD_HEIGHT }]}
-      onPress={onPress}
-      activeOpacity={0.82}
-    >
-      <View style={cardStyles.cardTop}>
-        <View style={[cardStyles.pill, { backgroundColor: colors.background }]}>
-          <Text style={[cardStyles.pillText, { color: colors.textSecondary }]}>{cadenceLabel}</Text>
-        </View>
-        {isMuted && (
-          <View style={[cardStyles.pill, { backgroundColor: colors.background, paddingHorizontal: 8, paddingVertical: 5 }]}>
-            <Ionicons name="volume-mute" size={13} color={colors.textSecondary} />
-          </View>
-        )}
-      </View>
-      <View style={cardStyles.cardBottom}>
-        <Text style={[cardStyles.cardName, { color: colors.text }]} numberOfLines={2}>{name}</Text>
-        <Text style={[cardStyles.cardMeta, { color: colors.textTertiary }]}>
-          {memberCount} {memberCount === 1 ? 'member' : 'members'}
-        </Text>
-      </View>
-    </TouchableOpacity>
-  );
-}
-
-// ─── PendingTile ──────────────────────────────────────────────────────────────
-
-interface PendingTileProps {
-  name: string;
-  cadenceLabel: string;
-  memberCount: number;
-  colors: any;
-  onPress: () => void;
-}
-
-function PendingTile({ name, cadenceLabel, memberCount, colors, onPress }: PendingTileProps) {
-  return (
-    <TouchableOpacity
-      style={[cardStyles.card, cardStyles.pendingCard, { backgroundColor: colors.surface, height: CARD_HEIGHT, borderColor: colors.hairline }]}
-      onPress={onPress}
-      activeOpacity={0.82}
-    >
-      <View style={cardStyles.cardTop}>
-        <View style={[cardStyles.pill, { backgroundColor: colors.background }]}>
-          <Text style={[cardStyles.pillText, { color: colors.textSecondary, opacity: 0.7 }]}>{cadenceLabel}</Text>
-        </View>
-        <View style={[cardStyles.pill, { backgroundColor: colors.background }]}>
-          <Text style={[cardStyles.pillText, { color: colors.textSecondary, opacity: 0.8 }]}>Pending</Text>
-        </View>
-      </View>
-      <View style={[cardStyles.cardBottom, { opacity: 0.65 }]}>
-        <Text style={[cardStyles.cardName, { color: colors.text }]} numberOfLines={2}>{name}</Text>
-        <Text style={[cardStyles.cardMeta, { color: colors.textTertiary }]}>
-          {memberCount} {memberCount === 1 ? 'member' : 'members'}
-        </Text>
-      </View>
-    </TouchableOpacity>
-  );
-}
-
-// ─── GroupGrid ──────────────────────────────────────────────────────────────
-
-interface GridItem { type: 'group'; data: GroupDTO; }
-interface PendingGridItem { type: 'pending'; data: Invitation; }
-type AnyGridItem = GridItem | PendingGridItem;
-
-interface GroupGridProps {
-  items: AnyGridItem[];
-  colors: any;
-  onPressGroup: (groupId: string) => void;
-  onPressInvitation: (invitationId: string) => void;
-}
-
-function GroupGrid({ items, colors, onPressGroup, onPressInvitation }: GroupGridProps) {
-  const left = items.filter((_, i) => i % 2 === 0);
-  const right = items.filter((_, i) => i % 2 === 1);
-
-  const renderItem = (item: AnyGridItem, key: string) => {
-    if (item.type === 'group') {
-      const g = item.data;
-      return (
-        <GroupTile
-          key={key}
-          name={g.name}
-          cadenceLabel={getCadenceLabel(g.cadence, g.weekly_frequency)}
-          memberCount={g.member_count}
-          isMuted={g.is_muted}
-          colors={colors}
-          onPress={() => onPressGroup(g.id)}
-        />
-      );
-    }
-    const inv = item.data;
-    return (
-      <PendingTile
-        key={key}
-        name={inv.group.name}
-        cadenceLabel={getCadenceLabel(inv.group.cadence, inv.group.weekly_frequency)}
-        memberCount={inv.group.member_count}
-        colors={colors}
-        onPress={() => onPressInvitation(inv.id)}
-      />
-    );
-  };
-
-  return (
-    <View style={{ flexDirection: 'row', gap: GAP }}>
-      <View style={{ flex: 1, gap: GAP }}>
-        {left.map((item, i) =>
-          renderItem(item, item.type === 'group' ? item.data.id : `inv-${item.data.id}-${i}`)
-        )}
-      </View>
-      <View style={{ flex: 1, gap: GAP }}>
-        {right.map((item, i) =>
-          renderItem(item, item.type === 'group' ? item.data.id : `inv-${item.data.id}-${i}`)
-        )}
-      </View>
-    </View>
-  );
+function chunkPairs<T>(items: T[]): T[][] {
+  const rows: T[][] = [];
+  for (let i = 0; i < items.length; i += 2) rows.push(items.slice(i, i + 2));
+  return rows;
 }
 
 // ─── HomeScreen ───────────────────────────────────────────────────────────────
 
 export default function HomeScreen() {
   const navigation = useNavigation<HomeScreenNavigationProp>();
-  const { theme: { colors, shadow } } = useTheme();
+  const { theme: { colors } } = useTheme();
   const insets = useSafeAreaInsets();
+  const isFocused = useIsFocused();
   const [groups, setGroups] = useState<GroupDTO[]>([]);
   const [invitations, setInvitations] = useState<Invitation[]>([]);
+  const [me, setMe] = useState<UserDTO | null>(null);
+  const [liveCalls, setLiveCalls] = useState<LiveCall[]>([]);
+  // True once a load has succeeded. Until then the lists are empty because nothing
+  // has arrived, not because the user has no groups — so no empty state may draw.
+  const [hasLoaded, setHasLoaded] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterTab>('All');
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Invites the user has answered this session. "Later" hides one without the
+  // server's help: 'dismiss' leaves it pending, so it returns on the next launch,
+  // until it expires. An accepted one is added too, so a reload that fails after
+  // the accept can't leave behind a row whose second Accept would only 400.
+  const [hiddenInviteIds, setHiddenInviteIds] = useState<Set<string>>(() => new Set());
+  // A set, not a single id: two rows can be answered at once, and each keeps its
+  // own in-flight state.
+  const [respondingIds, setRespondingIds] = useState<Set<string>>(() => new Set());
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const loadSeq = useRef(0);
 
-  const styles = useMemo(() => makeStyles(colors, shadow), [colors]);
+  const styles = useMemo(() => makeStyles(colors), [colors]);
 
   const loadData = async () => {
+    // Loads overlap — React Navigation fires 'focus' on the initial route as well as
+    // the mount call below, and a pull-to-refresh can straddle an Accept's reload.
+    // Only the newest load may write state: an older one landing late would replace
+    // fresher data, or re-raise an error the newer load had already cleared.
+    const seq = ++loadSeq.current;
     setLoadError(null);
     try {
       const client = await createAuthenticatedApiClient();
-      const [groupsRes, invitationsRes] = await Promise.all([
+      const [groupsRes, invitationsRes, meRes] = await Promise.all([
         client.get<{ groups: GroupDTO[] }>('/groups'),
         client.getMyInvitations(),
+        // Only the header avatar reads this — a failed /me must not blank the grid.
+        client.get<UserDTO>('/me').catch(() => null),
       ]);
+      const calls = await fetchLiveCalls(groupsRes.groups).catch((): LiveCall[] => []);
+      if (seq !== loadSeq.current) return;
       setGroups(groupsRes.groups);
       setInvitations(invitationsRes.invitations);
+      if (meRes) setMe(meRes);
+      setLiveCalls(calls);
+      setHasLoaded(true);
     } catch (error) {
+      if (seq !== loadSeq.current) return;
       console.error('Failed to load data:', error);
       setLoadError("Couldn't load your groups. Pull down to retry.");
     }
@@ -224,268 +132,333 @@ export default function HomeScreen() {
     setRefreshing(false);
   };
 
-  // Stands in for the now-deleted dedicated invite-response screen until
-  // PR 3 gives the invite row its own inline Accept/Later actions.
-  const onPressInvitation = (invitationId: string) => {
-    const invitation = invitations.find((inv) => inv.id === invitationId);
-    if (!invitation) return;
-    Alert.alert(`Join ${invitation.group.name}?`, `Invited by ${invitation.invited_by}`, [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Decline', style: 'destructive', onPress: () => respondToInvitation(invitation, 'decline') },
-      { text: 'Accept', onPress: () => respondToInvitation(invitation, 'accept') },
-    ]);
-  };
+  // ─── Live calls ─────────────────────────────────────────────────────────────
 
-  const respondToInvitation = async (invitation: Invitation, action: 'accept' | 'decline') => {
+  // The clock only runs while the screen is focused and a call has time left, and
+  // every reading is `Date.now()` — never a decrement — so a backgrounded app is
+  // correct the moment it returns (see utils/countdown.ts).
+  const latestEnd = useMemo(
+    () => liveCalls.reduce((max, c) => Math.max(max, new Date(c.ends_at).getTime() || 0), 0),
+    [liveCalls],
+  );
+  const now = useNow({ active: isFocused && liveCalls.length > 0, until: latestEnd });
+
+  const groupsById = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
+  const activeCalls = liveCalls.filter(
+    (c) => groupsById.has(c.group_id) && secondsRemaining(c.ends_at, now) > 0,
+  );
+  // The card is a live-call surface, not a list row, so it stays put across the
+  // cadence filters. The Invited tab swaps the whole grid, and the card with it.
+  const heroCall = activeCalls.length > 0 && activeFilter !== 'Invited' ? pickHeroCall(activeCalls, groups) : null;
+  const heroGroup = heroCall ? groupsById.get(heroCall.group_id) : undefined;
+  const otherLiveGroupIds = new Set(activeCalls.filter((c) => c !== heroCall).map((c) => c.group_id));
+
+  const joinLiveCall = async (call: LiveCall) => {
     try {
       const client = await createAuthenticatedApiClient();
-      const result = await client.respondToInvitation(invitation.id, action);
-      // Same confirmations the deleted InvitationsScreen showed.
-      if (action === 'accept') {
-        Alert.alert('Joined!', `You joined ${result.group?.name ?? invitation.group.name}!`);
-      } else {
-        Alert.alert('Declined', 'Invitation declined');
-      }
-      loadData();
+      const tokenData = await client.post<any>(`/groups/${call.group_id}/calls/${call.id}/join-token`, {});
+      navigation.navigate('Call', {
+        callId: call.id, groupId: call.group_id, roomUrl: tokenData.room_url,
+        token: tokenData.token, endsAt: tokenData.ends_at ?? undefined,
+      });
     } catch (error: any) {
-      Alert.alert('Error', error.message || 'Failed to respond to invitation');
+      Alert.alert('Error', parseApiError(error));
     }
   };
 
-  const gridItems: AnyGridItem[] = (() => {
-    if (activeFilter === 'Invited') {
-      return invitations.map((inv) => ({ type: 'pending' as const, data: inv }));
-    }
-    const filtered = groups.filter((g) => {
-      if (activeFilter === 'Daily') return g.cadence === 'daily';
-      if (activeFilter === 'Weekly') return g.cadence === 'weekly';
-      return true;
-    });
-    return filtered.map((g) => ({ type: 'group' as const, data: g }));
-  })();
+  // ─── Invitations ────────────────────────────────────────────────────────────
 
-  const isEmpty = gridItems.length === 0;
-  const emptyIcon =
-    activeFilter === 'Invited'
-      ? <Ionicons name="mail-outline" size={48} color={colors.textTertiary} />
-      : <Ionicons name="ellipse-outline" size={48} color={colors.textTertiary} />;
-  const emptyMessage =
-    activeFilter === 'Invited'
-      ? { title: 'No pending invitations', sub: "You're all caught up" }
-      : activeFilter !== 'All'
-      ? { title: `No ${activeFilter.toLowerCase()} groups`, sub: 'Switch filters to see your groups' }
-      : { title: 'No groups yet', sub: 'Tap + to create your first group' };
+  const pendingInvites = invitations.filter((inv) => !hiddenInviteIds.has(inv.id));
+
+  // When the last invitation leaves the Invited tab — answered, or gone from a
+  // refresh because it expired — follow the user to where their groups are rather
+  // than leave them on an empty tab. Only on that transition: tapping Invited with
+  // nothing pending must still say so.
+  const pendingCount = pendingInvites.length;
+  const prevPendingCount = useRef(0);
+  useEffect(() => {
+    if (activeFilter === 'Invited' && prevPendingCount.current > 0 && pendingCount === 0) {
+      setActiveFilter('All');
+    }
+    prevPendingCount.current = pendingCount;
+  }, [pendingCount, activeFilter]);
+
+  const hideInvite = (id: string) => setHiddenInviteIds((prev) => new Set(prev).add(id));
+  const setResponding = (id: string, on: boolean) =>
+    setRespondingIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+
+  const acceptInvitation = async (invitation: Invitation) => {
+    setResponding(invitation.id, true);
+    try {
+      const client = await createAuthenticatedApiClient();
+      await client.respondToInvitation(invitation.id, 'accept');
+    } catch (error) {
+      // The server is the source of truth. A rejected accept (already a member
+      // through a link, expired) leaves a row that can only fail again, so resync
+      // rather than strand it.
+      Alert.alert('Error', parseApiError(error));
+      loadData();
+      setResponding(invitation.id, false);
+      return;
+    }
+    // The row stays, dimmed, until the reload lands — so it hands over to the new
+    // tile in one render instead of flashing the empty state in between.
+    await loadData();
+    hideInvite(invitation.id);
+    setResponding(invitation.id, false);
+  };
+
+  const laterInvitation = (invitation: Invitation) => {
+    hideInvite(invitation.id);
+    // 'dismiss' leaves the invite pending server-side and only logs that it was
+    // seen; nothing the row depends on, so a failure is not surfaced.
+    createAuthenticatedApiClient()
+      .then((client) => client.respondToInvitation(invitation.id, 'dismiss'))
+      .catch(() => {});
+  };
+
+  // ─── What to show ───────────────────────────────────────────────────────────
+
+  const noGroups = hasLoaded && groups.length === 0;
+  // Nothing at all to filter: screen 05 draws no filter row. If an invite is
+  // pending the row stays — the Invited tab is the only place it can be answered.
+  // It also stays while the Invited tab is showing, since the first-run screen is
+  // never drawn there and the row is the only way back to it.
+  const showHeadline = noGroups && !loadError && activeFilter !== 'Invited';
+  const firstRun = showHeadline && pendingInvites.length === 0;
+
+  const visibleGroups = groups.filter((g) => {
+    if (activeFilter === 'Daily') return g.cadence === 'daily';
+    if (activeFilter === 'Weekly') return g.cadence === 'weekly';
+    return true;
+  });
+  const tileGroups = visibleGroups.filter((g) => g.id !== heroGroup?.id);
+
+  const renderTile = (g: GroupDTO) => (
+    <GroupTile
+      key={g.id}
+      name={g.name}
+      cadence={getCadenceLabel(g.cadence, g.weekly_frequency)}
+      subLabel={g.is_muted ? 'muted' : undefined}
+      live={otherLiveGroupIds.has(g.id)}
+      onPress={() => navigation.navigate('GroupDetail', { groupId: g.id })}
+    />
+  );
+
+  const renderBody = () => {
+    if (!hasLoaded && !loadError) return null;
+
+    // Wherever there is nothing to draw, a failed load is the likelier reason than
+    // an empty account — say that instead of "No weekly groups".
+    const loadFailed = (
+      <View style={styles.message}>
+        <Text style={styles.messageTitle}>Couldn't load groups</Text>
+        <Text style={styles.messageSub}>{loadError}</Text>
+      </View>
+    );
+
+    if (activeFilter === 'Invited') {
+      if (pendingInvites.length === 0) {
+        return loadError ? loadFailed : (
+          <View style={styles.message}>
+            <Text style={styles.messageTitle}>No pending invitations</Text>
+            <Text style={styles.messageSub}>You're all caught up</Text>
+          </View>
+        );
+      }
+      return (
+        <View style={styles.stack}>
+          {pendingInvites.map((inv) => (
+            <InvitationRow
+              key={inv.id}
+              groupName={inv.group.name}
+              invitedBy={inv.invited_by}
+              cadence={getCadenceLabel(inv.group.cadence, inv.group.weekly_frequency)}
+              busy={respondingIds.has(inv.id)}
+              onAccept={() => acceptInvitation(inv)}
+              onLater={() => laterInvitation(inv)}
+            />
+          ))}
+        </View>
+      );
+    }
+
+    if (showHeadline) {
+      return (
+        <View style={[styles.firstRun, { paddingTop: firstRun ? FIRST_RUN_TOP_GAP : spacing.xxxl }]}>
+          <Display size={34} leading={1.1}>No groups yet</Display>
+          {/* A sibling View, not textDecorationLine: RN ignores textDecorationColor
+              on Android and the offset everywhere (Appendix E). */}
+          <TouchableOpacity
+            onPress={() => setPasteOpen(true)}
+            activeOpacity={0.7}
+            accessibilityRole="link"
+            style={styles.link}
+          >
+            <Text style={styles.linkText}>Paste an invite link instead</Text>
+            <View style={styles.linkRule} />
+          </TouchableOpacity>
+        </View>
+      );
+    }
+
+    if (tileGroups.length === 0 && !heroCall) {
+      return loadError ? loadFailed : (
+        <View style={styles.message}>
+          <Text style={styles.messageTitle}>No {activeFilter.toLowerCase()} groups</Text>
+          <Text style={styles.messageSub}>Switch filters to see your groups</Text>
+        </View>
+      );
+    }
+
+    return (
+      <View style={styles.stack}>
+        {heroCall && heroGroup ? (
+          <LiveCallCard
+            groupName={heroGroup.name}
+            joinedCount={heroCall.participant_count}
+            totalCount={heroGroup.member_count}
+            countdown={formatCountdown(heroCall.ends_at, now)}
+            onJoin={() => joinLiveCall(heroCall)}
+          />
+        ) : null}
+        {chunkPairs(tileGroups).map((pair) => (
+          <View key={pair[0].id} style={styles.tileRow}>
+            {pair.map(renderTile)}
+            {/* An odd last tile keeps its half-width square instead of stretching. */}
+            {pair.length === 1 ? <View style={styles.tileSpacer} /> : null}
+          </View>
+        ))}
+      </View>
+    );
+  };
 
   return (
     <View style={styles.container}>
-      {/* Minimal stand-in for the designed header/avatar (PR 3) — without this,
-          deleting the Settings tab in this PR would leave Account (and Log Out)
-          completely unreachable. */}
-      <View style={[styles.headerRow, { paddingTop: insets.top + spacing.md }]}>
-        <Text style={styles.headerTitle}>Groups</Text>
-        <TouchableOpacity
-          onPress={() => navigation.navigate('Account')}
-          activeOpacity={0.7}
-          hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-        >
-          <Ionicons name="person-circle-outline" size={30} color={colors.text} />
-        </TouchableOpacity>
+      <View style={[styles.header, { paddingTop: insets.top }]}>
+        <View style={styles.headerRow}>
+          <Display size={21} accessibilityRole="header">Orbit</Display>
+          <TouchableOpacity
+            onPress={() => navigation.navigate('Account')}
+            activeOpacity={0.7}
+            // 36pt drawn, 44pt touchable.
+            hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+            accessibilityRole="button"
+            accessibilityLabel="Account"
+          >
+            {/* Without a loaded profile this draws the empty bordered shape, so
+                Account (and Log out) stays reachable even if /me fails. */}
+            <UserAvatar
+              userId={me?.id ?? ''}
+              username={me?.username ?? ''}
+              hasAvatar={me?.has_avatar ?? false}
+              avatarUpdatedAt={me?.avatar_updated_at}
+              size={36}
+              colors={colors}
+            />
+          </TouchableOpacity>
+        </View>
       </View>
 
-      <View style={styles.filterRow}>
-        {FILTER_TABS.map((tab) => {
-          const isActive = activeFilter === tab;
-          const showBadge = tab === 'Invited' && invitations.length > 0;
-          return (
-            <TouchableOpacity
-              key={tab}
-              style={[styles.filterPill, isActive && styles.filterPillActive]}
-              onPress={() => setActiveFilter(tab)}
-              activeOpacity={0.7}
-            >
-              <Text style={[styles.filterPillText, isActive && styles.filterPillTextActive]}>
-                {tab}
-              </Text>
-              {showBadge && (
-                <View style={[styles.filterBadge, isActive && styles.filterBadgeActive]}>
-                  <Text style={[styles.filterBadgeText, isActive && styles.filterBadgeTextActive]}>
-                    {invitations.length}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </View>
+      {!firstRun && (
+        <FilterTabs
+          tabs={FILTER_TABS}
+          active={activeFilter}
+          onChange={setActiveFilter}
+          invitedCount={pendingInvites.length}
+          style={styles.filterRow}
+        />
+      )}
 
       <ScrollView
         contentContainerStyle={styles.scrollContent}
         refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={colors.primary} />
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={colors.textSecondary}
+            colors={[colors.textSecondary]}
+          />
         }
       >
-        {loadError && isEmpty ? (
-          <View style={styles.empty}>
-            <View style={styles.emptyIconContainer}>
-              <Ionicons name="cloud-offline-outline" size={48} color={colors.textTertiary} />
-            </View>
-            <Text style={styles.emptyTitle}>Couldn't load groups</Text>
-            <Text style={styles.emptySubtitle}>{loadError}</Text>
-          </View>
-        ) : isEmpty ? (
-          <View style={styles.empty}>
-            <View style={styles.emptyIconContainer}>{emptyIcon}</View>
-            <Text style={styles.emptyTitle}>{emptyMessage.title}</Text>
-            <Text style={styles.emptySubtitle}>{emptyMessage.sub}</Text>
-          </View>
-        ) : (
-          <GroupGrid
-            items={gridItems}
-            colors={colors}
-            onPressGroup={(groupId) => navigation.navigate('GroupDetail', { groupId })}
-            onPressInvitation={onPressInvitation}
-          />
-        )}
+        {renderBody()}
       </ScrollView>
 
-      <TouchableOpacity
-        style={[styles.fab, { bottom: spacing.xxxl + insets.bottom }]}
+      {/* Home's marigold belongs to the live call. With nothing live the only
+          marigold on screen is the active tab's rule — which is what makes a
+          ringing call read instantly — so "New group" is outlined. First run has
+          no tabs and no call, so the one primary action takes the marigold. */}
+      <BottomActionBar
+        variant={showHeadline ? 'primary' : 'secondary'}
+        label={showHeadline ? 'Create a group' : 'New group'}
         onPress={() => navigation.navigate('CreateGroup')}
-        activeOpacity={0.85}
-      >
-        <Ionicons name="add" size={28} color={colors.textOnPrimary} />
-      </TouchableOpacity>
+      />
+
+      <PasteInviteModal
+        visible={pasteOpen}
+        onClose={() => setPasteOpen(false)}
+        onSubmit={(code) => {
+          setPasteOpen(false);
+          navigation.navigate('JoinInvite', { code });
+        }}
+      />
     </View>
   );
 }
 
-// ─── Static card styles ───────────────────────────────────────────────────────
-const cardStyles = StyleSheet.create({
-  card: {
-    borderRadius: radius.lg,
-    padding: spacing.md,
-    justifyContent: 'space-between',
-    overflow: 'hidden',
-  },
-  pendingCard: {
-    borderWidth: 1.5,
-    borderStyle: 'dashed',
-  },
-  cardTop: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: spacing.xs,
-    flexWrap: 'wrap',
-  },
-  pill: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 5,
-    borderRadius: radius.full,
-  },
-  pillText: {
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.2,
-  },
-  cardBottom: { gap: 4 },
-  cardName: {
-    fontSize: 18,
-    fontWeight: '700',
-    lineHeight: 22,
-    letterSpacing: -0.2,
-  },
-  cardMeta: {
-    fontSize: 13,
-    fontWeight: '500',
-  },
-});
-
 // ─── Themed styles ────────────────────────────────────────────────────────────
-function makeStyles(colors: any, shadow: any) {
+function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
+    header: { backgroundColor: colors.background },
     headerRow: {
+      minHeight: layout.headerHeight,
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
-      paddingHorizontal: spacing.lg,
-      paddingTop: spacing.md,
-      paddingBottom: spacing.sm,
-      backgroundColor: colors.surface,
+      paddingHorizontal: layout.screenPad,
     },
-    headerTitle: {
-      fontSize: 20,
-      fontWeight: '700',
+    // Inset the tabs to the header's 20pt while the row's hairline stays full-bleed.
+    filterRow: { paddingHorizontal: layout.screenPad },
+    scrollContent: { padding: layout.gridPad },
+    stack: { gap: layout.gridGap },
+    // Two flex:1 tiles per row make each one (width − 2·gridPad − gridGap) / 2, and
+    // the tile's own aspectRatio makes it square.
+    tileRow: { flexDirection: 'row', gap: layout.gridGap },
+    tileSpacer: { flex: 1 },
+    message: { alignItems: 'center', paddingTop: 80, paddingHorizontal: spacing.xl, gap: spacing.sm },
+    messageTitle: {
+      fontFamily: 'Geist_600SemiBold',
+      fontSize: 18,
+      color: colors.textSecondary,
+      textAlign: 'center',
+    },
+    messageSub: {
+      fontFamily: 'Geist_400Regular',
+      fontSize: 14,
+      lineHeight: 20,
+      color: colors.textSecondary,
+      textAlign: 'center',
+    },
+    // The scroll content already insets 16; this lines the headline up with the
+    // header's 20.
+    firstRun: { paddingHorizontal: layout.screenPad - layout.gridPad, gap: spacing.lg },
+    link: { alignSelf: 'flex-start' },
+    linkText: {
+      fontFamily: 'Geist_400Regular',
+      fontSize: 16,
       color: colors.text,
     },
-    filterRow: {
-      flexDirection: 'row',
-      gap: spacing.sm,
-      paddingHorizontal: spacing.lg,
-      paddingTop: spacing.md,
-      paddingBottom: spacing.md,
-      backgroundColor: colors.surface,
-      borderBottomWidth: StyleSheet.hairlineWidth,
-      borderBottomColor: colors.border,
-    },
-    filterPill: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: 5,
-      paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.sm,
-      borderRadius: radius.full,
-      backgroundColor: colors.background,
-    },
-    filterPillActive: { backgroundColor: colors.text },
-    filterPillText: {
-      fontSize: 14,
-      fontWeight: '600',
-      letterSpacing: 0.1,
-      color: colors.textSecondary,
-    },
-    filterPillTextActive: { color: colors.background },
-    filterBadge: {
-      backgroundColor: colors.primary,
-      borderRadius: radius.full,
-      minWidth: 16,
-      height: 16,
-      justifyContent: 'center',
-      alignItems: 'center',
-      paddingHorizontal: 4,
-    },
-    filterBadgeActive: { backgroundColor: 'rgba(255,255,255,0.25)' },
-    filterBadgeText: { fontSize: 9, fontWeight: '700', color: colors.textOnPrimary },
-    // On the active pill (colors.text fill), not the marigold badge — same
-    // inversion filterPillTextActive uses.
-    filterBadgeTextActive: { color: colors.background },
-    scrollContent: { padding: GAP, paddingBottom: 100 },
-    empty: { alignItems: 'center', paddingTop: 80, paddingHorizontal: spacing.xl },
-    emptyIconContainer: { marginBottom: spacing.lg },
-    emptyTitle: {
-      fontSize: 18,
-      fontWeight: '700',
-      color: colors.textSecondary,
-      marginBottom: spacing.sm,
-      textAlign: 'center',
-    },
-    emptySubtitle: {
-      fontSize: 14,
-      color: colors.textTertiary,
-      textAlign: 'center',
-      lineHeight: 20,
-    },
-    fab: {
-      position: 'absolute',
-      right: spacing.xl,
-      bottom: 32,
-      width: 56,
-      height: 56,
-      borderRadius: radius.full,
-      backgroundColor: colors.primary,
-      justifyContent: 'center',
-      alignItems: 'center',
-      ...shadow.menu,
+    // Marigold on cream is 1.60:1 — fine as a rule, never as the text itself.
+    linkRule: {
+      marginTop: 3,
+      borderBottomWidth: 1.5,
+      borderBottomColor: colors.accent,
     },
   });
 }
