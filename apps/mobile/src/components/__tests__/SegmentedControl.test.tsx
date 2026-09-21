@@ -56,7 +56,7 @@ describe.each<Mode>(['light', 'dark'])('SegmentedControl in %s mode', (mode) => 
     expect(itemStyle(tree, 0).minHeight).toBe(38);
   });
 
-  // textSecondary on the track is 3.78:1 in dark; an unselected segment is still
+  // textSecondary on the track is 3.91:1 in dark; an unselected segment is still
   // operable, so it can't lean on the inactive-control exemption.
   it('sets both labels in text, so neither falls below AA on the track', async () => {
     const tree = await render(mode, 'daily');

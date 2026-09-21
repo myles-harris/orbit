@@ -32,7 +32,7 @@ export function SegmentedControl<T extends string>({ options, value, onChange }:
               style={[
                 styles.label,
                 // Both labels are `text`: `textSecondary` on the `controlTrack` well is
-                // 3.78:1 in dark, and an unselected segment is still operable, so the
+                // 3.91:1 in dark, and an unselected segment is still operable, so the
                 // inactive-control exemption doesn't apply. The pill and the weight
                 // carry the selection.
                 { color: colors.text, fontFamily: active ? 'Geist_600SemiBold' : 'Geist_500Medium' },

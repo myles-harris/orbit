@@ -91,17 +91,12 @@ describe.each([
       expect(contrast(parse(colors.text), ground)).toBeGreaterThanOrEqual(AA_TEXT);
     });
 
-    // KNOWN DEFECT, found by this test: in dark, textSecondary (#B08A5E) on the invite
-    // row's wash reads 4.41:1 — under AA's 4.5 for the 13pt "Invited by …" line and the
-    // 15pt Decline label. The palette's 4.80 / 5.44 figures were measured on flat
-    // surfaces; 10% marigold over #211A12 lifts the ground enough to cost the difference.
-    // Light passes. Not fixed here because both remedies are the design owner's call:
-    // nudge dark `textSecondary` (moves AC-11's documented 3.78:1 inert-label figure),
-    // or draw those two labels in `textMeta` (wheat, 8.31:1 — but a test pins Decline to
-    // textSecondary). `it.failing` passes only while this is true, so fixing it turns
-    // this red and the fix is to delete `.failing`.
-    const knownDark = theme === darkTheme;
-    (knownDark ? it.failing : it)('carries "Invited by …" and Decline (textSecondary) at AA', () => {
+    // Found by this test: dark `textSecondary` was #B08A5E, 4.41:1 on this wash — under
+    // AA's 4.5 for the 13pt "Invited by …" line and the 15pt Decline label. The palette's
+    // 4.80 / 5.44 figures were measured on flat surfaces; 10% marigold over #211A12 lifts
+    // the ground enough to cost the difference. theme.ts now carries a lift of the same
+    // hue that clears it with margin (4.57).
+    it('carries "Invited by …" and Decline (textSecondary) at AA', () => {
       expect(contrast(parse(colors.textSecondary), ground)).toBeGreaterThanOrEqual(AA_TEXT);
     });
 
@@ -142,12 +137,14 @@ describe.each([
   });
 });
 
-// The figures 00-CONTEXT AC-11 gives for the inert label. Pinned separately from the
-// 3:1 floor above so a palette edit that moves them is a visible, deliberate change.
-describe('AC-11 documented figures for the inert label', () => {
-  it('reads 3.78:1 in dark', () => {
+// The figures for the inert label, pinned separately from the 3:1 floor above so a
+// palette edit that moves them is a visible, deliberate change. 00-CONTEXT AC-11 gave
+// 3.78:1 for dark; lifting dark `textSecondary` for the invite row's composited wash
+// raised it to 3.91:1. Light is unchanged.
+describe('documented figures for the inert label', () => {
+  it('reads 3.91:1 in dark', () => {
     const track = composite(darkTheme.colors.controlTrack, darkTheme.colors.background);
-    expect(contrast(parse(darkTheme.colors.textSecondary), track)).toBeCloseTo(3.78, 1);
+    expect(contrast(parse(darkTheme.colors.textSecondary), track)).toBeCloseTo(3.91, 1);
   });
 
   it('reads 4.50:1 in light', () => {
