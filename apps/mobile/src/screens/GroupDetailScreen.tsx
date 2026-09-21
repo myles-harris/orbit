@@ -29,8 +29,6 @@ type GroupDetailNavigationProp = StackNavigationProp<RootStackParamList, 'GroupD
 // Appendix B: the title starts at y=296 and its single line is 40pt tall (a 32pt
 // display size is drawn at 36pt, at 1.12 leading); the first row starts at y=382.
 const ROWS_GAP = 382 - (296 + 40);
-// Two full 56pt rows and a sliver of the third, so it reads as scrollable.
-const MEMBER_LIST_HEIGHT = 122;
 const MEMBER_AVATAR = 36;
 
 export default function GroupDetailScreen() {
@@ -222,14 +220,10 @@ export default function GroupDetailScreen() {
           )}
         </View>
 
-        {/* A ScrollView, not a FlatList: a FlatList nested in this ScrollView is a
-            VirtualizedList inside a VirtualizedList and warns. The list scrolls in
-            place so the window above and the call button below stay put. */}
-        <ScrollView
-          style={styles.memberList}
-          nestedScrollEnabled
-          showsVerticalScrollIndicator={false}
-        >
+        {/* Every member, in the page's own flow: the page scrolls only when they run past
+            the screen. A View, not a FlatList, which nested in this ScrollView is a
+            VirtualizedList inside a VirtualizedList and warns. */}
+        <View style={styles.memberList}>
           {group.members.map((member, index) => {
             const isMemberOwner = member.role === 'owner';
             return (
@@ -263,7 +257,7 @@ export default function GroupDetailScreen() {
               </View>
             );
           })}
-        </ScrollView>
+        </View>
       </ScrollView>
 
       {/* A live call takes the one primary action: nobody starts a second call
@@ -329,7 +323,7 @@ function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
     // Marigold on cream is 1.60:1 — fine as a rule, never as the text itself.
     inviteRule: { marginTop: 2, borderBottomWidth: 1.5, borderBottomColor: colors.accent },
 
-    memberList: { height: MEMBER_LIST_HEIGHT, marginHorizontal: layout.screenPad },
+    memberList: { marginHorizontal: layout.screenPad },
     memberRow: {
       minHeight: layout.rowHeight,
       flexDirection: 'row',

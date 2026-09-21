@@ -180,25 +180,46 @@ describe('GroupDetailScreen rows', () => {
 // ─── The member list ──────────────────────────────────────────────────────────
 
 describe('GroupDetailScreen members', () => {
-  it('scrolls 14 members inside a fixed 122pt viewport', async () => {
-    const { tree } = await renderDetail();
-    const list = tree.root.findAllByType(ScrollView).find((s) => StyleSheet.flatten(s.props.style)?.height === 122)!;
+  /** The View that holds the member rows: what encloses the row that member-0 sits in. */
+  const memberListOf = (tree: ReactTestRenderer) => {
+    let node = tree.root.findAll((n) => (n.type as unknown) === 'Text' && textOf(n) === 'member-0')[0].parent!;
+    const isRow = (n: ReactTestInstance) => StyleSheet.flatten(n.props.style)?.minHeight !== undefined;
+    while (!isRow(node)) node = node.parent!; // up to the row…
+    while (isRow(node)) node = node.parent!; // …and out of it
+    return node;
+  };
 
-    expect(list).toBeDefined();
-    expect(list.props.nestedScrollEnabled).toBe(true);
-    const names = list.findAll((n) => (n.type as unknown) === 'Text').map(textOf).filter((t) => /^member-\d+$/.test(t));
+  it('lists all 14 members in the page itself, with no scroller and no height cap of its own', async () => {
+    const { tree } = await renderDetail();
+    const scrollers = tree.root.findAllByType(ScrollView);
+    const names = scrollers[0].findAll((n) => (n.type as unknown) === 'Text').map(textOf).filter((t) => /^member-\d+$/.test(t));
+
+    expect(scrollers).toHaveLength(1); // the page's, not a second one for the members
     expect(names).toHaveLength(14);
+    const list = StyleSheet.flatten(memberListOf(tree).props.style) ?? {};
+    expect(list.height).toBeUndefined();
+    expect(list.maxHeight).toBeUndefined();
   });
 
-  it('keeps the rows above and the action below out of that scroll', async () => {
+  it('moves the window rows and the members together, and keeps the action bar out of it', async () => {
     const { tree } = await renderDetail();
-    const inner = tree.root.findAllByType(ScrollView).find((s) => StyleSheet.flatten(s.props.style)?.height === 122)!;
-    const innerText = new Set(inner.findAll((n) => (n.type as unknown) === 'Text').map(textOf));
+    const pageText = new Set(tree.root.findByType(ScrollView).findAll((n) => (n.type as unknown) === 'Text').map(textOf));
 
-    // The window rows are not inside the member viewport…
-    expect(innerText.has('Call window')).toBe(false);
-    // …and the bottom bar is not inside any ScrollView at all, so it stays put.
+    expect(pageText.has('Call window')).toBe(true);
+    expect(pageText.has('member-13')).toBe(true);
+    // The bottom bar is not inside any ScrollView at all, so it stays put.
     expect(isAncestorOfType(tree.root.findByType(BottomActionBar), ScrollView)).toBe(false);
+  });
+
+  // The page moves only when its content is taller than the screen; these keep a page that
+  // fits still, instead of letting it bounce.
+  it('does not bounce or over-scroll, so a page that fits stays where it is', async () => {
+    const { tree } = await renderDetail({ group: { ...GROUP, member_count: 2, members: members.slice(0, 2) } });
+    const page = tree.root.findByType(ScrollView);
+
+    expect(allText(tree).filter((t) => /^member-\d+$/.test(t))).toEqual(['member-0', 'member-1']);
+    expect(page.props.bounces).toBe(false);
+    expect(page.props.overScrollMode).toBe('never');
   });
 
   it('uses no FlatList, so nothing nests a VirtualizedList in a ScrollView', async () => {
