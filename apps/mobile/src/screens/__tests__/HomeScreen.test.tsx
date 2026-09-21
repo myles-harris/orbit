@@ -1036,7 +1036,7 @@ describe('Home spontaneous calls', () => {
   it('draws its timer in the same marigold slot a scheduled call does', async () => {
     const { tree } = await renderHome({ groups, liveCalls: [spontaneousCall] });
 
-    const slot = tree.root.findAll((n) => isHost(n, 'Text') && flat(n.props.style).fontSize === Math.round(28 * 1.12))[0];
+    const slot = tree.root.findAll((n) => isHost(n, 'Text') && flat(n.props.style).fontSize === 28)[0];
     expect(flat(slot.props.style)).toMatchObject({ color: MARIGOLD, fontVariant: ['tabular-nums'] });
   });
 

@@ -77,9 +77,9 @@ describe.each<Mode>(['light', 'dark'])('LiveCallCard in %s mode', (mode) => {
       const tree = await render(mode, { timer: '12:04' });
 
       expect(flat(slot(tree, '12:04').props.style)).toMatchObject({
-        fontFamily: 'Cormorant_700Bold_Italic',
-        fontSize: 31, // 28 × CAP_K 1.12
-        lineHeight: 31, // leading 1: anything larger inflates the card
+        fontFamily: 'Cinzel_700Bold',
+        fontSize: 28, // 28 × CAP_K 1
+        lineHeight: 28, // leading 1: anything larger inflates the card
         color: MARIGOLD,
         fontVariant: ['tabular-nums'],
       });

@@ -78,9 +78,9 @@ const textNode = (tree: ReactTestRenderer, text: string) => {
   if (!hit) throw new Error(`no text "${text}" — have: ${drawn(tree).join(' | ')}`);
   return hit.node;
 };
-/** The 52pt timer: the one Display whose size is 52 × CAP_K, rounded. */
+/** The 52pt timer: the one Display whose size is 52 × CAP_K (1). */
 const timerNode = (tree: ReactTestRenderer) => {
-  const hit = texts(tree).find((t) => flat(t.node.props.style).fontSize === Math.round(52 * 1.12));
+  const hit = texts(tree).find((t) => flat(t.node.props.style).fontSize === 52);
   if (!hit) throw new Error(`no timer — have: ${drawn(tree).join(' | ')}`);
   return hit.node;
 };
@@ -158,9 +158,10 @@ describe.each<Mode>(['light', 'dark'])('CallSpotlight in %s mode', (mode) => {
     const { tree } = await render(scheduled(), { mode });
 
     expect(flat(textNode(tree, 'Track Club').props.style)).toMatchObject({
-      fontFamily: 'Cormorant_700Bold_Italic',
-      fontSize: 36, // 32 × CAP_K 1.12
-      lineHeight: 38, // × 1.05
+      fontFamily: 'Cinzel_700Bold',
+      transform: [{ skewX: '-14deg' }], // Cinzel has no italic: the slant is a shear
+      fontSize: 32, // 32 × CAP_K 1
+      lineHeight: 34, // × 1.05
       color: onPhoto.title,
       ...onPhoto.textShadowLarge,
     });
@@ -170,9 +171,9 @@ describe.each<Mode>(['light', 'dark'])('CallSpotlight in %s mode', (mode) => {
     const { tree } = await render(scheduled(), { mode });
 
     expect(flat(timerNode(tree).props.style)).toMatchObject({
-      fontFamily: 'Cormorant_700Bold_Italic',
-      fontSize: 58, // 52 × CAP_K 1.12
-      lineHeight: 58, // leading 1 — anything larger inflates the card
+      fontFamily: 'Cinzel_700Bold',
+      fontSize: 52, // 52 × CAP_K 1
+      lineHeight: 52, // leading 1 — anything larger inflates the card
       color: MARIGOLD, // text over the dark card, the one place AC-3 allows it
       fontVariant: ['tabular-nums'],
     });
@@ -255,7 +256,7 @@ describe('CallSpotlight timer (T18)', () => {
     expect(textOf(timerNode(tree))).toBe('2:05');
     await tick(5_000);
     expect(textOf(timerNode(tree))).toBe('2:10');
-    expect(flat(timerNode(tree).props.style)).toMatchObject({ fontSize: 58, color: MARIGOLD });
+    expect(flat(timerNode(tree).props.style)).toMatchObject({ fontSize: 52, color: MARIGOLD });
   });
 
   it('omits the "Ends at" line entirely for a spontaneous call — no placeholder, no dash', async () => {

@@ -11,11 +11,15 @@ type Props = TextProps & {
   color?: string;
 };
 
-// Cormorant's cap height is 0.625em against Cinzel's 0.700, so the mockup's sizes
-// render 12% small. CAP_K restores the optical size, so call sites use the number
-// from the design file. The italic is a drawn face (italicAngle -10deg) — never
-// set fontStyle or a skew transform here.
-const CAP_K = 1.12;
+// The mockup is drawn in Cinzel, so its sizes need no correction here. (Cormorant's
+// cap height is 0.625em against Cinzel's 0.700, which took a CAP_K of 1.12 to restore.)
+const CAP_K = 1;
+
+// Cinzel has no italic; the design's slant is the shear a browser puts on the upright
+// when font-style: italic finds no italic face — 14°, the CSS default oblique angle.
+// It is a transform, not fontStyle: whether a native text stack synthesizes an italic
+// for a custom font is up to the platform, and this has to match on both.
+const OBLIQUE = '-14deg';
 
 export function Display({
   size, leading = 1.15, tabular, color, style, ...rest
@@ -31,11 +35,12 @@ export function Display({
       maxFontSizeMultiplier={1.3}
       style={[
         {
-          fontFamily: 'Cormorant_700Bold_Italic',
+          fontFamily: 'Cinzel_700Bold',
           fontSize,
           lineHeight: Math.round(fontSize * leading),
           letterSpacing: 0,
           textTransform: 'uppercase', // Cinzel is caps-only; this matches the mockup
+          transform: [{ skewX: OBLIQUE }],
           color: color ?? theme.colors.text,
           // Android pads above the ascender and below the descender by default,
           // so every vertical offset taken from a CSS mockup lands a few points

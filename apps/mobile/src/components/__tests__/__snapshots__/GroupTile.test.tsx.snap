@@ -59,12 +59,17 @@ exports[`GroupTile snapshots (T4) no photo / dark 1`] = `
         [
           {
             "color": "#FFF8E7",
-            "fontFamily": "Cormorant_700Bold_Italic",
-            "fontSize": 21,
+            "fontFamily": "Cinzel_700Bold",
+            "fontSize": 19,
             "includeFontPadding": false,
             "letterSpacing": 0,
-            "lineHeight": 24,
+            "lineHeight": 22,
             "textTransform": "uppercase",
+            "transform": [
+              {
+                "skewX": "-14deg",
+              },
+            ],
           },
           undefined,
         ]
@@ -169,12 +174,17 @@ exports[`GroupTile snapshots (T4) no photo / light 1`] = `
         [
           {
             "color": "#3A2C1A",
-            "fontFamily": "Cormorant_700Bold_Italic",
-            "fontSize": 21,
+            "fontFamily": "Cinzel_700Bold",
+            "fontSize": 19,
             "includeFontPadding": false,
             "letterSpacing": 0,
-            "lineHeight": 24,
+            "lineHeight": 22,
             "textTransform": "uppercase",
+            "transform": [
+              {
+                "skewX": "-14deg",
+              },
+            ],
           },
           undefined,
         ]
@@ -377,12 +387,17 @@ exports[`GroupTile snapshots (T4) photo / dark 1`] = `
         [
           {
             "color": "#FFF8E7",
-            "fontFamily": "Cormorant_700Bold_Italic",
-            "fontSize": 21,
+            "fontFamily": "Cinzel_700Bold",
+            "fontSize": 19,
             "includeFontPadding": false,
             "letterSpacing": 0,
-            "lineHeight": 24,
+            "lineHeight": 22,
             "textTransform": "uppercase",
+            "transform": [
+              {
+                "skewX": "-14deg",
+              },
+            ],
           },
           {
             "textShadowColor": "rgba(0,0,0,.45)",
@@ -606,12 +621,17 @@ exports[`GroupTile snapshots (T4) photo / light 1`] = `
         [
           {
             "color": "#FFF8E7",
-            "fontFamily": "Cormorant_700Bold_Italic",
-            "fontSize": 21,
+            "fontFamily": "Cinzel_700Bold",
+            "fontSize": 19,
             "includeFontPadding": false,
             "letterSpacing": 0,
-            "lineHeight": 24,
+            "lineHeight": 22,
             "textTransform": "uppercase",
+            "transform": [
+              {
+                "skewX": "-14deg",
+              },
+            ],
           },
           {
             "textShadowColor": "rgba(0,0,0,.45)",
