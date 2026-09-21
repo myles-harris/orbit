@@ -14,10 +14,9 @@ interface CallTimerProps {
  * screen.
  *
  * The one implementation behind every live surface: Home's card and the Spotlight
- * overlay both draw it and differ only in size. The direction is `formatCallTimer`'s
- * — down for a scheduled call, up for any other — so a surface never chooses it.
- * Home's card mounts it only for a call that counts down (`hasCountdown`), so a
- * spontaneous call there runs no clock; the Spotlight mounts it for every call.
+ * overlay both draw it for every call and differ only in size. The direction is
+ * `formatCallTimer`'s — down for a scheduled call, up for any other — so a surface
+ * never chooses it.
  */
 export function CallTimer({ call, active }: CallTimerProps) {
   const counting = hasCountdown(call);

@@ -990,7 +990,7 @@ describe('Home live clock', () => {
   });
 });
 
-// ─── Spontaneous calls: no countdown, only scheduled ones count down ──────────
+// ─── Spontaneous calls: count up, only scheduled ones count down ──────────────
 
 describe('Home spontaneous calls', () => {
   const iso = (ms: number) => new Date(ms).toISOString();
@@ -1013,22 +1013,80 @@ describe('Home spontaneous calls', () => {
     jest.spyOn(Date, 'now').mockReturnValue(T0);
   });
 
-  it('shows the in-progress card for a spontaneous call, with no countdown', async () => {
+  it('shows the in-progress card for a spontaneous call, counting up from when it started', async () => {
     const { tree } = await renderHome({ groups, liveCalls: [spontaneousCall] });
 
     expect(hasText(tree, '3 of 6 joined')).toBe(true);
     expect(hasText(tree, 'Join')).toBe(true);
     expect(hasText(tree, 'Charlie')).toBe(true);
-    expect(allText(tree).some(looksLikeCountdown)).toBe(false);
+    expect(allText(tree).filter(looksLikeCountdown)).toEqual(['1:00']); // started 60s ago
   });
 
-  it('runs no clock at all for it — no 1s interval and no end-of-call timeout', async () => {
+  it('draws its timer in the same marigold slot a scheduled call does', async () => {
+    const { tree } = await renderHome({ groups, liveCalls: [spontaneousCall] });
+
+    const slot = tree.root.findAll((n) => isHost(n, 'Text') && flat(n.props.style).fontSize === Math.round(28 * 1.12))[0];
+    expect(flat(slot.props.style)).toMatchObject({ color: MARIGOLD, fontVariant: ['tabular-nums'] });
+  });
+
+  it('ticks its own 1s clock, and gives the screen no timeout — nothing but the server ends it', async () => {
     const setTick = jest.spyOn(globalThis, 'setInterval');
     const setTimer = jest.spyOn(globalThis, 'setTimeout');
     await renderHome({ groups, liveCalls: [spontaneousCall] });
 
-    expect(setTick.mock.calls.filter(([, ms]) => ms === 1000)).toHaveLength(0);
+    expect(setTick.mock.calls.filter(([, ms]) => ms === 1000)).toHaveLength(1);
     expect(setTimer.mock.calls.filter(([, ms]) => (ms as number) >= 1000)).toHaveLength(0);
+  });
+
+  describe('as time passes', () => {
+    let elapsed = 0;
+    const tick = (ms: number) => {
+      elapsed += ms;
+      return act(async () => { await jest.advanceTimersByTimeAsync(ms); });
+    };
+
+    beforeEach(() => {
+      elapsed = 0;
+      jest.spyOn(Date, 'now').mockImplementation(() => T0 + elapsed);
+      jest.useFakeTimers({ doNotFake: ['Date', 'setImmediate', 'nextTick', 'queueMicrotask'] });
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('counts up by the second, and keeps counting however long the call runs', async () => {
+      const { tree } = await renderHome({ groups, liveCalls: [spontaneousCall] });
+      expect(allText(tree).filter(looksLikeCountdown)).toEqual(['1:00']);
+
+      await tick(5_000);
+      expect(allText(tree).filter(looksLikeCountdown)).toEqual(['1:05']);
+
+      await tick(3_600_000);
+      expect(hasText(tree, 'Join')).toBe(true); // never expired client-side
+      expect(allText(tree).filter(looksLikeCountdown)).toEqual(['1:01:05']);
+    });
+
+    it('re-renders only the timer each second, not the screen or its tiles', async () => {
+      const { tree } = await renderHome({ groups, liveCalls: [spontaneousCall] });
+      const tileRenders = () => (GroupTile as jest.Mock).mock.calls.length;
+      const settled = tileRenders();
+
+      await tick(3_000);
+
+      expect(allText(tree).filter(looksLikeCountdown)).toEqual(['1:03']); // it moved…
+      expect(tileRenders()).toBe(settled); // …and no tile re-rendered
+    });
+  });
+
+  it('shows elapsed time, never a blank or NaN, for a scheduled call that arrives with no end time — and logs it', async () => {
+    const error = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const faulty: LiveCall = { ...scheduledCall, ends_at: null };
+    const { tree } = await renderHome({ groups, liveCalls: [faulty] });
+
+    expect(allText(tree).filter(looksLikeCountdown)).toEqual(['15:00']); // started 900s ago
+    expect(allText(tree).some((t) => /NaN/.test(t))).toBe(false);
+    expect(hasText(tree, 'Join')).toBe(true); // degraded, not dropped
+    expect(error.mock.calls.filter(([m]) => String(m).includes('[call-timer]'))).toHaveLength(1);
   });
 
   it('counts down for a scheduled call in the very same render', async () => {
@@ -1073,8 +1131,8 @@ describe('Home spontaneous calls', () => {
     const { tree } = await renderHome({ groups, liveCalls: [scheduledCall, spontaneousCall] });
 
     expect(hasText(tree, '3 of 6 joined')).toBe(true); // Charlie's card
-    expect(allText(tree).some(looksLikeCountdown)).toBe(false);
-    // The scheduled call keeps Alpha's tile, marked live — and it has no countdown either.
+    expect(allText(tree).filter(looksLikeCountdown)).toEqual(['1:00']); // counting up, as it is the card
+    // The scheduled call keeps Alpha's tile, marked live — and a tile carries no timer.
     expect(flat(pressable(tree, 'Alpha').props.style)).toMatchObject({ borderWidth: 1, borderColor: MARIGOLD });
     expect(allText(tree).filter((t) => t === 'live')).toHaveLength(1);
   });

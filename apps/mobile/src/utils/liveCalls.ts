@@ -24,10 +24,10 @@ export interface LiveCall {
  * nothing to count down to, and a countdown on it would be a lie. Every live
  * surface asks here rather than testing `ends_at` itself.
  *
- * What a surface does with "no" differs. Home's card draws no timer at all and its
- * Join pill takes the row. The Spotlight overlay keeps its 52pt timer slot and counts
- * *up* from `started_at` instead (`formatCallTimer`), because the card's composition
- * is built around that element.
+ * What a surface does with "no" is the same everywhere: it keeps its timer slot and
+ * counts *up* from `started_at` instead (`formatCallTimer`), because each card's
+ * composition is built around that element. Home's card and the Spotlight overlay
+ * both draw `CallTimer`, which is what decides.
  *
  * A scheduled call that somehow arrives without an `ends_at` degrades to "no
  * countdown" rather than being dropped.

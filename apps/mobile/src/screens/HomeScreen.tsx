@@ -182,7 +182,8 @@ export default function HomeScreen() {
   // this clock sleeps until the next one instead of ticking: the screen re-renders
   // when a call ends, not every second. The per-second countdown lives in
   // <CallTimer/>, which re-renders alone. Spontaneous calls have no end time, so
-  // they add no deadline and no timer. Every reading is Date.now(), never a
+  // they add no deadline here — their timer counts up inside <CallTimer/> too, and
+  // nothing but the server ends them. Every reading is Date.now(), never a
   // decrement, so a backgrounded app is right the moment it returns.
   //
   // Offline there are none. What is live is the server's to say and Home cannot reach
@@ -447,8 +448,9 @@ export default function HomeScreen() {
             groupName={heroGroup.name}
             joinedCount={heroCall.participant_count}
             totalCount={heroGroup.member_count}
-            // A spontaneous call has no end time, so no countdown and no clock.
-            countdown={hasCountdown(heroCall) ? <CallTimer call={heroCall} active={isFocused} /> : undefined}
+            // Down for a scheduled call, up from when it started for any other — the
+            // direction is CallTimer's, so the card and the overlay cannot disagree.
+            timer={<CallTimer call={heroCall} active={isFocused} />}
             onJoin={() => joinLiveCall(heroCall)}
           />
         ) : null}

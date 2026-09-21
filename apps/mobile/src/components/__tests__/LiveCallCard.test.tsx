@@ -13,13 +13,13 @@ const MARIGOLD = '#F6BF10';
 
 async function render(
   mode: Mode,
-  props: { countdown?: React.ReactNode; onJoin?: () => void } = {},
+  props: { timer?: React.ReactNode; onJoin?: () => void } = {},
 ): Promise<ReactTestRenderer> {
   (useTheme as jest.Mock).mockReturnValue({ theme: THEMES[mode], mode });
   let tree!: ReactTestRenderer;
   await act(async () => {
     tree = renderer.create(
-      <LiveCallCard groupName="Track Club" joinedCount={2} totalCount={4} onJoin={() => {}} {...props} />,
+      <LiveCallCard groupName="Track Club" joinedCount={2} totalCount={4} timer="12:04" onJoin={() => {}} {...props} />,
     );
   });
   return tree;
@@ -42,12 +42,14 @@ const hostText = (tree: ReactTestRenderer): string[] => {
   (Array.isArray(json) ? json : [json]).forEach(visit);
   return out;
 };
+const hostTextOf = (n: ReactTestInstance): string =>
+  n.children.map((c) => (typeof c === 'string' ? c : hostTextOf(c))).join('');
 const marigoldText = (tree: ReactTestRenderer) =>
   tree.root.findAll((n) => isHost(n, 'Text') && flat(n.props.style).color === MARIGOLD);
 
 describe.each<Mode>(['light', 'dark'])('LiveCallCard in %s mode', (mode) => {
   it('draws the countdown, in marigold, beside the Join pill', async () => {
-    const tree = await render(mode, { countdown: '12:04' });
+    const tree = await render(mode, { timer: '12:04' });
 
     expect(hostText(tree)).toContain('12:04');
     expect(hostText(tree)).toContain('Join');
@@ -58,42 +60,50 @@ describe.each<Mode>(['light', 'dark'])('LiveCallCard in %s mode', (mode) => {
     function Ticking() {
       return <>11:59</>;
     }
-    const tree = await render(mode, { countdown: <Ticking /> });
+    const tree = await render(mode, { timer: <Ticking /> });
     expect(hostText(tree)).toContain('11:59');
   });
 
-  describe('without a countdown — a spontaneous call', () => {
-    it('draws none, and no marigold text at all', async () => {
-      const tree = await render(mode);
+  // The slot is always there, whichever way the timer runs: a scheduled call counts down
+  // and any other counts up, and the card is built around the element either way.
+  describe('the timer slot', () => {
+    const slot = (tree: ReactTestRenderer, text: string) => {
+      const hit = tree.root.findAll((n) => isHost(n, 'Text') && hostTextOf(n) === text)[0];
+      if (!hit) throw new Error(`no "${text}" — have: ${hostText(tree).join(' | ')}`);
+      return hit;
+    };
 
-      expect(hostText(tree).some((t) => /^\d+:\d{2}/.test(t))).toBe(false);
-      expect(marigoldText(tree)).toHaveLength(0);
+    it('is Display 28 at leading 1 in tabular figures, in marigold — the same slot the overlay draws at 52', async () => {
+      const tree = await render(mode, { timer: '12:04' });
+
+      expect(flat(slot(tree, '12:04').props.style)).toMatchObject({
+        fontFamily: 'Cormorant_700Bold_Italic',
+        fontSize: 31, // 28 × CAP_K 1.12
+        lineHeight: 31, // leading 1: anything larger inflates the card
+        color: MARIGOLD,
+        fontVariant: ['tabular-nums'],
+      });
     });
 
-    it('keeps the joined band, the title and the Join pill', async () => {
-      const tree = await render(mode);
+    it('is drawn in the same place, in the same style, for a count-up as for a countdown', async () => {
+      const down = await render(mode, { timer: '12:04' });
+      const up = await render(mode, { timer: '2:05' });
 
-      expect(hostText(tree)).toEqual(expect.arrayContaining(['2 of 4 joined', 'Track Club', 'Join']));
+      expect(flat(slot(up, '2:05').props.style)).toEqual(flat(slot(down, '12:04').props.style));
     });
 
-    it('right-aligns the Join pill, which space-between would leave on the left', async () => {
-      const tree = await render(mode);
+    it('sits left of the Join pill, with the row spaced apart', async () => {
+      const tree = await render(mode, { timer: '2:05' });
       const bottomRow = tree.root.findByType(TouchableOpacity).parent!;
 
-      expect(flat(bottomRow.props.style)).toMatchObject({ flexDirection: 'row', justifyContent: 'flex-end' });
-    });
-
-    it('spaces the row apart, as before, when there is a countdown', async () => {
-      const tree = await render(mode, { countdown: '12:04' });
-      const bottomRow = tree.root.findByType(TouchableOpacity).parent!;
-
-      expect(flat(bottomRow.props.style).justifyContent).toBe('space-between');
+      expect(flat(bottomRow.props.style)).toMatchObject({ flexDirection: 'row', justifyContent: 'space-between' });
+      expect(hostTextOf(bottomRow.children[0] as ReactTestInstance)).toBe('2:05'); // the timer is the row's first child
     });
   });
 
-  it('keeps the same marigold fills either way: the joined band and the Join pill', async () => {
-    for (const countdown of ['12:04', undefined]) {
-      const tree = await render(mode, { countdown });
+  it('keeps the same marigold fills whichever way the timer runs: the joined band and the Join pill', async () => {
+    for (const timer of ['12:04', '2:05']) {
+      const tree = await render(mode, { timer });
       const fills = tree.root.findAll((n) => isHost(n, 'View') && flat(n.props.style).backgroundColor === MARIGOLD);
       expect(fills).toHaveLength(2);
     }
