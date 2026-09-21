@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -15,33 +15,24 @@ import { RootStackParamList } from '../navigation/AppNavigator';
 import { GroupDTO, UserDTO, parseApiError } from '@orbit/shared';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { useClockAt } from '../utils/countdown';
+import { Invitation, homeCacheEpoch, readHomeCache, writeHomeCache } from '../utils/homeCache';
 import { LiveCall, fetchLiveCalls, hasCountdown, isLive, pickHeroCall } from '../utils/liveCalls';
+import { formatSavedAt } from '../utils/timeFormat';
 import { layout, spacing } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { BottomActionBar } from '../components/BottomActionBar';
-import { Countdown } from '../components/Countdown';
+import { CallSpotlight } from '../components/CallSpotlight';
+import { CallTimer } from '../components/CallTimer';
 import { Display } from '../components/Display';
 import { FilterTabs } from '../components/FilterTabs';
 import { GroupTile } from '../components/GroupTile';
 import { InvitationRow } from '../components/InvitationRow';
 import { LiveCallCard } from '../components/LiveCallCard';
+import { OfflineBanner } from '../components/OfflineBanner';
 import { PasteInviteModal } from '../components/PasteInviteModal';
 import { UserAvatar } from '../components/UserAvatar';
 
 type HomeScreenNavigationProp = StackNavigationProp<RootStackParamList, 'Home'>;
-
-interface Invitation {
-  id: string;
-  group: {
-    id: string;
-    name: string;
-    cadence: string;
-    weekly_frequency: number | null;
-    call_duration_minutes: number;
-    member_count: number;
-  };
-  invited_by: string;
-}
 
 type FilterTab = 'All' | 'Daily' | 'Weekly' | 'Invited';
 const FILTER_TABS: FilterTab[] = ['All', 'Daily', 'Weekly', 'Invited'];
@@ -52,6 +43,9 @@ const FIRST_RUN_TOP_GAP = 188 - 54 - layout.headerHeight;
 
 // A call that starts while Home is open has nothing to push it here, so Home asks.
 const LIVE_CALL_POLL_MS = 15_000;
+
+// Offline, the saved copy is dimmed rather than hidden: it is real, just not live.
+const OFFLINE_GRID_OPACITY = 0.72;
 
 function getCadenceLabel(cadence: string, weekly_frequency?: number | null) {
   if (cadence === 'daily') return 'Daily';
@@ -82,6 +76,18 @@ export default function HomeScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterTab>('All');
   const [loadError, setLoadError] = useState<string | null>(null);
+  // When the copy on screen was fetched (epoch ms), set only while it is a saved copy
+  // drawn because the latest load could not reach the server. Null means what is on
+  // screen is live. It is what the offline banner, the dimmed grid and the inert
+  // "New group" all key off.
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const offline = savedAt !== null;
+  // The call the spotlight overlay is up for, null once it is dismissed or joined.
+  const [spotlightId, setSpotlightId] = useState<string | null>(null);
+  // Set the first time the overlay is decided. It is a once-per-mount question — "was a
+  // call live when Home opened?" — not "is one live now": a call that starts while Home
+  // is open gets its card at the next poll, not an overlay popping up over the user.
+  const [spotlightDecided, setSpotlightDecided] = useState(false);
   // Invites the user has answered this session. "Later" hides one without the
   // server's help: 'dismiss' leaves it pending, so it returns on the next launch,
   // until it expires. An accepted one is added too, so a reload that fails after
@@ -101,6 +107,8 @@ export default function HomeScreen() {
     // Only the newest load may write state: an older one landing late would replace
     // fresher data, or re-raise an error the newer load had already cleared.
     const seq = ++loadSeq.current;
+    // A sign-out clears the copy; a load that began before it must not write one back.
+    const cacheEpoch = homeCacheEpoch();
     setLoadError(null);
     try {
       const client = await createAuthenticatedApiClient();
@@ -119,18 +127,47 @@ export default function HomeScreen() {
       setInvitations(invitationsRes.invitations);
       if (meRes) setMe(meRes);
       if (calls) setLiveCalls(calls);
+      // These two come last on purpose. The spotlight effect keys off them and reads
+      // the groups and calls set above, so they have to be in place by the render in
+      // which either of these changes.
+      setSavedAt(null); // live again: the banner goes
       setHasLoaded(true);
+      // Fire and forget: writeHomeCache never rejects, and a slow disk must not hold
+      // up the render. Only the newest load reaches here, so the copy is never older
+      // than one already saved.
+      writeHomeCache(
+        { groups: groupsRes.groups, invitations: invitationsRes.invitations, fetchedAt: Date.now() },
+        cacheEpoch,
+      );
     } catch (error) {
       if (seq !== loadSeq.current) return;
       console.error('Failed to load data:', error);
-      setLoadError("Couldn't load your groups. Pull down to retry.");
+      // A saved copy beats an error: draw it, and say so. Only with nothing saved —
+      // a cold install with no connection — is there truly nothing to show.
+      const cached = await readHomeCache();
+      // The read is a second await: a newer load may have started, and finished, in it.
+      if (seq !== loadSeq.current) return;
+      if (cached) {
+        setGroups(cached.groups);
+        setInvitations(cached.invitations);
+        setSavedAt(cached.fetchedAt);
+        setHasLoaded(true);
+      } else {
+        setLoadError("Couldn't load your groups. Pull down to retry.");
+      }
     }
   };
 
   useEffect(() => {
     loadData();
     const unsubscribe = navigation.addListener('focus', loadData);
-    return unsubscribe;
+    return () => {
+      unsubscribe();
+      // Leaving Home makes any load still in flight stale, so it sets no state on a
+      // screen that is gone. (Not what stops it writing a copy after a sign-out: Home
+      // is still mounted while the sign-out clears the cache. That is the epoch's job.)
+      loadSeq.current += 1;
+    };
   }, [navigation]);
 
   const onRefresh = async () => {
@@ -144,10 +181,18 @@ export default function HomeScreen() {
   // Which calls are live changes only when a scheduled call's end time passes, so
   // this clock sleeps until the next one instead of ticking: the screen re-renders
   // when a call ends, not every second. The per-second countdown lives in
-  // <Countdown/>, which re-renders alone. Spontaneous calls have no end time, so
-  // they add no deadline and no timer. Every reading is Date.now(), never a
+  // <CallTimer/>, which re-renders alone. Spontaneous calls have no end time, so
+  // they add no deadline here — their timer counts up inside <CallTimer/> too, and
+  // nothing but the server ends them. Every reading is Date.now(), never a
   // decrement, so a backgrounded app is right the moment it returns.
-  const endTimes = liveCalls.filter(hasCountdown).map((c) => new Date(c.ends_at).getTime());
+  //
+  // Offline there are none. What is live is the server's to say and Home cannot reach
+  // it, so a saved copy shows no live card, no live tile and no overlay — whether Home
+  // started offline (there never were any) or lost the connection with a call up. The
+  // two must agree, and "nothing is live, so nothing is marigold". The calls stay in
+  // state, so Retry shows the freshest set without waiting for the next poll.
+  const shownCalls = offline ? [] : liveCalls;
+  const endTimes = shownCalls.filter(hasCountdown).map((c) => new Date(c.ends_at).getTime());
   const now = useClockAt(endTimes, isFocused);
 
   // Which calls are live is the server's to say, so ask again every 15s while the
@@ -170,10 +215,51 @@ export default function HomeScreen() {
   }, [isFocused]);
 
   const groupsById = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
-  const activeCalls = liveCalls.filter((c) => groupsById.has(c.group_id) && isLive(c, now));
+  const activeCalls = shownCalls.filter((c) => groupsById.has(c.group_id) && isLive(c, now));
+
+  // ─── Spotlight ──────────────────────────────────────────────────────────────
+
+  // Decided once, the first time Home has live data and somebody to show it to. Offline
+  // there is no live data to judge by, and a blurred Home has nobody looking — either
+  // waits, and the question is asked the moment it can be answered. Kept in component
+  // state, not storage: a call that is still live at the next cold start earns the
+  // overlay again.
+  //
+  // If the live-call request itself failed on that load there is nothing to judge by
+  // either, and the decision is spent: the card turns up at the next poll instead. That
+  // is deliberate. Waiting for a poll to decide would raise the overlay for a call that
+  // started after the user had already opened the app.
+  //
+  // Decided here, while rendering, rather than in an effect. React re-renders at once
+  // when a component sets its own state during render, before anything is committed, so
+  // the first thing on screen already has the overlay up. An effect would commit Home
+  // once *with the live card* — mounting its timer and every tile's layout — then tear
+  // it down for the overlay, and on a device could put that first layout on a frame.
+  // The guard is state, not a ref, so the re-render sees it and cannot loop.
+  if (!spotlightDecided && hasLoaded && !offline && isFocused) {
+    setSpotlightDecided(true);
+    const call = pickHeroCall(activeCalls);
+    if (call) setSpotlightId(call.id);
+  }
+
+  // By id, so it goes when that call ends instead of moving to whichever is live next.
+  const spotlightCall = spotlightId ? activeCalls.find((c) => c.id === spotlightId) : undefined;
+  const spotlightGroup = spotlightCall ? groupsById.get(spotlightCall.group_id) : undefined;
+  // Only while focused: it lives in this screen's tree and its back-button handler is
+  // global, so a Home sitting under another screen must not keep either.
+  const showSpotlight = !!spotlightCall && !!spotlightGroup && isFocused;
+  const dismissSpotlight = useCallback(() => setSpotlightId(null), []);
+
   // The card is a live-call surface, not a list row, so it stays put across the
   // cadence filters. The Invited tab swaps the whole grid, and the card with it.
-  const heroCall = activeCalls.length > 0 && activeFilter !== 'Invited' ? pickHeroCall(activeCalls) : null;
+  //
+  // While the overlay is up it stands in for the card. The design's background draws
+  // the group on the call as a tile marked "ringing" — not as a card — so that is what
+  // is behind the blur: the group in its own place in the list, ringing. The card takes
+  // over the moment the overlay is answered. The swap happens under the blur and the
+  // scrim, where nothing is legible enough to read it as a jump.
+  const heroCall =
+    activeCalls.length > 0 && activeFilter !== 'Invited' && !showSpotlight ? pickHeroCall(activeCalls) : null;
   const heroGroup = heroCall ? groupsById.get(heroCall.group_id) : undefined;
   const otherLiveGroupIds = new Set(activeCalls.filter((c) => c !== heroCall).map((c) => c.group_id));
 
@@ -290,6 +376,9 @@ export default function HomeScreen() {
       cadence={getCadenceLabel(g.cadence, g.weekly_frequency)}
       subLabel={g.is_muted ? 'muted' : undefined}
       live={otherLiveGroupIds.has(g.id)}
+      // The group the overlay is up for, seen behind it. It is the hero, so with the card
+      // standing down it is in the list like any other — and marked, in the design's word.
+      ringing={showSpotlight && g.id === spotlightGroup?.id}
       onPress={() => navigation.navigate('GroupDetail', { groupId: g.id })}
     />
   );
@@ -368,8 +457,9 @@ export default function HomeScreen() {
             groupName={heroGroup.name}
             joinedCount={heroCall.participant_count}
             totalCount={heroGroup.member_count}
-            // A spontaneous call has no end time, so no countdown and no clock.
-            countdown={hasCountdown(heroCall) ? <Countdown endsAt={heroCall.ends_at} active={isFocused} /> : undefined}
+            // Down for a scheduled call, up from when it started for any other — the
+            // direction is CallTimer's, so the card and the overlay cannot disagree.
+            timer={<CallTimer call={heroCall} active={isFocused} />}
             onJoin={() => joinLiveCall(heroCall)}
           />
         ) : null}
@@ -386,64 +476,83 @@ export default function HomeScreen() {
 
   return (
     <View style={styles.container}>
-      <View style={[styles.header, { paddingTop: insets.top }]}>
-        <View style={styles.headerRow}>
-          <Display size={21} accessibilityRole="header">Orbit</Display>
-          <TouchableOpacity
-            onPress={() => navigation.navigate('Account')}
-            activeOpacity={0.7}
-            // 36pt drawn, 44pt touchable.
-            hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
-            accessibilityRole="button"
-            accessibilityLabel="Account"
-          >
-            {/* Without a loaded profile this draws the empty bordered shape, so
-                Account (and Log out) stays reachable even if /me fails. */}
-            <UserAvatar
-              userId={me?.id ?? ''}
-              username={me?.username ?? ''}
-              hasAvatar={me?.has_avatar ?? false}
-              avatarUpdatedAt={me?.avatar_updated_at}
-              size={36}
-              colors={colors}
-            />
-          </TouchableOpacity>
-        </View>
-      </View>
-
-      {!firstRun && (
-        <FilterTabs
-          tabs={FILTER_TABS}
-          active={activeFilter}
-          onChange={setActiveFilter}
-          invitedCount={pendingInvites.length}
-          style={styles.filterRow}
-        />
-      )}
-
-      <ScrollView
-        contentContainerStyle={styles.scrollContent}
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={onRefresh}
-            tintColor={colors.textSecondary}
-            colors={[colors.textSecondary]}
-          />
-        }
+      {/* Everything but the spotlight. While the overlay is up this is hidden from
+          screen readers on both platforms, since the overlay is in the tree, not a
+          Modal, and would otherwise leave the whole screen behind it reachable. */}
+      <View
+        style={styles.underlay}
+        importantForAccessibility={showSpotlight ? 'no-hide-descendants' : 'auto'}
+        accessibilityElementsHidden={showSpotlight}
       >
-        {renderBody()}
-      </ScrollView>
+        <View style={[styles.header, { paddingTop: insets.top }]}>
+          <View style={styles.headerRow}>
+            <Display size={21} accessibilityRole="header">Orbit</Display>
+            <TouchableOpacity
+              onPress={() => navigation.navigate('Account')}
+              activeOpacity={0.7}
+              // 36pt drawn, 44pt touchable.
+              hitSlop={{ top: 4, bottom: 4, left: 4, right: 4 }}
+              accessibilityRole="button"
+              accessibilityLabel="Account"
+            >
+              {/* Without a loaded profile this draws the empty bordered shape, so
+                  Account (and Log out) stays reachable even if /me fails. */}
+              <UserAvatar
+                userId={me?.id ?? ''}
+                username={me?.username ?? ''}
+                hasAvatar={me?.has_avatar ?? false}
+                avatarUpdatedAt={me?.avatar_updated_at}
+                size={36}
+                colors={colors}
+              />
+            </TouchableOpacity>
+          </View>
+        </View>
 
-      {/* Home's marigold belongs to the live call. With nothing live the only
-          marigold on screen is the active tab's rule — which is what makes a
-          ringing call read instantly — so "New group" is outlined. First run has
-          no tabs and no call, so the one primary action takes the marigold. */}
-      <BottomActionBar
-        variant={showHeadline ? 'primary' : 'secondary'}
-        label={showHeadline ? 'Create a group' : 'New group'}
-        onPress={() => navigation.navigate('CreateGroup')}
-      />
+        {savedAt !== null && (
+          <OfflineBanner savedAt={formatSavedAt(savedAt, Date.now())} onRetry={onRefresh} busy={refreshing} />
+        )}
+
+        {!firstRun && (
+          <FilterTabs
+            tabs={FILTER_TABS}
+            active={activeFilter}
+            onChange={setActiveFilter}
+            invitedCount={pendingInvites.length}
+            // Nothing is live offline, so nothing is marigold — not even the active rule.
+            ruleColor={offline ? colors.borderStrong : undefined}
+            style={styles.filterRow}
+          />
+        )}
+
+        <ScrollView
+          contentContainerStyle={styles.scrollContent}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              tintColor={colors.textSecondary}
+              colors={[colors.textSecondary]}
+            />
+          }
+        >
+          {/* Dimmed, not hidden: the saved copy is real, only no longer live. */}
+          <View style={offline ? styles.offlineBody : undefined}>{renderBody()}</View>
+        </ScrollView>
+
+        {/* Home's marigold belongs to the live call. With nothing live the only
+            marigold on screen is the active tab's rule — which is what makes a
+            ringing call read instantly — so "New group" is outlined. First run has
+            no tabs and no call, so the one primary action takes the marigold.
+            Offline it is inert either way: creating a group needs the server. */}
+        <BottomActionBar
+          variant={showHeadline ? 'primary' : 'secondary'}
+          label={showHeadline ? 'Create a group' : 'New group'}
+          disabled={offline}
+          caption={offline ? 'Creating groups needs a connection.' : undefined}
+          onPress={() => navigation.navigate('CreateGroup')}
+        />
+      </View>
 
       <PasteInviteModal
         visible={pasteOpen}
@@ -453,6 +562,21 @@ export default function HomeScreen() {
           navigation.navigate('JoinInvite', { code });
         }}
       />
+
+      {showSpotlight && spotlightCall && spotlightGroup ? (
+        <CallSpotlight
+          call={spotlightCall}
+          group={spotlightGroup}
+          active={isFocused}
+          onDismiss={dismissSpotlight}
+          // Joining answers the overlay as much as Dismiss does: coming back from the
+          // call must not put the same prompt in front of the user again.
+          onJoin={() => {
+            dismissSpotlight();
+            joinLiveCall(spotlightCall);
+          }}
+        />
+      ) : null}
     </View>
   );
 }
@@ -461,6 +585,8 @@ export default function HomeScreen() {
 function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors']) {
   return StyleSheet.create({
     container: { flex: 1, backgroundColor: colors.background },
+    underlay: { flex: 1 },
+    offlineBody: { opacity: OFFLINE_GRID_OPACITY },
     header: { backgroundColor: colors.background },
     headerRow: {
       minHeight: layout.headerHeight,

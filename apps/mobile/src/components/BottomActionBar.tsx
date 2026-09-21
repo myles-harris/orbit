@@ -44,8 +44,9 @@ export function BottomActionBar({ label, onPress, disabled, caption, variant = '
             // Inert state is a distinct fill/text pair, not opacity on the
             // marigold/espresso pair — WCAG 1.4.3 exempts inactive controls
             // down to 3:1, and this pairing clears it (00-CONTEXT.md AC-11).
-            // The 3.78:1 dark / 4.50:1 light figures in AC-11 are measured with
-            // the track over `background`, which is why the bar is filled with it.
+            // The 3.91:1 dark / 4.50:1 light figures (AC-11 gave 3.78 dark before dark
+            // `textSecondary` was lifted for the invite row) are measured with the
+            // track over `background`, which is why the bar is filled with it.
             // Secondary keeps its own height when inert so going offline does
             // not move the bar.
             backgroundColor: disabled ? colors.controlTrack : secondary ? 'transparent' : colors.accent,

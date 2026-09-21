@@ -46,12 +46,19 @@ const darkPalette = {
   background:   '#211A12',
   surface:      '#2E241A',
   text:         cream,
-  textSecondary:'#B08A5E',   // AA correction: the design's #A67C52 is 4.07:1 on surface
+  // AA correction, twice. The design's #A67C52 is 4.07:1 on surface. #B08A5E fixed that
+  // (4.80 on surface, 5.44 on background) but read 4.41:1 on the invite row's wash —
+  // accentSoft over background lifts the ground — so this lifts it by 2–4 units a
+  // channel, keeping hue and saturation, to clear 4.5 there with margin (4.57). Every
+  // other pair it is used in only rose. Held by the composited-contrast test in
+  // __tests__/contrast.test.ts.
+  textSecondary:'#B28D62',
   textMeta:     wheat,       // mono values, avatar initials, metadata
   hairline:     'rgba(226,196,141,.16)',
   borderStrong: 'rgba(226,196,141,.40)',
   controlTrack: 'rgba(226,196,141,.16)',
   toggleTrack:  'rgba(226,196,141,.22)',
+  overlayScrim: 'rgba(58,44,26,.34)',   // over the blur behind the call spotlight
   danger:       '#D98A72',
   homeIndicator:'rgba(255,248,231,.50)',
 };
@@ -66,6 +73,7 @@ const lightPalette = {
   borderStrong: 'rgba(58,44,26,.28)',
   controlTrack: 'rgba(58,44,26,.12)',
   toggleTrack:  'rgba(58,44,26,.18)',
+  overlayScrim: 'rgba(58,44,26,.20)',
   danger:       '#8C3A2A',
   homeIndicator:'rgba(58,44,26,.45)',
 };
@@ -161,6 +169,7 @@ function makeColors(p: Palette, isDark: boolean) {
     borderStrong:  p.borderStrong,
     controlTrack:  p.controlTrack,
     toggleTrack:   p.toggleTrack,
+    overlayScrim:  p.overlayScrim,
     homeIndicator: p.homeIndicator,
 
     tabActive:   marigold,

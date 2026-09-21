@@ -16,13 +16,36 @@ export function secondsRemaining(endsAt: string | number | Date, now: number): n
   return Math.max(0, Math.ceil((end - now) / 1000));
 }
 
+/**
+ * Whole seconds since `startedAt`, rounded down so the display reads 0:00 until a
+ * full second has passed — the mirror of `secondsRemaining`, which rounds up. Never
+ * negative (a device clock a little behind the server's would otherwise show a
+ * negative time on a call that just began); an unparseable timestamp counts as 0.
+ *
+ * Pure in `now` for the same reason `secondsRemaining` is.
+ */
+export function secondsElapsed(startedAt: string | number | Date, now: number): number {
+  const start = typeof startedAt === 'number' ? startedAt : new Date(startedAt).getTime();
+  if (Number.isNaN(start)) return 0;
+  return Math.max(0, Math.floor((now - start) / 1000));
+}
+
 /** "12:04", or "1:02:03" past the hour. Minutes are unpadded; the design's calls are 2–30 min. */
-export function formatCountdown(endsAt: string | number | Date, now: number): string {
-  const total = secondsRemaining(endsAt, now);
+function formatSeconds(total: number): string {
   const hours = Math.floor(total / 3600);
   const minutes = Math.floor((total % 3600) / 60);
   const seconds = String(total % 60).padStart(2, '0');
   return hours > 0 ? `${hours}:${String(minutes).padStart(2, '0')}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+/** Time left, in `formatSeconds`' shape. */
+export function formatCountdown(endsAt: string | number | Date, now: number): string {
+  return formatSeconds(secondsRemaining(endsAt, now));
+}
+
+/** Time since the start, in the same shape and tabular width as `formatCountdown`. */
+export function formatElapsed(startedAt: string | number | Date, now: number): string {
+  return formatSeconds(secondsElapsed(startedAt, now));
 }
 
 interface UseNowOptions {

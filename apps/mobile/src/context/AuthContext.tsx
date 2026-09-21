@@ -3,6 +3,7 @@ import { Alert } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { setSessionExpiredHandler, clearAccessToken, API_URL, createAuthenticatedApiClient } from '../utils/apiClient';
 import { clearCachedCallPrefs } from '../utils/notificationChannels';
+import { clearHomeCache } from '../utils/homeCache';
 import { ApiClient } from '@orbit/shared';
 
 interface AuthContextType {
@@ -72,6 +73,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // Otherwise the next account signed into this device inherits this account's
       // cached call channel prefs (including a DND-bypass channel) until /me responds.
       clearCachedCallPrefs(),
+      // Home's offline copy holds this account's group names and is not keyed by user.
+      clearHomeCache(),
     ]);
     setIsAuthenticated(false);
   };

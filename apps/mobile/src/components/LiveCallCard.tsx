@@ -11,18 +11,18 @@ interface LiveCallCardProps {
   joinedCount: number;
   totalCount: number;
   /**
-   * The countdown — text such as "12:04", or a component that renders it and owns
-   * its own clock (`<Countdown/>`), so a tick re-renders that text and not this
-   * card. Omit it for a spontaneous call, which has no end time to count toward:
-   * the Join pill then takes the row on its own.
+   * The timer — text such as "12:04", or a component that renders it and owns its
+   * own clock (`<CallTimer/>`), so a tick re-renders that text and not this card.
+   * Always drawn: a scheduled call counts down and any other counts up, and the
+   * card's rhythm is built around the slot either way.
    */
-  countdown?: ReactNode;
+  timer: ReactNode;
   onJoin: () => void;
 }
 
 // The full-bleed, 2-column-span hero card shown when a call is live. Not a
 // GroupTile variant — a different band, a different type ramp, a Join pill.
-export function LiveCallCard({ groupName, photoUri, joinedCount, totalCount, countdown, onJoin }: LiveCallCardProps) {
+export function LiveCallCard({ groupName, photoUri, joinedCount, totalCount, timer, onJoin }: LiveCallCardProps) {
   const { theme: { colors } } = useTheme();
 
   return (
@@ -72,12 +72,10 @@ export function LiveCallCard({ groupName, photoUri, joinedCount, totalCount, cou
             {groupName}
           </Display>
 
-          <View style={[styles.bottomRow, !countdown && styles.bottomRowJoinOnly]}>
-            {countdown ? (
-              <Display size={28} leading={1} tabular color={colors.accent}>
-                {countdown}
-              </Display>
-            ) : null}
+          <View style={styles.bottomRow}>
+            <Display size={28} leading={1} tabular color={colors.accent}>
+              {timer}
+            </Display>
             <TouchableOpacity
               onPress={onJoin}
               activeOpacity={0.85}
@@ -119,10 +117,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-  },
-  // space-between would put a lone Join pill on the left.
-  bottomRowJoinOnly: {
-    justifyContent: 'flex-end',
   },
   joinPill: {
     minHeight: 48,

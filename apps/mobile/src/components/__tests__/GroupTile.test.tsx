@@ -21,7 +21,7 @@ const WHEAT = '#E2C48D'; // the design's fixed over-photo sub-label colour
 
 async function render(
   mode: Mode,
-  props: { hasPhoto?: boolean; subLabel?: string; live?: boolean } = {},
+  props: { hasPhoto?: boolean; subLabel?: string; live?: boolean; ringing?: boolean } = {},
 ): Promise<ReactTestRenderer> {
   (useTheme as jest.Mock).mockReturnValue({ theme: THEMES[mode], mode });
   let tree!: ReactTestRenderer;
@@ -176,6 +176,84 @@ describe('GroupTile live (concurrent call)', () => {
       const node = tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === text)[0];
       expect(StyleSheet.flatten(node.props.style)?.position).not.toBe('absolute');
     });
+  });
+});
+
+// The group the call spotlight is up for, seen behind the overlay: a live tile with the
+// design's larger "ringing" in place of "live".
+describe('GroupTile ringing (behind the spotlight)', () => {
+  const labelNode = (tree: ReactTestRenderer, text: string) =>
+    tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === text)[0];
+  const border = (tree: ReactTestRenderer) => {
+    const style = StyleSheet.flatten(tree.root.findByType(TouchableOpacity).props.style);
+    return { width: style.borderWidth, color: style.borderColor };
+  };
+
+  it.each<Mode>(['light', 'dark'])('says "ringing" in mono 22, and not "live", in %s mode', async (mode) => {
+    const tree = await render(mode, { ringing: true });
+
+    expect(StyleSheet.flatten(labelNode(tree, 'ringing').props.style)).toMatchObject({
+      fontFamily: 'GeistMono_500Medium',
+      fontSize: 22,
+    });
+    expect(tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === 'live')).toHaveLength(0);
+  });
+
+  it('is a plain 13pt "live" for a live group that is not the one ringing', async () => {
+    const tree = await render('dark', { live: true });
+    expect(StyleSheet.flatten(labelNode(tree, 'live').props.style).fontSize).toBe(13);
+    expect(tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === 'ringing')).toHaveLength(0);
+  });
+
+  it('wins over live when a group is both', async () => {
+    const tree = await render('dark', { live: true, ringing: true });
+    expect(labelNode(tree, 'ringing')).toBeDefined();
+    expect(tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === 'live')).toHaveLength(0);
+  });
+
+  it.each<[Mode, boolean]>([
+    ['light', false],
+    ['light', true],
+    ['dark', false],
+    ['dark', true],
+  ])('carries the same 1px marigold border as a live tile in %s mode (photo: %s)', async (mode, hasPhoto) => {
+    const tree = await render(mode, { ringing: true, hasPhoto });
+    expect(border(tree)).toEqual({ width: 1, color: MARIGOLD });
+  });
+
+  // AC-3: marigold text only over a dark ground — the same rules as "live", at the larger size.
+  it.each<Mode>(['light', 'dark'])('is marigold over a photo scrim in %s mode', async (mode) => {
+    const tree = await render(mode, { ringing: true, hasPhoto: true });
+    expect(textColor(tree, 'ringing')).toBe(onPhoto.accent);
+  });
+
+  it('is marigold on the dark surface', async () => {
+    const tree = await render('dark', { ringing: true });
+    expect(textColor(tree, 'ringing')).toBe(MARIGOLD);
+  });
+
+  it('is never marigold on the light surface, where it is 1.60:1', async () => {
+    const tree = await render('light', { ringing: true });
+    expect(textColor(tree, 'ringing')).toBe(lightTheme.colors.text);
+  });
+
+  it('is pinned out of flow in the bottom-left corner like "live", so the other slots do not move', async () => {
+    const tree = await render('dark', { subLabel: 'muted', ringing: true });
+
+    expect(StyleSheet.flatten(labelNode(tree, 'ringing').props.style)).toMatchObject({
+      position: 'absolute',
+      left: layout.tilePad,
+      bottom: layout.tilePad,
+    });
+    const plain = await render('dark', { subLabel: 'muted' });
+    ['Track Club', 'muted', 'Daily'].forEach((text) => {
+      expect(textColor(tree, text)).toBe(textColor(plain, text));
+    });
+  });
+
+  it('is unmarked when not ringing', async () => {
+    const tree = await render('dark');
+    expect(tree.root.findAll((n) => typeof n.type === 'string' && n.props.children === 'ringing')).toHaveLength(0);
   });
 });
 
