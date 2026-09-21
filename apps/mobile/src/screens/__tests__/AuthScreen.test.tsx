@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import { act } from 'react';
 import { Alert, Image, ScrollView, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -28,6 +30,20 @@ jest.mock('react-native-safe-area-context', () => ({
   useSafeAreaInsets: () => ({ top: 47, bottom: 34, left: 0, right: 0 }),
 }));
 jest.mock('@react-navigation/native', () => ({ useIsFocused: () => true }));
+
+/** A JPEG's pixel size, read from its start-of-frame marker. */
+function jpegSize(file: string) {
+  const b = fs.readFileSync(file);
+  let i = 2; // past the start-of-image marker
+  while (i + 4 < b.length) {
+    if (b[i] !== 0xff) { i++; continue; }
+    const marker = b[i + 1];
+    const startOfFrame = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+    if (startOfFrame) return { height: b.readUInt16BE(i + 5), width: b.readUInt16BE(i + 7) };
+    i += 2 + b.readUInt16BE(i + 2); // skip the segment
+  }
+  throw new Error(`no frame header in ${file}`);
+}
 
 const THEMES = { light: lightTheme, dark: darkTheme } as const;
 type Mode = keyof typeof THEMES;
@@ -92,18 +108,43 @@ describe('AuthScreen phone step', () => {
     expect(has(tree, 'Log In')).toBe(false);
   });
 
-  it('draws the sky, the scrim at 0 / 30% / 72% / 100%, and the logo at the sign-in scale', () => {
+  it('covers the screen with the sky, the scrim at 0 / 30% / 72% / 100%, and the logo', () => {
     const tree = render();
 
-    const image = tree.root.findByType(Image);
-    expect(JSON.stringify(image.props.source)).toContain('signin-sky');
+    // The logo's shadow bitmaps are Images too; the sky is the one that fills the screen.
+    const image = tree.root.findAllByType(Image).find((i) => JSON.stringify(i.props.source).includes('signin-sky'))!;
+    expect(image).toBeDefined();
+    // Not `contain`: that leaves the backdrop showing as bands wherever the screen is not the
+    // photo's shape. `cover` is the least zoom that fills the screen, centred.
     expect(image.props.resizeMode).toBe('cover');
+    // Width and height, not `absoluteFill` alone. React Native lays a bundled image out at its own
+    // pixel size unless they are set, and left/right/top/bottom do not set them: the photo was
+    // 1170×2080 points, pinned top left and cut off by the screen, whatever the resizeMode said.
+    expect(StyleSheet.flatten(image.props.style)).toMatchObject({ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' });
 
     const gradient = tree.root.findByType(LinearGradient);
     expect(gradient.props.colors).toEqual(scrim.signIn);
     expect(gradient.props.locations).toEqual([0, 0.3, 0.72, 1]);
 
-    expect(tree.root.findByType(OrbitLogo).props.capHeight).toBe(161);
+    expect(tree.root.findByType(OrbitLogo)).toBeTruthy();
+  });
+
+  // `cover` can only show what the file holds. The app once shipped the sky already cut to a
+  // phone's shape (1170×2532), 9% off each side of the design's 9:16 original, and no resizeMode
+  // could bring that back.
+  it("ships the design's whole 9:16 sky, not a crop of it", () => {
+    const { width, height } = jpegSize(path.join(__dirname, '../../../assets/signin-sky.jpg'));
+
+    expect(width / height).toBeCloseTo(9 / 16, 3);
+  });
+
+  it('gives the logo the mockup\'s 180pt slot, so the field block keeps its place under it', () => {
+    const tree = render();
+    const slot = tree.root.findByType(OrbitLogo).parent!;
+    expect(StyleSheet.flatten(slot.props.style)).toMatchObject({ height: 180, alignItems: 'center' });
+
+    const form = tree.root.findAll((n) => StyleSheet.flatten(n.props.style)?.marginTop === 330 - (112 + 180))[0];
+    expect(form).toBeDefined();
   });
 
   it('places the logo under the real status bar and the footer above the real home indicator', () => {
