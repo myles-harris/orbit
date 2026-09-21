@@ -108,6 +108,13 @@ interface Fixture {
   failLoad?: boolean;
   /** Only the live-calls request fails; the groups, invitations and profile load. */
   failLiveCalls?: boolean;
+  /**
+   * Leave the spotlight overlay up. Home raises it whenever it opens on a live call, and
+   * while it is up it stands in for the live card — so by default `renderHome` answers it
+   * at once, and the tests about the card, its timer and the grid around it do not each
+   * have to. The spotlight's own tests pass this.
+   */
+  keepSpotlight?: boolean;
 }
 
 function mockApi({ groups = [], invitations = [], liveCalls = [], failLoad = false, failLiveCalls = false }: Fixture) {
@@ -147,12 +154,16 @@ async function flush() {
 async function renderHome(fixture: Fixture, mode: Mode = 'dark') {
   const client = mockApi(fixture);
   (useTheme as jest.Mock).mockReturnValue({ theme: THEMES[mode], mode });
+  mockSpotlightProps = null; // not a previous render's, which may be a dismissed overlay's
   let tree!: ReactTestRenderer;
   await act(async () => {
     tree = renderer.create(<HomeScreen />);
   });
   await flush();
   mounted.push(tree);
+  if (!fixture.keepSpotlight && mockSpotlightProps) {
+    await act(async () => { mockSpotlightProps!.onDismiss(); });
+  }
   return { tree, client };
 }
 
@@ -1928,6 +1939,8 @@ describe('Home spotlight', () => {
   };
   const overlay = (tree: ReactTestRenderer) =>
     tree.root.findAll((n) => isHost(n, 'View') && n.props.testID === 'call-spotlight');
+  // Every test here is about the overlay, so it is left up.
+  const up = (fixture: Fixture, mode?: Mode) => renderHome({ ...fixture, keepSpotlight: true }, mode);
   const dismiss = () => act(async () => { mockSpotlightProps!.onDismiss(); });
 
   beforeEach(() => {
@@ -1935,7 +1948,7 @@ describe('Home spotlight', () => {
   });
 
   it('goes up when Home opens on a live call — for that call, with that group', async () => {
-    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    const { tree } = await up({ groups, liveCalls: [callA] });
 
     expect(overlay(tree)).toHaveLength(1);
     expect(mockSpotlightProps?.call.id).toBe('ca');
@@ -1943,43 +1956,56 @@ describe('Home spotlight', () => {
     expect(mockSpotlightProps?.active).toBe(true);
   });
 
+  // The overlay is decided while rendering, so the first thing committed already has it.
+  // Decided in an effect, Home would commit once with the live card — mounting its timer —
+  // and tear it down for the overlay a render later.
+  it('never mounts the live card on the way to the overlay: Home is committed once, already with it up', async () => {
+    const started = jest.spyOn(globalThis, 'setInterval');
+    const { tree } = await up({ groups, liveCalls: [callA] });
+
+    expect(overlay(tree)).toHaveLength(1);
+    expect(hasText(tree, '2 of 4 joined')).toBe(false);
+    // The card's timer runs a 1s clock the moment it mounts, even for a single commit.
+    expect(started.mock.calls.filter(([, ms]) => ms === 1000)).toHaveLength(0);
+  });
+
   it('does not go up when nothing is live', async () => {
-    const { tree } = await renderHome({ groups });
+    const { tree } = await up({ groups });
     expect(overlay(tree)).toHaveLength(0);
   });
 
   it('is for the call that started most recently when two are live, whatever its type', async () => {
-    const { tree } = await renderHome({ groups, liveCalls: [callB, spontaneous, callA] });
+    const { tree } = await up({ groups, liveCalls: [callB, spontaneous, callA] });
 
     expect(overlay(tree)).toHaveLength(1);
     expect(mockSpotlightProps?.call.id).toBe('cs'); // started 30s ago, against 60s and 5min
   });
 
   it('goes up for a spontaneous call as much as a scheduled one', async () => {
-    const { tree } = await renderHome({ groups, liveCalls: [spontaneous] });
+    const { tree } = await up({ groups, liveCalls: [spontaneous] });
     expect(overlay(tree)).toHaveLength(1);
     expect(mockSpotlightProps?.call.call_type).toBe('spontaneous');
   });
 
   it('is not raised for a call in a group the user cannot see', async () => {
     const stranger: LiveCall = { ...callA, id: 'cx', group_id: 'not-mine' };
-    const { tree } = await renderHome({ groups, liveCalls: [stranger] });
+    const { tree } = await up({ groups, liveCalls: [stranger] });
     expect(overlay(tree)).toHaveLength(0);
   });
 
   it('comes down on Dismiss, leaving the live card in the grid', async () => {
-    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    const { tree } = await up({ groups, liveCalls: [callA] });
     expect(overlay(tree)).toHaveLength(1);
 
     await dismiss();
 
     expect(overlay(tree)).toHaveLength(0);
-    expect(hasText(tree, '2 of 4 joined')).toBe(true); // the card was there all along
+    expect(hasText(tree, '2 of 4 joined')).toBe(true); // the live card takes over, and stays
     expect(hasText(tree, 'Join')).toBe(true);
   });
 
   it('does not come back this session — not when Home reloads, not for another call', async () => {
-    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    const { tree } = await up({ groups, liveCalls: [callA] });
     await dismiss();
 
     (fetchLiveCalls as jest.Mock).mockResolvedValue([callA, callB]);
@@ -1991,7 +2017,7 @@ describe('Home spotlight', () => {
   });
 
   it('stays down through a trip to another screen and back — blur, then focus', async () => {
-    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    const { tree } = await up({ groups, liveCalls: [callA] });
     await dismiss();
 
     mockIsFocused = false; // a group is opened…
@@ -2004,7 +2030,7 @@ describe('Home spotlight', () => {
   });
 
   it('stays down through a spell offline and back, though the call is still live', async () => {
-    const { tree } = await renderHome({ groups, liveCalls: [callA] }); // saves the copy
+    const { tree } = await up({ groups, liveCalls: [callA] }); // saves the copy
     await dismiss();
 
     // Losing the connection and getting it back re-runs the very condition the overlay
@@ -2021,17 +2047,79 @@ describe('Home spotlight', () => {
   });
 
   it('keeps nothing on disk: dismissal is component state, so the next cold start raises it again', async () => {
-    const first = await renderHome({ groups, liveCalls: [callA] });
+    const first = await up({ groups, liveCalls: [callA] });
     await dismiss();
     expect(await AsyncStorage.getAllKeys()).toEqual([HOME_CACHE_KEY]); // only the offline copy
 
     act(() => first.tree.unmount()); // a cold start is a fresh Home
-    const second = await renderHome({ groups, liveCalls: [callA] });
+    const second = await up({ groups, liveCalls: [callA] });
     expect(overlay(second.tree)).toHaveLength(1);
   });
 
+  // Behind the overlay the design draws the group on the call as a tile marked "ringing",
+  // not as the live card. The card takes over once the overlay is answered.
+  describe('the ringing tile behind it', () => {
+    const ringing = (tree: ReactTestRenderer) => tiles(tree).filter((t) => t.props.ringing);
+
+    it('draws the group on the call as a ringing tile, in place of its card', async () => {
+      const { tree } = await up({ groups, liveCalls: [callA] });
+
+      expect(overlay(tree)).toHaveLength(1);
+      expect(ringing(tree).map((t) => t.props.name)).toEqual(['Alpha']);
+      expect(hasText(tree, 'ringing')).toBe(true);
+      expect(hasText(tree, '2 of 4 joined')).toBe(false); // the card stands down…
+      expect(hasText(tree, 'Join')).toBe(false);
+      expect(allText(tree).filter((t) => t === 'Alpha')).toHaveLength(1); // …so the group is drawn once
+    });
+
+    it('keeps the tile in its own place in the list, not at the top where the card would be', async () => {
+      const { tree } = await up({ groups, liveCalls: [spontaneous] }); // Charlie, the last group
+
+      expect(tiles(tree).map((t) => t.props.name)).toEqual(['Alpha', 'Bravo', 'Charlie']);
+      expect(ringing(tree).map((t) => t.props.name)).toEqual(['Charlie']);
+    });
+
+    it('marks only the group the overlay is for; another live group keeps its plain "live" tile', async () => {
+      const { tree } = await up({ groups, liveCalls: [callA, callB] }); // A started more recently
+
+      const alpha = tiles(tree).find((t) => t.props.name === 'Alpha')!;
+      const bravo = tiles(tree).find((t) => t.props.name === 'Bravo')!;
+      expect(alpha.props.ringing).toBe(true);
+      expect(bravo.props.ringing).toBe(false);
+      expect(bravo.props.live).toBe(true);
+      expect(allText(tree).filter((t) => t === 'ringing')).toHaveLength(1);
+      expect(allText(tree).filter((t) => t === 'live')).toHaveLength(1);
+    });
+
+    it('gives the card back, and the tile its plain look, the moment the overlay is dismissed', async () => {
+      const { tree } = await up({ groups, liveCalls: [callA] });
+      await dismiss();
+
+      expect(hasText(tree, '2 of 4 joined')).toBe(true);
+      expect(hasText(tree, 'ringing')).toBe(false);
+      expect(ringing(tree)).toHaveLength(0);
+      expect(tiles(tree).map((t) => t.props.name)).toEqual(['Bravo', 'Charlie']); // Alpha is the card now
+      expect(allText(tree).filter((t) => t === 'Alpha')).toHaveLength(1);
+    });
+
+    it('is never drawn without the overlay — a group on the call is otherwise its card', async () => {
+      const { tree } = await renderHome({ groups, liveCalls: [callA] }); // answered at once
+
+      expect(hasText(tree, 'ringing')).toBe(false);
+      expect(ringing(tree)).toHaveLength(0);
+    });
+
+    it('is not drawn offline, where nothing is live', async () => {
+      await seedCache({ groups });
+      const { tree } = await up({ groups, failLoad: true, liveCalls: [callA] });
+
+      expect(hasText(tree, 'ringing')).toBe(false);
+      expect(ringing(tree)).toHaveLength(0);
+    });
+  });
+
   it('is answered by Join as well: it comes down, joins, and stays down when Home reloads on the way back', async () => {
-    const { tree, client } = await renderHome({ groups, liveCalls: [callA] });
+    const { tree, client } = await up({ groups, liveCalls: [callA] });
     client.post.mockResolvedValue({ room_url: 'https://room', token: 'tok', ends_at: callA.ends_at });
 
     await act(async () => { mockSpotlightProps!.onJoin(); });
@@ -2042,6 +2130,7 @@ describe('Home spotlight', () => {
       callId: 'ca', groupId: 'a', roomUrl: 'https://room', token: 'tok', endsAt: callA.ends_at,
     });
     expect(overlay(tree)).toHaveLength(0);
+    expect(hasText(tree, '2 of 4 joined')).toBe(true); // the card, not a ringing tile, is what is left
 
     await act(async () => { mockListeners.focus(); }); // back from the call, still live
     await flush();
@@ -2050,7 +2139,7 @@ describe('Home spotlight', () => {
 
   it('waits while Home is showing a saved copy, and goes up when a retry reaches a live call', async () => {
     await seedCache();
-    const { tree } = await renderHome({ failLoad: true, liveCalls: [callA] });
+    const { tree } = await up({ failLoad: true, liveCalls: [callA] });
     expect(overlay(tree)).toHaveLength(0); // nothing known to be live
 
     mockApi({ groups, liveCalls: [callA] });
@@ -2061,7 +2150,7 @@ describe('Home spotlight', () => {
 
   it('waits while Home is blurred, and goes up when it is focused', async () => {
     mockIsFocused = false;
-    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    const { tree } = await up({ groups, liveCalls: [callA] });
     expect(overlay(tree)).toHaveLength(0);
 
     mockIsFocused = true;
@@ -2070,7 +2159,7 @@ describe('Home spotlight', () => {
   });
 
   it('hides the screen behind it from screen readers while it is up, and only then', async () => {
-    const { tree } = await renderHome({ groups, liveCalls: [callA] });
+    const { tree } = await up({ groups, liveCalls: [callA] });
     const hiders = () => tree.root.findAll((n) => isHost(n, 'View') && n.props.importantForAccessibility === 'no-hide-descendants');
 
     expect(hiders()).toHaveLength(1);
@@ -2099,7 +2188,7 @@ describe('Home spotlight', () => {
     });
 
     it('is raised for a call that was live when Home opened, not for one that starts while it is open', async () => {
-      const { tree } = await renderHome({ groups });
+      const { tree } = await up({ groups });
       expect(overlay(tree)).toHaveLength(0);
 
       (fetchLiveCalls as jest.Mock).mockResolvedValue([callA]);
@@ -2115,7 +2204,7 @@ describe('Home spotlight', () => {
         id: 'cc', group_id: 'c', call_type: 'scheduled', started_at: iso(T0 - 400_000),
         ends_at: iso(T0 + 1_000_000), participant_count: 1,
       };
-      const { tree } = await renderHome({ groups, liveCalls: [callA, callC] });
+      const { tree } = await up({ groups, liveCalls: [callA, callC] });
       expect(mockSpotlightProps?.call.id).toBe('ca');
 
       await tick(724_000); // callA's end

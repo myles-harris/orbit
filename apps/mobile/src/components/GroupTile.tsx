@@ -29,6 +29,14 @@ interface GroupTileProps {
    * background tile already uses.
    */
   live?: boolean;
+  /**
+   * The group the call spotlight is up for, seen behind it. A live tile in every
+   * respect — the same marigold border, the same colour rules for the label — except
+   * that the label is the design's larger "ringing" rather than "live". Home draws the
+   * group this way only while the overlay is up; it becomes the live card once the
+   * overlay is answered.
+   */
+  ringing?: boolean;
   onPress: () => void;
 }
 
@@ -39,7 +47,7 @@ interface GroupTileProps {
 // two scrims in the design imply — one anchored to each edge, `tileTop` behind
 // the name and `tileBottom` behind the cadence.
 export function GroupTile({
-  name, cadence, subLabel, groupId, hasPhoto: groupHasPhoto = false, photoUpdatedAt, live, onPress,
+  name, cadence, subLabel, groupId, hasPhoto: groupHasPhoto = false, photoUpdatedAt, live, ringing, onPress,
 }: GroupTileProps) {
   const { theme: { colors }, mode } = useTheme();
   // Null covers a group with no photo, a token not yet in hand, and a load that failed
@@ -50,6 +58,8 @@ export function GroupTile({
   // mode, or the dark surface. On the light surface it is 1.60:1, so the label
   // falls back to `text` there and the marigold border carries the signal alone.
   const liveLabelColor = hasPhoto ? onPhoto.accent : mode === 'dark' ? colors.accent : colors.text;
+  // Ringing is live, plus a bigger word.
+  const marked = live || ringing;
 
   return (
     <TouchableOpacity
@@ -60,8 +70,8 @@ export function GroupTile({
         {
           borderRadius: radius.xl,
           backgroundColor: hasPhoto ? colors.background : colors.surface,
-          borderWidth: hasPhoto && !live ? 0 : 1,
-          borderColor: live ? colors.accent : colors.hairline,
+          borderWidth: hasPhoto && !marked ? 0 : 1,
+          borderColor: marked ? colors.accent : colors.hairline,
         },
       ]}
     >
@@ -118,11 +128,16 @@ export function GroupTile({
         ) : null}
       </View>
 
-      {live ? (
+      {marked ? (
         <Text
-          style={[styles.liveLabel, { color: liveLabelColor }, hasPhoto ? onPhoto.textShadow : undefined]}
+          style={[
+            styles.liveLabel,
+            ringing && styles.ringingLabel,
+            { color: liveLabelColor },
+            hasPhoto ? onPhoto.textShadow : undefined,
+          ]}
         >
-          live
+          {ringing ? 'ringing' : 'live'}
         </Text>
       ) : null}
 
@@ -168,5 +183,8 @@ const styles = StyleSheet.create({
     bottom: layout.tilePad,
     fontFamily: 'GeistMono_500Medium',
     fontSize: 13,
+  },
+  ringingLabel: {
+    fontSize: 22,
   },
 });

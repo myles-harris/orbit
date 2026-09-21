@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   View,
   Text,
@@ -87,7 +87,7 @@ export default function HomeScreen() {
   // Set the first time the overlay is decided. It is a once-per-mount question — "was a
   // call live when Home opened?" — not "is one live now": a call that starts while Home
   // is open gets its card at the next poll, not an overlay popping up over the user.
-  const spotlightDecided = useRef(false);
+  const [spotlightDecided, setSpotlightDecided] = useState(false);
   // Invites the user has answered this session. "Later" hides one without the
   // server's help: 'dismiss' leaves it pending, so it returns on the next launch,
   // until it expires. An accepted one is added too, so a reload that fails after
@@ -216,11 +216,6 @@ export default function HomeScreen() {
 
   const groupsById = useMemo(() => new Map(groups.map((g) => [g.id, g])), [groups]);
   const activeCalls = shownCalls.filter((c) => groupsById.has(c.group_id) && isLive(c, now));
-  // The card is a live-call surface, not a list row, so it stays put across the
-  // cadence filters. The Invited tab swaps the whole grid, and the card with it.
-  const heroCall = activeCalls.length > 0 && activeFilter !== 'Invited' ? pickHeroCall(activeCalls) : null;
-  const heroGroup = heroCall ? groupsById.get(heroCall.group_id) : undefined;
-  const otherLiveGroupIds = new Set(activeCalls.filter((c) => c !== heroCall).map((c) => c.group_id));
 
   // ─── Spotlight ──────────────────────────────────────────────────────────────
 
@@ -235,19 +230,17 @@ export default function HomeScreen() {
   // is deliberate. Waiting for a poll to decide would raise the overlay for a call that
   // started after the user had already opened the app.
   //
-  // The overlay is for the spotlighted group's *card*. The design's background tile
-  // carries a 22pt marigold "ringing" label for that group, but here the group on the
-  // call is the hero — drawn as the live card, not as a tile — so there is no tile to
-  // label and none is drawn; the card stands behind the overlay in its place. (The 13pt
-  // "live" on GroupTile is for a live group that is *not* the hero.)
-  //
-  // Before paint, so Home never shows one un-dimmed frame before the overlay lands.
-  useLayoutEffect(() => {
-    if (!hasLoaded || offline || !isFocused || spotlightDecided.current) return;
-    spotlightDecided.current = true;
+  // Decided here, while rendering, rather than in an effect. React re-renders at once
+  // when a component sets its own state during render, before anything is committed, so
+  // the first thing on screen already has the overlay up. An effect would commit Home
+  // once *with the live card* — mounting its timer and every tile's layout — then tear
+  // it down for the overlay, and on a device could put that first layout on a frame.
+  // The guard is state, not a ref, so the re-render sees it and cannot loop.
+  if (!spotlightDecided && hasLoaded && !offline && isFocused) {
+    setSpotlightDecided(true);
     const call = pickHeroCall(activeCalls);
     if (call) setSpotlightId(call.id);
-  }, [hasLoaded, offline, isFocused]);
+  }
 
   // By id, so it goes when that call ends instead of moving to whichever is live next.
   const spotlightCall = spotlightId ? activeCalls.find((c) => c.id === spotlightId) : undefined;
@@ -256,6 +249,19 @@ export default function HomeScreen() {
   // global, so a Home sitting under another screen must not keep either.
   const showSpotlight = !!spotlightCall && !!spotlightGroup && isFocused;
   const dismissSpotlight = useCallback(() => setSpotlightId(null), []);
+
+  // The card is a live-call surface, not a list row, so it stays put across the
+  // cadence filters. The Invited tab swaps the whole grid, and the card with it.
+  //
+  // While the overlay is up it stands in for the card. The design's background draws
+  // the group on the call as a tile marked "ringing" — not as a card — so that is what
+  // is behind the blur: the group in its own place in the list, ringing. The card takes
+  // over the moment the overlay is answered. The swap happens under the blur and the
+  // scrim, where nothing is legible enough to read it as a jump.
+  const heroCall =
+    activeCalls.length > 0 && activeFilter !== 'Invited' && !showSpotlight ? pickHeroCall(activeCalls) : null;
+  const heroGroup = heroCall ? groupsById.get(heroCall.group_id) : undefined;
+  const otherLiveGroupIds = new Set(activeCalls.filter((c) => c !== heroCall).map((c) => c.group_id));
 
   const joinLiveCall = async (call: LiveCall) => {
     try {
@@ -370,6 +376,9 @@ export default function HomeScreen() {
       cadence={getCadenceLabel(g.cadence, g.weekly_frequency)}
       subLabel={g.is_muted ? 'muted' : undefined}
       live={otherLiveGroupIds.has(g.id)}
+      // The group the overlay is up for, seen behind it. It is the hero, so with the card
+      // standing down it is in the list like any other — and marked, in the design's word.
+      ringing={showSpotlight && g.id === spotlightGroup?.id}
       onPress={() => navigation.navigate('GroupDetail', { groupId: g.id })}
     />
   );
