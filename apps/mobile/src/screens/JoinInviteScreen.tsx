@@ -98,7 +98,7 @@ export default function JoinInviteScreen() {
 
   const goHome = () => {
     if (navigation.canGoBack()) navigation.goBack();
-    else if (isAuthenticated) navigation.replace('Main');
+    else if (isAuthenticated) navigation.replace('Home');
     else navigation.navigate('Auth');
   };
 
@@ -148,7 +148,7 @@ export default function JoinInviteScreen() {
             activeOpacity={0.85}
           >
             {joining ? (
-              <ActivityIndicator color="#fff" size="small" />
+              <ActivityIndicator color={colors.textOnPrimary} size="small" />
             ) : (
               <Text style={styles.joinButtonText}>Join Group</Text>
             )}
@@ -189,7 +189,7 @@ function makeStyles(colors: any, typography: any, shadow: any) {
       marginBottom: spacing.xl,
       ...shadow.md,
     },
-    iconText: { fontSize: 36, fontWeight: '700', color: '#fff' },
+    iconText: { fontSize: 36, fontWeight: '700', color: colors.textOnPrimary },
     groupName: { ...typography.h2, textAlign: 'center', marginBottom: spacing.sm },
     invitedBy: { ...typography.body, color: colors.textSecondary, marginBottom: spacing.lg },
     metaRow: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center', gap: spacing.sm, marginBottom: spacing.xxl },
@@ -205,7 +205,7 @@ function makeStyles(colors: any, typography: any, shadow: any) {
       ...shadow.md,
     },
     joinButtonDisabled: { backgroundColor: colors.textTertiary, shadowOpacity: 0, elevation: 0 },
-    joinButtonText: { ...typography.bodySemibold, color: '#fff' },
+    joinButtonText: { ...typography.bodySemibold, color: colors.textOnPrimary },
     cancelText: { ...typography.body, color: colors.textTertiary, marginTop: spacing.sm },
     errorText: { ...typography.body, color: colors.textSecondary, textAlign: 'center', marginBottom: spacing.xl },
     backButton: {

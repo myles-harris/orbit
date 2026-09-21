@@ -9,7 +9,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useTheme } from '../context/ThemeContext';
-import { CARD_PALETTES } from '../utils/groupColors';
+import { Display } from './Display';
 
 interface Props {
   kind: string;
@@ -69,7 +69,6 @@ function Pulsing({
 
 export default function TutorialDemo({ kind, onTap }: Props) {
   const { theme: { colors } } = useTheme();
-  const palettes = CARD_PALETTES;
 
   // ── Sub-components ─────────────────────────────────────────────────────────
 
@@ -91,7 +90,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
         backgroundColor: active ? colors.text : colors.background,
       }}>
         <Text style={{
-          fontFamily: 'Roboto_700Bold', fontSize: 12,
+          fontFamily: 'Geist_600SemiBold', fontSize: 12,
           color: active ? colors.background : colors.textSecondary,
         }}>{label}</Text>
         {badge && (
@@ -100,7 +99,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
             borderRadius: 999, minWidth: 14, height: 14, paddingHorizontal: 3,
             alignItems: 'center', justifyContent: 'center',
           }}>
-            <Text style={{ color: '#fff', fontSize: 8, fontFamily: 'Roboto_700Bold' }}>{badge}</Text>
+            <Text style={{ color: active ? colors.background : colors.textOnPrimary, fontSize: 8, fontFamily: 'Geist_600SemiBold' }}>{badge}</Text>
           </View>
         )}
       </View>
@@ -124,23 +123,25 @@ export default function TutorialDemo({ kind, onTap }: Props) {
     </View>
   );
 
-  const BentoCard = ({
-    name, cadence, palette, height, tappable,
+  // Flat surface + hairline — the no-photo tile treatment. The per-group hashed
+  // colour system this replaced is retired (see 00-CONTEXT.md, "Group photos").
+  const GroupTile = ({
+    name, cadence, height, tappable,
   }: {
-    name: string; cadence: string; palette: typeof palettes[0]; height: number; tappable?: boolean;
+    name: string; cadence: string; height: number; tappable?: boolean;
   }) => {
     const content = (
       <View style={{
-        backgroundColor: palette.bg, borderRadius: 10, padding: 8,
-        height, justifyContent: 'space-between',
+        backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline,
+        borderRadius: 10, padding: 8, height, justifyContent: 'space-between',
       }}>
         <View style={{
-          alignSelf: 'flex-start', backgroundColor: 'rgba(0,0,0,0.10)',
+          alignSelf: 'flex-start', backgroundColor: colors.background,
           paddingHorizontal: 7, paddingVertical: 2, borderRadius: 999,
         }}>
-          <Text style={{ fontSize: 9, fontFamily: 'Roboto_700Bold', color: palette.text }}>{cadence}</Text>
+          <Text style={{ fontSize: 9, fontFamily: 'Geist_600SemiBold', color: colors.textSecondary }}>{cadence}</Text>
         </View>
-        <Text style={{ fontSize: 12, fontFamily: 'Roboto_700Bold', color: palette.text, lineHeight: 15 }}>{name}</Text>
+        <Text style={{ fontSize: 12, fontFamily: 'Geist_600SemiBold', color: colors.text, lineHeight: 15 }}>{name}</Text>
       </View>
     );
     if (tappable) {
@@ -166,13 +167,13 @@ export default function TutorialDemo({ kind, onTap }: Props) {
         alignItems: 'center', justifyContent: 'center',
       }}>
         <Text style={{
-          fontSize: 12, fontFamily: 'Roboto_700Bold',
-          color: isOwner ? '#fff' : colors.primary,
+          fontSize: 12, fontFamily: 'Geist_600SemiBold',
+          color: isOwner ? colors.textOnPrimary : colors.primary,
         }}>
           {username.charAt(0).toUpperCase()}
         </Text>
       </View>
-      <Text style={{ flex: 1, fontSize: 12, fontFamily: 'Roboto_500Medium', color: colors.text }}>
+      <Text style={{ flex: 1, fontSize: 12, fontFamily: 'Geist_500Medium', color: colors.text }}>
         {username}
       </Text>
       {isOwner && (
@@ -182,7 +183,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
               backgroundColor: colors.primaryLighter, paddingHorizontal: 8,
               paddingVertical: 2, borderRadius: 999,
             }}>
-              <Text style={{ fontSize: 9, fontFamily: 'Roboto_700Bold', color: colors.primary }}>Owner</Text>
+              <Text style={{ fontSize: 9, fontFamily: 'Geist_600SemiBold', color: colors.primary }}>Owner</Text>
             </View>
           </Pulsing>
         ) : (
@@ -190,7 +191,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
             backgroundColor: colors.primaryLighter, paddingHorizontal: 8,
             paddingVertical: 2, borderRadius: 999,
           }}>
-            <Text style={{ fontSize: 9, fontFamily: 'Roboto_700Bold', color: colors.primary }}>Owner</Text>
+            <Text style={{ fontSize: 9, fontFamily: 'Geist_600SemiBold', color: colors.primary }}>Owner</Text>
           </View>
         )
       )}
@@ -202,9 +203,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
   if (kind === 'welcome') {
     return (
       <View style={{ alignItems: 'center', gap: 10, paddingVertical: 8 }}>
-        <Text style={{ fontFamily: 'Chango_400Regular', fontSize: 46, color: colors.text, lineHeight: 50 }}>
-          orbit
-        </Text>
+        <Display size={41} leading={1.22} color={colors.text}>orbit</Display>
         <View style={{ width: 130, height: 90, alignItems: 'center', justifyContent: 'center' }}>
           {[130, 84, 42].map((size, i) => (
             <View key={i} style={{
@@ -225,7 +224,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
           <View style={{ width: 14, height: 14, borderRadius: 7, backgroundColor: colors.primary }} />
         </View>
         <Text style={{
-          fontFamily: 'RobotoMono_500Medium', fontSize: 10, color: colors.textTertiary,
+          fontFamily: 'GeistMono_500Medium', fontSize: 10, color: colors.textTertiary,
           textTransform: 'uppercase', letterSpacing: 0.6,
         }}>
           video calls that just happen
@@ -242,10 +241,10 @@ export default function TutorialDemo({ kind, onTap }: Props) {
         <FilterRow activeTab="All" />
         <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', gap: 4 }}>
           <Ionicons name="ellipse-outline" size={28} color={colors.textTertiary} />
-          <Text style={{ fontSize: 13, fontFamily: 'Roboto_700Bold', color: colors.textSecondary }}>
+          <Text style={{ fontSize: 13, fontFamily: 'Geist_600SemiBold', color: colors.textSecondary }}>
             No groups yet
           </Text>
-          <Text style={{ fontSize: 11, fontFamily: 'Roboto_400Regular', color: colors.textTertiary }}>
+          <Text style={{ fontSize: 11, fontFamily: 'Geist_400Regular', color: colors.textTertiary }}>
             Tap + to create your first group
           </Text>
         </View>
@@ -260,7 +259,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
             backgroundColor: colors.primary,
             alignItems: 'center', justifyContent: 'center',
           }}>
-            <Ionicons name="add" size={24} color="#fff" />
+            <Ionicons name="add" size={24} color={colors.textOnPrimary} />
           </View>
         </Pulsing>
       </View>
@@ -272,7 +271,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
       backgroundColor: colors.surface, borderRadius: 12, padding: 10, marginBottom: 6,
     };
     const labelStyle = {
-      fontSize: 9, fontFamily: 'RobotoMono_500Medium' as const,
+      fontSize: 9, fontFamily: 'GeistMono_500Medium' as const,
       color: colors.textSecondary,
       textTransform: 'uppercase' as const, letterSpacing: 0.5, marginBottom: 6,
     };
@@ -281,7 +280,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
         <View style={cardStyle}>
           <Text style={labelStyle}>Group Name</Text>
           <View style={{ backgroundColor: colors.background, borderRadius: 8, padding: 7 }}>
-            <Text style={{ fontSize: 12, fontFamily: 'Roboto_400Regular', color: colors.text }}>
+            <Text style={{ fontSize: 12, fontFamily: 'Geist_400Regular', color: colors.text }}>
               Saturday Crew
             </Text>
           </View>
@@ -295,7 +294,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
                 backgroundColor: i === 0 ? colors.surface : 'transparent',
               }}>
                 <Text style={{
-                  fontSize: 11, fontFamily: 'Roboto_700Bold',
+                  fontSize: 11, fontFamily: 'Geist_600SemiBold',
                   color: i === 0 ? colors.primary : colors.textSecondary,
                 }}>{opt}</Text>
               </View>
@@ -308,9 +307,9 @@ export default function TutorialDemo({ kind, onTap }: Props) {
             flexDirection: 'row', backgroundColor: colors.background, borderRadius: 8,
             padding: 7, alignItems: 'center', justifyContent: 'space-between',
           }}>
-            <Text style={{ fontSize: 18, fontFamily: 'Roboto_400Regular', color: colors.textSecondary }}>−</Text>
-            <Text style={{ fontSize: 13, fontFamily: 'RobotoMono_700Bold', color: colors.text }}>30 min</Text>
-            <Text style={{ fontSize: 18, fontFamily: 'Roboto_400Regular', color: colors.primary }}>+</Text>
+            <Text style={{ fontSize: 18, fontFamily: 'Geist_400Regular', color: colors.textSecondary }}>−</Text>
+            <Text style={{ fontSize: 13, fontFamily: 'GeistMono_500Medium', color: colors.text }}>30 min</Text>
+            <Text style={{ fontSize: 18, fontFamily: 'Geist_400Regular', color: colors.primary }}>+</Text>
           </View>
         </View>
         <Pulsing onPress={onTap} borderRadius={999}>
@@ -318,7 +317,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
             backgroundColor: colors.primary, borderRadius: 999,
             paddingVertical: 11, alignItems: 'center',
           }}>
-            <Text style={{ fontSize: 13, fontFamily: 'Roboto_700Bold', color: '#fff' }}>Create Group</Text>
+            <Text style={{ fontSize: 13, fontFamily: 'Geist_600SemiBold', color: colors.textOnPrimary }}>Create Group</Text>
           </View>
         </Pulsing>
       </View>
@@ -327,10 +326,10 @@ export default function TutorialDemo({ kind, onTap }: Props) {
 
   if (kind === 'home') {
     const cards = [
-      { name: 'Saturday Crew',   cadence: 'Daily',  p: palettes[0], h: 70, tappable: true },
-      { name: 'Mom + Dad',       cadence: 'Daily',  p: palettes[2], h: 56 },
-      { name: 'College Friends', cadence: '3×/wk', p: palettes[1], h: 76 },
-      { name: 'Book Club',       cadence: 'Weekly', p: palettes[3], h: 62 },
+      { name: 'Saturday Crew',   cadence: 'Daily',  h: 70, tappable: true },
+      { name: 'Mom + Dad',       cadence: 'Daily',  h: 56 },
+      { name: 'College Friends', cadence: '3×/wk', h: 76 },
+      { name: 'Book Club',       cadence: 'Weekly', h: 62 },
     ];
     const left  = [cards[0], cards[2]];
     const right = [cards[1], cards[3]];
@@ -340,12 +339,12 @@ export default function TutorialDemo({ kind, onTap }: Props) {
         <View style={{ flexDirection: 'row', gap: 6, padding: 8 }}>
           <View style={{ flex: 1, gap: 6 }}>
             {left.map((c, i) => (
-              <BentoCard key={i} name={c.name} cadence={c.cadence} palette={c.p} height={c.h} tappable={c.tappable} />
+              <GroupTile key={i} name={c.name} cadence={c.cadence} height={c.h} tappable={c.tappable} />
             ))}
           </View>
           <View style={{ flex: 1, gap: 6 }}>
             {right.map((c, i) => (
-              <BentoCard key={i} name={c.name} cadence={c.cadence} palette={c.p} height={c.h} />
+              <GroupTile key={i} name={c.name} cadence={c.cadence} height={c.h} />
             ))}
           </View>
         </View>
@@ -361,7 +360,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
           padding: 12,
           borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
         }}>
-          <Text style={{ fontSize: 13, fontFamily: 'Roboto_700Bold', color: colors.text }}>
+          <Text style={{ fontSize: 13, fontFamily: 'Geist_600SemiBold', color: colors.text }}>
             Members{' '}
             <Text style={{ color: colors.textTertiary }}>3</Text>
           </Text>
@@ -370,7 +369,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
               backgroundColor: colors.primaryLight, paddingHorizontal: 10,
               paddingVertical: 3, borderRadius: 999,
             }}>
-              <Text style={{ fontSize: 11, fontFamily: 'Roboto_700Bold', color: colors.primary }}>
+              <Text style={{ fontSize: 11, fontFamily: 'Geist_600SemiBold', color: colors.primary }}>
                 + Invite
               </Text>
             </View>
@@ -384,7 +383,6 @@ export default function TutorialDemo({ kind, onTap }: Props) {
   }
 
   if (kind === 'invited') {
-    const inv = palettes[3];
     return (
       <View>
         <View style={{ flexDirection: 'row', gap: 5, paddingBottom: 10 }}>
@@ -394,38 +392,38 @@ export default function TutorialDemo({ kind, onTap }: Props) {
           <FilterPill label="Invited" badge="1" onPress={onTap} />
         </View>
         <View style={{
-          backgroundColor: inv.bg + 'AA',
-          borderWidth: 1.5, borderColor: inv.text + '55',
+          backgroundColor: colors.surface,
+          borderWidth: 1, borderColor: colors.hairline,
           borderRadius: 12, padding: 12,
         }}>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginBottom: 10 }}>
             {['Weekly', 'Pending'].map(label => (
               <View key={label} style={{
-                backgroundColor: 'rgba(0,0,0,0.08)', paddingHorizontal: 8,
+                backgroundColor: colors.background, paddingHorizontal: 8,
                 paddingVertical: 2, borderRadius: 999,
               }}>
-                <Text style={{ fontSize: 9, fontFamily: 'Roboto_700Bold', color: inv.text }}>{label}</Text>
+                <Text style={{ fontSize: 9, fontFamily: 'Geist_600SemiBold', color: colors.textSecondary }}>{label}</Text>
               </View>
             ))}
           </View>
-          <Text style={{ fontSize: 14, fontFamily: 'Roboto_700Bold', color: inv.text, marginBottom: 4 }}>
+          <Text style={{ fontSize: 14, fontFamily: 'Geist_600SemiBold', color: colors.text, marginBottom: 4 }}>
             Book Club
           </Text>
-          <Text style={{ fontSize: 10, fontFamily: 'Roboto_400Regular', color: inv.text, opacity: 0.6, marginBottom: 10 }}>
+          <Text style={{ fontSize: 10, fontFamily: 'Geist_400Regular', color: colors.textTertiary, marginBottom: 10 }}>
             3 members
           </Text>
           <View style={{ flexDirection: 'row', gap: 6 }}>
             <View style={{
-              flex: 1, backgroundColor: inv.text, paddingVertical: 6,
+              flex: 1, backgroundColor: colors.accent, paddingVertical: 6,
               borderRadius: 999, alignItems: 'center',
             }}>
-              <Text style={{ fontSize: 11, fontFamily: 'Roboto_700Bold', color: '#fff' }}>Accept</Text>
+              <Text style={{ fontSize: 11, fontFamily: 'Geist_600SemiBold', color: colors.onAccent }}>Accept</Text>
             </View>
             <View style={{
               paddingHorizontal: 14, paddingVertical: 6, borderRadius: 999,
-              borderWidth: 1, borderColor: inv.text + '44',
+              borderWidth: 1, borderColor: colors.hairline,
             }}>
-              <Text style={{ fontSize: 11, fontFamily: 'Roboto_700Bold', color: inv.text }}>Decline</Text>
+              <Text style={{ fontSize: 11, fontFamily: 'Geist_600SemiBold', color: colors.textSecondary }}>Decline</Text>
             </View>
           </View>
         </View>
@@ -445,17 +443,17 @@ export default function TutorialDemo({ kind, onTap }: Props) {
             width: 38, height: 38, borderRadius: 10,
             backgroundColor: colors.primary, alignItems: 'center', justifyContent: 'center',
           }}>
-            <Ionicons name="call" size={18} color="#fff" />
+            <Ionicons name="call" size={18} color={colors.textOnPrimary} />
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={{ fontSize: 12, fontFamily: 'Roboto_700Bold', color: colors.text, marginBottom: 2 }}>
+            <Text style={{ fontSize: 12, fontFamily: 'Geist_600SemiBold', color: colors.text, marginBottom: 2 }}>
               orbit
             </Text>
-            <Text style={{ fontSize: 11, fontFamily: 'Roboto_400Regular', color: colors.textSecondary }}>
+            <Text style={{ fontSize: 11, fontFamily: 'Geist_400Regular', color: colors.textSecondary }}>
               Saturday Crew is calling — drop in?
             </Text>
           </View>
-          <Text style={{ fontSize: 9, fontFamily: 'RobotoMono_500Medium', color: colors.textTertiary }}>
+          <Text style={{ fontSize: 9, fontFamily: 'GeistMono_500Medium', color: colors.textTertiary }}>
             now
           </Text>
         </View>
@@ -474,10 +472,10 @@ export default function TutorialDemo({ kind, onTap }: Props) {
             width: 38, height: 38, borderRadius: 10, backgroundColor: colors.primary,
             alignItems: 'center', justifyContent: 'center',
           }}>
-            <Text style={{ fontSize: 16, fontFamily: 'Roboto_700Bold', color: '#fff' }}>S</Text>
+            <Text style={{ fontSize: 16, fontFamily: 'Geist_600SemiBold', color: colors.textOnPrimary }}>S</Text>
           </View>
           <View>
-            <Text style={{ fontSize: 14, fontFamily: 'Roboto_700Bold', color: colors.text, marginBottom: 4 }}>
+            <Text style={{ fontSize: 14, fontFamily: 'Geist_600SemiBold', color: colors.text, marginBottom: 4 }}>
               Saturday Crew
             </Text>
             <View style={{ flexDirection: 'row', gap: 5 }}>
@@ -486,7 +484,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
                   backgroundColor: colors.primaryLighter, paddingHorizontal: 7,
                   paddingVertical: 1, borderRadius: 999,
                 }}>
-                  <Text style={{ fontSize: 9, fontFamily: 'Roboto_700Bold', color: colors.primary }}>{label}</Text>
+                  <Text style={{ fontSize: 9, fontFamily: 'Geist_600SemiBold', color: colors.primary }}>{label}</Text>
                 </View>
               ))}
             </View>
@@ -497,8 +495,8 @@ export default function TutorialDemo({ kind, onTap }: Props) {
             backgroundColor: colors.primary, borderRadius: 12, paddingVertical: 14,
             flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
           }}>
-            <Ionicons name="call" size={16} color="#fff" />
-            <Text style={{ fontSize: 14, fontFamily: 'Roboto_700Bold', color: '#fff' }}>Start Call Now</Text>
+            <Ionicons name="call" size={16} color={colors.textOnPrimary} />
+            <Text style={{ fontSize: 14, fontFamily: 'Geist_600SemiBold', color: colors.textOnPrimary }}>Start Call Now</Text>
           </View>
         </Pulsing>
       </View>
@@ -513,7 +511,7 @@ export default function TutorialDemo({ kind, onTap }: Props) {
           borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border,
         }}>
           <Text style={{
-            fontSize: 11, fontFamily: 'RobotoMono_500Medium', color: colors.textTertiary,
+            fontSize: 11, fontFamily: 'GeistMono_500Medium', color: colors.textTertiary,
             textTransform: 'uppercase', letterSpacing: 0.5,
           }}>
             Members

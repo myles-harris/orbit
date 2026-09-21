@@ -21,6 +21,14 @@ export type GroupDTO = {
   daily_frequency?: number | null;
   weekly_frequency?: number | null;
   call_duration_minutes: number;
+  // Whole hours, 0–23, in `time_zone` — the group's own zone, not the viewer's.
+  call_window_start: number;
+  call_window_end: number;
+  time_zone: string;
+  // Derived from `photo_updated_at`, as `has_avatar` is on `UserDTO`. The image itself is
+  // `GET /groups/:id/photo?v=<photo_updated_at in ms>`, never part of a group payload.
+  has_photo: boolean;
+  photo_updated_at: string | null;
   is_muted?: boolean;
   member_count: number;
   members: GroupMember[];
@@ -28,6 +36,17 @@ export type GroupDTO = {
   last_call?: { id: string; ended_at: string } | null;
   created_at: string;
 };
+
+/** What `GET /groups/:id` sends for each member — more than the list endpoint's `GroupMember`. */
+export type GroupMemberDetail = GroupMember & {
+  username: string;
+  time_zone: string;
+  has_avatar: boolean;
+  avatar_updated_at: string | null;
+};
+
+/** `GET /groups/:id`: the group, with each member's profile fields. Members only. */
+export type GroupDetailDTO = Omit<GroupDTO, 'members'> & { members: GroupMemberDetail[] };
 
 export type CallSessionDTO = {
   id: string;

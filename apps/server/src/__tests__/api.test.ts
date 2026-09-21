@@ -628,6 +628,107 @@ describe('Me endpoints', () => {
     });
   });
 
+  describe('GET /me/calls/active', () => {
+    it('returns 401 without auth', async () => {
+      const res = await request(app).get('/me/calls/active');
+      expect(res.status).toBe(401);
+    });
+
+    it('returns empty callIds and calls when nothing is live', async () => {
+      const { token } = await createTestUserWithToken();
+      await createGroup(token);
+
+      const res = await request(app).get('/me/calls/active').set('Authorization', `Bearer ${token}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ callIds: [], calls: [] });
+    });
+
+    // T14
+    it("returns only the caller's groups' active calls, under both callIds and calls", async () => {
+      const { token: tokenA } = await createTestUserWithToken();
+      const { token: tokenB } = await createTestUserWithToken();
+      const groupA = await createGroup(tokenA, { name: 'A' });
+      const groupB = await createGroup(tokenB, { name: 'B' });
+      const callA = await createActiveCall(groupA.id);
+      await createActiveCall(groupB.id);
+      // Not live: a call still scheduled, and one that has ended.
+      await createScheduledCallRecord(groupA.id, new Date(Date.now() + 3_600_000));
+      await prisma.callSession.create({
+        data: { group_id: groupA.id, status: 'ended', call_type: 'spontaneous', started_at: new Date(), ended_at: new Date() },
+      });
+
+      const res = await request(app).get('/me/calls/active').set('Authorization', `Bearer ${tokenA}`);
+
+      expect(res.status).toBe(200);
+      expect(res.body.callIds).toEqual([callA.id]);
+      expect(res.body.calls).toHaveLength(1);
+      expect(res.body.calls[0].id).toBe(callA.id);
+      expect(res.body.calls[0].group_id).toBe(groupA.id);
+    });
+
+    // T14b — the contract the live card and the spotlight branch on
+    it('reports a scheduled call with call_type scheduled and a non-null ends_at', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const startedAt = new Date(Date.now() - 60_000);
+      const endsAt = new Date(Date.now() + 9 * 60_000);
+      const call = await prisma.callSession.create({
+        data: {
+          group_id: group.id,
+          status: 'active',
+          call_type: 'scheduled',
+          scheduled_at: startedAt,
+          started_at: startedAt,
+          ends_at: endsAt,
+          room_name: `scheduled-live-${group.id}`,
+        },
+      });
+
+      const res = await request(app).get('/me/calls/active').set('Authorization', `Bearer ${token}`);
+
+      expect(res.body.calls).toEqual([{
+        id: call.id,
+        group_id: group.id,
+        call_type: 'scheduled',
+        started_at: startedAt.toISOString(),
+        ends_at: endsAt.toISOString(),
+        participant_count: 0,
+      }]);
+    });
+
+    it('reports a spontaneous call with ends_at null — present as null, not absent or empty', async () => {
+      const { token } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      await createActiveCall(group.id);
+
+      const res = await request(app).get('/me/calls/active').set('Authorization', `Bearer ${token}`);
+
+      const [call] = res.body.calls;
+      expect(call.call_type).toBe('spontaneous');
+      expect(Object.keys(call)).toContain('ends_at');
+      expect(call.ends_at).toBeNull();
+      expect(typeof call.started_at).toBe('string');
+      expect(Number.isNaN(Date.parse(call.started_at))).toBe(false);
+      expect(Object.keys(call).sort()).toEqual(
+        ['call_type', 'ends_at', 'group_id', 'id', 'participant_count', 'started_at'],
+      );
+    });
+
+    it('counts only the participants still in the call', async () => {
+      const { user: host, token } = await createTestUserWithToken();
+      const { user: guest } = await createTestUserWithToken();
+      const group = await createGroup(token);
+      const call = await createActiveCall(group.id);
+      await prisma.callParticipant.create({ data: { call_id: call.id, user_id: host.id } });
+      await prisma.callParticipant.create({ data: { call_id: call.id, user_id: guest.id, left_at: new Date() } });
+
+      const res = await request(app).get('/me/calls/active').set('Authorization', `Bearer ${token}`);
+
+      expect(res.body.calls[0].participant_count).toBe(1);
+    });
+  });
+
   describe('GET /me/invitations', () => {
     it('returns empty list when no pending invitations', async () => {
       const { token } = await createTestUserWithToken();

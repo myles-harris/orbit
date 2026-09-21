@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { View, Text, Image } from 'react-native';
 import { API_URL, getAccessToken, peekAccessToken } from '../utils/apiClient';
 import { radius } from '../theme';
+import { Display } from './Display';
 
 interface Props {
   userId: string;
@@ -9,7 +10,6 @@ interface Props {
   hasAvatar: boolean;
   size: number;
   colors: any;
-  isOwner?: boolean;
   /** ISO timestamp from the API. Versions the URL so it can be cached indefinitely. */
   avatarUpdatedAt?: string | null;
   /** Local file URI shown instead of the remote avatar (optimistic preview after upload). */
@@ -18,16 +18,17 @@ interface Props {
 
 export function UserAvatar({
   userId, username, hasAvatar, size, colors,
-  isOwner = false, avatarUpdatedAt = null, previewUri = null,
+  avatarUpdatedAt = null, previewUri = null,
 }: Props) {
   // Seeded synchronously from the in-memory cache so rows render the photo on the
   // first paint instead of flashing initials while the keychain read resolves.
   const [token, setToken] = useState<string | null>(() => peekAccessToken());
   const [loadFailed, setLoadFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
-  const borderRadius = size >= 60 ? radius.xl : radius.md;
-  const bgColor = isOwner ? colors.primary : colors.primaryLight;
-  const textColor = isOwner ? '#fff' : colors.primary;
+  const large = size >= 60;
+  const borderRadius = large ? radius.full : radius.xl;
+  const bgColor = colors.surface;
+  const textColor = colors.textMeta;
   const fontSize = Math.round(size * 0.4);
   const dimensions = { width: size, height: size, borderRadius };
 
@@ -77,8 +78,23 @@ export function UserAvatar({
 
   const initial = username.trim().charAt(0).toUpperCase();
   return (
-    <View style={{ ...dimensions, backgroundColor: bgColor, justifyContent: 'center', alignItems: 'center' }}>
-      <Text style={{ fontSize, fontWeight: '700', color: textColor }}>{initial}</Text>
+    <View
+      style={{
+        ...dimensions,
+        backgroundColor: bgColor,
+        borderWidth: 1,
+        borderColor: colors.borderStrong,
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
+    >
+      {large ? (
+        // The design draws the Account avatar's initial in the display face (26 on the
+        // 68pt avatar) and every small one in the sans.
+        <Display size={Math.round(size * 0.38)} color={textColor}>{initial}</Display>
+      ) : (
+        <Text style={{ fontSize, fontWeight: '700', color: textColor }}>{initial}</Text>
+      )}
     </View>
   );
 }

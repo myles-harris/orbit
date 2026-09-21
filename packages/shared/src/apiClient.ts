@@ -166,6 +166,14 @@ export class ApiClient {
     return `${this.baseUrl}/users/${userId}/avatar`;
   }
 
+  async uploadGroupPhoto(groupId: string, data: string, mimeType: string): Promise<{ ok: boolean; photo_updated_at: string }> {
+    return this.request<{ ok: boolean; photo_updated_at: string }>('PUT', `/groups/${groupId}/photo`, { data, mime_type: mimeType });
+  }
+
+  async deleteGroupPhoto(groupId: string): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>('DELETE', `/groups/${groupId}/photo`);
+  }
+
   async getMyInvitations(): Promise<{
     invitations: Array<{
       id: string;

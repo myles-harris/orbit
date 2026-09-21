@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { AppState, Platform } from 'react-native';
 import { CallLiveActivity, addPushToStartTokenListener, addActivityPushTokenListener } from './modules/call-live-activity';
 import CallNotification from './modules/call-notification';
@@ -8,19 +8,18 @@ import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Localization from 'expo-localization';
 import * as Notifications from 'expo-notifications';
-import { Asset } from 'expo-asset';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { useFonts, Cinzel_700Bold } from '@expo-google-fonts/cinzel';
 import {
-  useFonts,
-  Roboto_400Regular,
-  Roboto_500Medium,
-  Roboto_700Bold,
-} from '@expo-google-fonts/roboto';
+  Geist_400Regular,
+  Geist_500Medium,
+  Geist_600SemiBold,
+} from '@expo-google-fonts/geist';
+import { GeistMono_500Medium } from '@expo-google-fonts/geist-mono';
 import {
-  RobotoMono_400Regular,
-  RobotoMono_500Medium,
-  RobotoMono_700Bold,
-} from '@expo-google-fonts/roboto-mono';
-import { Chango_400Regular } from '@expo-google-fonts/chango';
+  Gelasio_400Regular,
+  Gelasio_400Regular_Italic,
+} from '@expo-google-fonts/gelasio';
 import AppNavigator from './src/navigation/AppNavigator';
 import { ApiClient } from '@orbit/shared';
 import type { UserDTO } from '@orbit/shared';
@@ -98,7 +97,7 @@ function AppContent() {
   // tone and the user's mute preference are lost. Sync from cached prefs first so an
   // offline launch still lands on the right channel, then reconcile with the server.
   // syncCallChannel serializes concurrent callers internally (this fires from two different
-  // effects below plus SettingsScreen's manual toggles), so overlapping invocations here are
+  // effects below plus AccountScreen's manual toggles), so overlapping invocations here are
   // safe — they queue rather than racing each other's channel create/delete.
   const syncCallChannelFromServer = useCallback(async () => {
     if (Platform.OS !== 'android') return;
@@ -444,35 +443,30 @@ function AppContent() {
 
 export default function App() {
   const [fontsLoaded] = useFonts({
-    Roboto_400Regular,
-    Roboto_500Medium,
-    Roboto_700Bold,
-    RobotoMono_400Regular,
-    RobotoMono_500Medium,
-    RobotoMono_700Bold,
-    Chango_400Regular,
+    Cinzel_700Bold,
+    Geist_400Regular,
+    Geist_500Medium,
+    Geist_600SemiBold,
+    GeistMono_500Medium,
+    Gelasio_400Regular,
+    Gelasio_400Regular_Italic,
   });
 
-  const [assetsLoaded, setAssetsLoaded] = useState(false);
-  useEffect(() => {
-    Asset.loadAsync([require('./assets/background-gradient-4.jpeg')])
-      .then(() => setAssetsLoaded(true))
-      .catch(() => setAssetsLoaded(true)); // don't block on failure
-  }, []);
-
-  if (!fontsLoaded || !assetsLoaded) {
+  if (!fontsLoaded) {
     return null;
   }
 
   return (
     <ErrorBoundary>
-      <ThemeProvider>
-        <AuthProvider>
-          <TutorialProvider>
-            <AppContent />
-          </TutorialProvider>
-        </AuthProvider>
-      </ThemeProvider>
+      <SafeAreaProvider>
+        <ThemeProvider>
+          <AuthProvider>
+            <TutorialProvider>
+              <AppContent />
+            </TutorialProvider>
+          </AuthProvider>
+        </ThemeProvider>
+      </SafeAreaProvider>
     </ErrorBoundary>
   );
 }

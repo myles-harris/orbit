@@ -1,8 +1,9 @@
 import { useRef, useEffect, useCallback, useMemo } from 'react';
 import { View, Text, Pressable, StyleSheet } from 'react-native';
 import * as Haptics from 'expo-haptics';
-import { spacing, radius } from '../theme';
+import { layout } from '../theme';
 import { useTheme } from '../context/ThemeContext';
+import { Icon } from './Icon';
 
 const INITIAL_DELAY = 400;
 const MIN_DELAY = 60;
@@ -17,13 +18,17 @@ interface NumberPickerProps {
   onChange: (value: number) => void;
   suffix?: string;
   formatValue?: (v: number) => string;
+  /** The duration's "10 min" needs a wider readout than an hour or a count does. */
+  wide?: boolean;
+  /** What this stepper sets — the visible label sits in a sibling Text, so a screen reader would otherwise hear only "6 AM, adjustable". */
+  accessibilityLabel?: string;
 }
 
 export default function NumberPicker({
-  min, max, value, onChange, suffix, formatValue,
+  min, max, value, onChange, suffix, formatValue, wide, accessibilityLabel,
 }: NumberPickerProps) {
   const { theme: { colors } } = useTheme();
-  const styles = useMemo(() => makeStyles(colors), [colors]);
+  const styles = useMemo(() => makeStyles(colors, !!wide), [colors, wide]);
 
   // Live prop mirrors — let every callback keep empty dep arrays, so the repeat
   // loop can never capture a stale bound or onChange. Callers can pass inline
@@ -88,6 +93,7 @@ export default function NumberPicker({
       style={styles.container}
       accessible
       accessibilityRole="adjustable"
+      accessibilityLabel={accessibilityLabel}
       accessibilityValue={{ text: label }}
       accessibilityActions={[{ name: 'increment' }, { name: 'decrement' }]}
       onAccessibilityAction={(e) => {
@@ -99,46 +105,54 @@ export default function NumberPicker({
         onPressIn={() => start(-1)}
         onPressOut={stop}
         disabled={atMin}
-        style={styles.button}
+        style={[styles.button, atMin && styles.buttonDisabled]}
         importantForAccessibility="no-hide-descendants"
       >
-        <Text style={[styles.symbol, atMin && styles.symbolDisabled]}>−</Text>
+        <Icon name="minus" size={18} color={colors.text} />
       </Pressable>
 
-      <Text style={styles.value}>{label}</Text>
+      <View style={styles.readout}>
+        <Text style={styles.value}>{label}</Text>
+      </View>
 
       <Pressable
         onPressIn={() => start(1)}
         onPressOut={stop}
         disabled={atMax}
-        style={styles.button}
+        style={[styles.button, atMax && styles.buttonDisabled]}
         importantForAccessibility="no-hide-descendants"
       >
-        <Text style={[styles.symbolAdd, atMax && styles.symbolDisabled]}>+</Text>
+        <Icon name="plus" size={18} color={colors.text} />
       </Pressable>
     </View>
   );
 }
 
-function makeStyles(colors: any) {
+// The design's stepper: a 44pt − and + around a readout that carries a hairline
+// above and below it. The readout is a minWidth, so "10 PM" grows it rather than clipping.
+const READOUT_WIDTH = 46;
+const READOUT_WIDTH_WIDE = 72;
+
+function makeStyles(colors: ReturnType<typeof useTheme>['theme']['colors'], wide: boolean) {
   return StyleSheet.create({
     container: {
       flexDirection: 'row',
       alignItems: 'center',
-      justifyContent: 'space-between',
-      backgroundColor: colors.background,
-      borderRadius: radius.md,
-      paddingHorizontal: spacing.xs,
-      height: 48,
     },
-    button: { width: 48, height: 48, justifyContent: 'center', alignItems: 'center' },
-    symbol: { fontSize: 22, lineHeight: 26, color: colors.textSecondary },
-    symbolAdd: { fontSize: 22, lineHeight: 26, color: colors.primary },
-    symbolDisabled: { opacity: 0.3 },
+    button: { width: layout.touchMin, height: layout.touchMin, justifyContent: 'center', alignItems: 'center' },
+    buttonDisabled: { opacity: 0.3 },
+    readout: {
+      minWidth: wide ? READOUT_WIDTH_WIDE : READOUT_WIDTH,
+      height: layout.touchMin,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderTopWidth: StyleSheet.hairlineWidth,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderColor: colors.hairline,
+    },
     value: {
-      flex: 1,
       textAlign: 'center',
-      fontFamily: 'RobotoMono_500Medium',
+      fontFamily: 'GeistMono_500Medium',
       fontSize: 16,
       color: colors.text,
     },

@@ -1,8 +1,5 @@
-import { StyleSheet } from 'react-native';
 import { NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator, TransitionPresets } from '@react-navigation/stack';
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
-import { Ionicons } from '@expo/vector-icons';
 import { navigationRef } from './navigationRef';
 import { useTheme } from '../context/ThemeContext';
 
@@ -12,83 +9,26 @@ import HomeScreen from '../screens/HomeScreen';
 import GroupDetailScreen from '../screens/GroupDetailScreen';
 import CreateGroupScreen from '../screens/CreateGroupScreen';
 import CallScreen from '../screens/CallScreen';
-import SettingsScreen from '../screens/SettingsScreen';
+import AccountScreen from '../screens/AccountScreen';
 import InviteUserScreen from '../screens/InviteUserScreen';
-import InvitationsScreen from '../screens/InvitationsScreen';
 import GroupSettingsScreen from '../screens/GroupSettingsScreen';
 import JoinInviteScreen from '../screens/JoinInviteScreen';
 
 export type RootStackParamList = {
   Auth: undefined;
-  Main: undefined;
+  Home: undefined;
+  Account: undefined;
   GroupDetail: { groupId: string };
   CreateGroup: undefined;
   Call: { callId: string; groupId: string; roomUrl: string; token: string; endsAt?: string };
   InviteUser: { groupId: string };
-  Invitations: undefined;
   GroupSettings: { groupId: string; isOwner: boolean };
   // Optional: the screen can mount without params if the navigator falls back to
   // it, or a malformed orbit://invite/ link is opened.
   JoinInvite: { code: string } | undefined;
 };
 
-export type MainTabParamList = {
-  Home: undefined;
-  Settings: undefined;
-};
-
 const Stack = createStackNavigator<RootStackParamList>();
-const Tab = createBottomTabNavigator<MainTabParamList>();
-
-function TabIcon({ name, focused }: { name: string; focused: boolean }) {
-  const { theme: { colors } } = useTheme();
-  const color = focused ? colors.tabActive : colors.tabInactive;
-  if (name === 'Home') return <Ionicons name={focused ? 'people' : 'people-outline'} size={22} color={color} />;
-  if (name === 'Settings') return <Ionicons name={focused ? 'person-circle' : 'person-circle-outline'} size={22} color={color} />;
-  return null;
-}
-
-function MainTabs() {
-  const { theme: { colors, typography } } = useTheme();
-
-  return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
-        tabBarIcon: ({ focused }) => <TabIcon name={route.name} focused={focused} />,
-        tabBarActiveTintColor: colors.tabActive,
-        tabBarInactiveTintColor: colors.tabInactive,
-        tabBarStyle: {
-          backgroundColor: colors.surface,
-          borderTopColor: colors.border,
-          borderTopWidth: StyleSheet.hairlineWidth,
-          height: 84,
-          paddingBottom: 24,
-          paddingTop: 8,
-        },
-        tabBarLabelStyle: {
-          fontSize: 9,
-          fontWeight: '500',
-          letterSpacing: 1.2,
-          textTransform: 'uppercase',
-        },
-        headerStyle: { backgroundColor: colors.surface, borderBottomColor: colors.border },
-        headerTitleStyle: { ...typography.h4 },
-        headerShadowVisible: false,
-      })}
-    >
-      <Tab.Screen
-        name="Home"
-        component={HomeScreen}
-        options={{ title: 'Groups', tabBarLabel: 'Groups' }}
-      />
-      <Tab.Screen
-        name="Settings"
-        component={SettingsScreen}
-        options={{ title: 'Profile', tabBarLabel: 'Profile', headerShown: false }}
-      />
-    </Tab.Navigator>
-  );
-}
 
 const linking = {
   prefixes: ['orbit://'],
@@ -115,23 +55,19 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
     <NavigationContainer ref={navigationRef} linking={linking}>
       <Stack.Navigator
         screenOptions={{ headerShown: false }}
-        initialRouteName={isAuthenticated ? 'Main' : 'Auth'}
+        initialRouteName={isAuthenticated ? 'Home' : 'Auth'}
       >
         {!isAuthenticated ? (
           <Stack.Screen name="Auth" component={AuthScreen} />
         ) : (
           <>
-            <Stack.Screen name="Main" component={MainTabs} />
-            <Stack.Screen
-              name="GroupDetail"
-              component={GroupDetailScreen}
-              options={{ headerShown: true, title: 'Group', ...sharedHeaderOptions }}
-            />
-            <Stack.Screen
-              name="CreateGroup"
-              component={CreateGroupScreen}
-              options={{ headerShown: true, title: 'New Group', ...sharedHeaderOptions }}
-            />
+            <Stack.Screen name="Home" component={HomeScreen} />
+            {/* Pushed from the header avatar — no tab bar, no tab-navigator wrapper. */}
+            <Stack.Screen name="Account" component={AccountScreen} />
+            {/* The three group screens draw their own back chevron and title, so they
+                take the stack's `headerShown: false`. */}
+            <Stack.Screen name="GroupDetail" component={GroupDetailScreen} />
+            <Stack.Screen name="CreateGroup" component={CreateGroupScreen} />
             <Stack.Screen
               name="Call"
               component={CallScreen}
@@ -155,16 +91,7 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
               component={InviteUserScreen}
               options={{ headerShown: true, title: 'Add Member', ...sharedHeaderOptions }}
             />
-            <Stack.Screen
-              name="Invitations"
-              component={InvitationsScreen}
-              options={{ headerShown: true, title: 'Invitations', ...sharedHeaderOptions }}
-            />
-            <Stack.Screen
-              name="GroupSettings"
-              component={GroupSettingsScreen}
-              options={{ headerShown: true, title: 'Group Settings', ...sharedHeaderOptions }}
-            />
+            <Stack.Screen name="GroupSettings" component={GroupSettingsScreen} />
           </>
         )}
         {/*
