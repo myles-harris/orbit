@@ -32,9 +32,10 @@ type Step = 'phone' | 'verify' | 'username';
 
 // The mockup places the logo at y=112 under a 54pt status bar and the field block
 // at y=330 under a 180pt logo box. Flow layout keeps both gaps and swaps the status
-// bar for the real inset.
+// bar for the real inset. The mark itself is 178.6 tall; it sits at the top of the slot.
 const LOGO_TOP_GAP = 112 - 54;
-const FORM_TOP_GAP = 330 - (112 + 180);
+const LOGO_SLOT = 180;
+const FORM_TOP_GAP = 330 - (112 + LOGO_SLOT);
 const SIDE_PAD = 28;
 const FOOTER_MIN_BOTTOM = 26;
 // The scrim's stops at 0 / 30% / 72% / 100% — expo-linear-gradient takes 0–1.
@@ -129,7 +130,10 @@ export default function AuthScreen() {
     <View style={styles.screen}>
       {/* Always over the sky, regardless of the app's mode — see the note above. */}
       <LightStatusBar />
-      <Image source={signInSky} style={StyleSheet.absoluteFill} resizeMode="cover" />
+      {/* The design's whole 9:16 sky, zoomed only as far as it takes to cover the screen and
+          centred: a phone taller than 9:16 loses a little off each side and shows no bands. It
+          is the mockup's `background-size: cover`. */}
+      <Image source={signInSky} style={styles.sky} resizeMode="cover" />
       <LinearGradient
         colors={scrim.signIn}
         locations={SCRIM_LOCATIONS}
@@ -145,7 +149,9 @@ export default function AuthScreen() {
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <OrbitLogo capHeight={161} />
+          <View style={styles.logoSlot}>
+            <OrbitLogo />
+          </View>
 
           <View style={styles.form}>
             {step === 'phone' ? (
@@ -164,7 +170,7 @@ export default function AuthScreen() {
                   <View style={styles.divider} />
                   <TextInput
                     style={[styles.input, styles.value]}
-                    placeholder="(555) 000-0000"
+                    placeholder="(678) 000-0000"
                     placeholderTextColor={onPhoto.field.placeholder}
                     value={number}
                     onChangeText={setNumber}
@@ -252,10 +258,15 @@ export default function AuthScreen() {
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: onPhoto.backdrop },
   flex: { flex: 1 },
+  // React Native lays a bundled image out at its own pixel size unless width and height say
+  // otherwise, and `absoluteFill`'s left/right/top/bottom do not: it left this photo 1170×2080
+  // points big, pinned top left and cut off by the screen, whatever the resizeMode.
+  sky: { position: 'absolute', top: 0, left: 0, width: '100%', height: '100%' },
   content: {
     flexGrow: 1,
     paddingHorizontal: SIDE_PAD,
   },
+  logoSlot: { height: LOGO_SLOT, alignItems: 'center' },
   form: { marginTop: FORM_TOP_GAP },
   label: {
     fontFamily: 'Geist_500Medium',

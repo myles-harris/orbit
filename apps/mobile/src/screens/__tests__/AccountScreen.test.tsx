@@ -1,5 +1,5 @@
 import { act } from 'react';
-import { Alert, Dimensions, Modal, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, Modal, ScrollView, StyleSheet, View } from 'react-native';
 import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator } from 'expo-image-manipulator';
@@ -14,7 +14,9 @@ import { darkTheme, lightTheme } from '../../theme';
 const mockSetMode = jest.fn();
 const mockLogout = jest.fn();
 const mockShowTutorial = jest.fn();
+const mockGoBack = jest.fn();
 
+jest.mock('@react-navigation/native', () => ({ useNavigation: () => ({ goBack: mockGoBack }) }));
 jest.mock('../../context/ThemeContext', () => ({ useTheme: jest.fn() }));
 jest.mock('../../context/AuthContext', () => ({ useAuth: () => ({ onLogout: mockLogout }) }));
 jest.mock('../../context/TutorialContext', () => ({ useTutorial: () => ({ showTutorial: mockShowTutorial }) }));
@@ -70,10 +72,12 @@ function mockApi(user: Record<string, unknown> = {}) {
   return client;
 }
 
-async function renderAccount(opts: { mode?: Mode; user?: Record<string, unknown> } = {}) {
-  const { mode = 'dark', user } = opts;
+async function renderAccount(opts: { mode?: Mode; user?: Record<string, unknown>; loadFails?: boolean } = {}) {
+  const { mode = 'dark', user, loadFails = false } = opts;
   (useTheme as jest.Mock).mockReturnValue({ theme: THEMES[mode], mode, setMode: mockSetMode });
   const client = mockApi(user);
+  // The screen surfaces only a 401; any other failed load leaves the spinner up.
+  if (loadFails) client.get.mockRejectedValue(new Error('offline'));
   // React Native's jest setup swaps View for a mock class whose measureInWindow is a
   // bare jest.fn() that never calls back, so the menu would never get an anchor.
   // The trigger's wrapper is the only View the screen measures.
@@ -155,6 +159,28 @@ describe('AccountScreen content', () => {
     expect(mockLogout).not.toHaveBeenCalled();
     act(() => { alertButtons().find((b) => b.text === 'Log Out')!.onPress!(); });
     expect(mockLogout).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── The way back to Home ─────────────────────────────────────────────────────
+
+describe('AccountScreen back navigation', () => {
+  it('draws a Back button that returns to the screen underneath, which is Home', async () => {
+    const { tree } = await renderAccount();
+
+    expect(mockGoBack).not.toHaveBeenCalled();
+    press(byLabel(tree, 'Back'));
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the Back button when the profile never loads, so the spinner is not a dead end', async () => {
+    const { tree } = await renderAccount({ loadFails: true });
+
+    expect(tree.root.findByType(ActivityIndicator)).toBeDefined();
+    expect(allText(tree)).toContain('Account');
+    expect(allText(tree)).not.toContain('Log out'); // still the loading state, not the profile
+    press(byLabel(tree, 'Back'));
+    expect(mockGoBack).toHaveBeenCalledTimes(1);
   });
 });
 

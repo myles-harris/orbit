@@ -9,7 +9,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Localization from 'expo-localization';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { useFonts, Cormorant_700Bold_Italic } from '@expo-google-fonts/cormorant';
+import { useFonts, Cinzel_700Bold } from '@expo-google-fonts/cinzel';
 import {
   Geist_400Regular,
   Geist_500Medium,
@@ -443,7 +443,7 @@ function AppContent() {
 
 export default function App() {
   const [fontsLoaded] = useFonts({
-    Cormorant_700Bold_Italic,
+    Cinzel_700Bold,
     Geist_400Regular,
     Geist_500Medium,
     Geist_600SemiBold,

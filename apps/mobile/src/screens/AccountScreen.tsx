@@ -13,11 +13,14 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useNavigation } from '@react-navigation/native';
+import { StackNavigationProp } from '@react-navigation/stack';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator, SaveFormat } from 'expo-image-manipulator';
 import * as IntentLauncher from 'expo-intent-launcher';
 import * as Notifications from 'expo-notifications';
 import { UserDTO, parseApiError } from '@orbit/shared';
+import { RootStackParamList } from '../navigation/AppNavigator';
 import { useAuth } from '../context/AuthContext';
 import { useTutorial } from '../context/TutorialContext';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
@@ -25,15 +28,16 @@ import { layout, radius, spacing, type AppTheme } from '../theme';
 import { useTheme, type ThemeMode } from '../context/ThemeContext';
 import { UserAvatar } from '../components/UserAvatar';
 import { Display } from '../components/Display';
+import { FormHeader } from '../components/FormHeader';
 import { Icon } from '../components/Icon';
 import { SettingRow } from '../components/SettingRow';
 import { syncCallChannel } from '../utils/notificationChannels';
 import { withAlpha } from '../utils/color';
 
-// Vertical rhythm, from the mockup's absolute offsets: the title sits 12pt under
-// the status bar (66 − 54), the avatar row 22pt under the title (116 − (66 + 28)),
-// and each section header 38pt under whatever precedes it.
-const TITLE_TOP_GAP = 66 - 54;
+// Vertical rhythm, from the mockup's absolute offsets: the avatar row sits 22pt under
+// the title (116 − (66 + 28)), and each section header 38pt under whatever precedes it.
+// The mockup draws no way back. FormHeader adds the chevron and, as on the group
+// screens, sets the title beneath it, so the title sits lower than the mockup's y=66.
 const PROFILE_TOP_GAP = 116 - (66 + 28);
 const SECTION_GAP = 38;
 const MENU_GAP = 8;
@@ -46,11 +50,13 @@ const MODE_OPTIONS: { mode: ThemeMode; label: string; icon: 'moon' | 'sun' }[] =
 ];
 
 type Colors = AppTheme['colors'];
+type AccountNavigationProp = StackNavigationProp<RootStackParamList, 'Account'>;
 
 /** The trigger's rectangle in window coordinates, which is where the menu is placed. */
 interface Anchor { x: number; y: number; width: number; height: number }
 
 export default function AccountScreen() {
+  const navigation = useNavigation<AccountNavigationProp>();
   const { onLogout } = useAuth();
   const { showTutorial } = useTutorial();
   const { theme: { colors, shadow }, mode, setMode } = useTheme();
@@ -246,10 +252,17 @@ export default function AccountScreen() {
     closeThemeMenu();
   };
 
+  // Drawn while loading too: a profile that fails to load leaves the spinner up (only a
+  // 401 is surfaced), and the way back must not depend on that request.
+  const header = <FormHeader title="Account" onBack={() => navigation.goBack()} />;
+
   if (!user) {
     return (
-      <View style={styles.loading}>
-        <ActivityIndicator size="large" color={colors.textSecondary} />
+      <View style={styles.screen}>
+        {header}
+        <View style={styles.loading}>
+          <ActivityIndicator size="large" color={colors.textSecondary} />
+        </View>
       </View>
     );
   }
@@ -258,12 +271,8 @@ export default function AccountScreen() {
 
   return (
     <View style={styles.screen}>
-      <ScrollView
-        contentContainerStyle={[styles.content, { paddingTop: insets.top + TITLE_TOP_GAP }]}
-        showsVerticalScrollIndicator={false}
-      >
-        <Text accessibilityRole="header" maxFontSizeMultiplier={1.3} style={styles.title}>Account</Text>
-
+      {header}
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.profile}>
           <TouchableOpacity
             onPress={handleAvatarPress}
@@ -457,16 +466,8 @@ function avatarErrorMessage(error: unknown): string {
 function makeStyles(colors: Colors, shadow: AppTheme['shadow']) {
   return StyleSheet.create({
     screen: { flex: 1, backgroundColor: colors.background },
-    loading: { flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: colors.background },
+    loading: { flex: 1, justifyContent: 'center', alignItems: 'center' },
     content: { paddingHorizontal: layout.screenPad, paddingBottom: spacing.xxl },
-    title: {
-      fontFamily: 'Geist_600SemiBold',
-      fontSize: 22,
-      lineHeight: 28,
-      letterSpacing: -0.22, // −0.01em at 22pt; React Native takes points
-      includeFontPadding: false,
-      color: colors.text,
-    },
     profile: {
       flexDirection: 'row',
       alignItems: 'center',

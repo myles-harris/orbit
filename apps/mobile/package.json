@@ -19,6 +19,7 @@
     "@daily-co/config-plugin-rn-daily-js": "^0.0.11",
     "@daily-co/react-native-daily-js": "^0.83.0",
     "@daily-co/react-native-webrtc": "^124.0.6-daily.1",
+    "@expo-google-fonts/cinzel": "^0.4.2",
     "@expo-google-fonts/cormorant": "^0.4.2",
     "@expo-google-fonts/geist": "^0.4.2",
     "@expo-google-fonts/geist-mono": "^0.4.3",
