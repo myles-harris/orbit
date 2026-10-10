@@ -33,6 +33,7 @@ import { Icon } from '../components/Icon';
 import { SettingRow } from '../components/SettingRow';
 import { syncCallChannel } from '../utils/notificationChannels';
 import { withAlpha } from '../utils/color';
+import { promptDeleteAccount } from '../utils/deleteAccount';
 
 // Vertical rhythm, from the mockup's absolute offsets: the avatar row sits 22pt under
 // the title (116 − (66 + 28)), and each section header 38pt under whatever precedes it.
@@ -57,7 +58,7 @@ interface Anchor { x: number; y: number; width: number; height: number }
 
 export default function AccountScreen() {
   const navigation = useNavigation<AccountNavigationProp>();
-  const { onLogout } = useAuth();
+  const { onLogout, onAccountDeleted } = useAuth();
   const { showTutorial } = useTutorial();
   const { theme: { colors, shadow }, mode, setMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -362,6 +363,18 @@ export default function AccountScreen() {
           <SettingRow label="How it works" variant={{ type: 'chevron' }} onPress={showTutorial} />
         </View>
 
+        {/* Mirrors the owner's Danger zone in Group Settings (GroupSettingsScreen.tsx:354-368). */}
+        <View style={styles.dangerBox}>
+          <Text style={styles.dangerHeading}>Danger zone</Text>
+          <SettingRow
+            label="Delete account"
+            danger
+            last
+            onPress={() => promptDeleteAccount(onAccountDeleted)}
+            variant={{ type: 'control', control: <Icon name="trash" size={20} color={colors.danger} /> }}
+          />
+        </View>
+
         <Text style={styles.version}>Orbit 0.1.0</Text>
       </ScrollView>
 
@@ -524,6 +537,19 @@ function makeStyles(colors: Colors, shadow: AppTheme['shadow']) {
     group: {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.hairline,
+    },
+    dangerBox: {
+      marginTop: SECTION_GAP,
+      borderWidth: 1,
+      borderColor: colors.dangerBorder,
+      borderRadius: radius.xl,
+      paddingHorizontal: 14,
+    },
+    dangerHeading: {
+      fontFamily: 'Geist_600SemiBold',
+      fontSize: 13,
+      color: colors.danger,
+      paddingTop: 14,
     },
     version: {
       marginTop: SECTION_GAP,
