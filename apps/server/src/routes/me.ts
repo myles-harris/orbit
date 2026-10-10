@@ -7,6 +7,7 @@ import { scheduler } from '../services/scheduler.js';
 import { dailyVideo } from '../services/dailyVideo.js';
 import { broadcastCallPresence, sendPresenceToToken } from '../services/callPresence.js';
 import { imageUploadSchema, decodeImageUpload } from '../util/imageUpload.js';
+import { deleteAccount } from '../services/accountDeletion.js';
 
 export const meRouter = Router();
 
@@ -84,6 +85,31 @@ meRouter.patch('/', requireJwt, async (req, res) => {
     res.json(serializeUser(user));
   } catch (error) {
     console.error('[PATCH /me] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+/**
+ * Permanently delete the caller's account. Returns a JSON body, not 204: ApiClient.request
+ * parses every successful response as JSON (packages/shared/src/apiClient.ts:89).
+ */
+meRouter.delete('/', requireJwt, async (req, res) => {
+  const userId = (req as any).userId as string;
+  try {
+    const { transferredGroups, deletedGroups } = await deleteAccount(userId);
+    console.log(`[DELETE /me] Deleted user ${userId}: transferred ${transferredGroups} group(s), deleted ${deletedGroups} group(s)`);
+    res.json({ status: 'deleted' });
+  } catch (error) {
+    // P2025 means a row vanished mid-transaction. If the user is gone, a concurrent
+    // DELETE /me won and this request succeeded too. If the user remains (a successor
+    // left mid-transaction), everything rolled back and the client should retry.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      const remaining = await prisma.user
+        .findUnique({ where: { id: userId }, select: { id: true } })
+        .catch(() => ({ id: userId }));
+      if (!remaining) return res.json({ status: 'deleted' });
+    }
+    console.error('[DELETE /me] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });
