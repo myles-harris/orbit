@@ -1,6 +1,9 @@
 {
   "$schema": "https://unpkg.com/knip@latest/schema.json",
   "workspaces": {
+    "apps/server": {
+      "entry": ["src/index.ts", "src/scripts/*.ts"]
+    },
     "apps/mobile": {
       "ignoreDependencies": [
         "base-64",

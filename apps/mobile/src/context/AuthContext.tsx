@@ -5,12 +5,14 @@ import { setSessionExpiredHandler, clearAccessToken, API_URL, createAuthenticate
 import { clearCachedCallPrefs } from '../utils/notificationChannels';
 import { clearHomeCache } from '../utils/homeCache';
 import { ApiClient } from '@orbit/shared';
+import { CallLiveActivity } from '../../modules/call-live-activity';
 
 interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
   onLogin: () => void;
   onLogout: () => void;
+  onAccountDeleted: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -52,6 +54,22 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setIsAuthenticated(true);
   };
 
+  // The local half of signing out, shared by Log out and account deletion.
+  const clearLocalSession = async () => {
+    clearAccessToken();
+    await Promise.all([
+      SecureStore.deleteItemAsync('access_token').catch(() => {}),
+      SecureStore.deleteItemAsync('refresh_token').catch(() => {}),
+      SecureStore.deleteItemAsync('push_token').catch(() => {}),
+      // Otherwise the next account signed into this device inherits this account's
+      // cached call channel prefs (including a DND-bypass channel) until /me responds.
+      clearCachedCallPrefs(),
+      // Home's offline copy holds this account's group names and is not keyed by user.
+      clearHomeCache(),
+    ]);
+    setIsAuthenticated(false);
+  };
+
   const onLogout = async () => {
     try {
       const [accessToken, pushToken] = await Promise.all([
@@ -65,18 +83,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('Failed to deregister push token:', error);
     }
-    clearAccessToken();
-    await Promise.all([
-      SecureStore.deleteItemAsync('access_token').catch(() => {}),
-      SecureStore.deleteItemAsync('refresh_token').catch(() => {}),
-      SecureStore.deleteItemAsync('push_token').catch(() => {}),
-      // Otherwise the next account signed into this device inherits this account's
-      // cached call channel prefs (including a DND-bypass channel) until /me responds.
-      clearCachedCallPrefs(),
-      // Home's offline copy holds this account's group names and is not keyed by user.
-      clearHomeCache(),
-    ]);
-    setIsAuthenticated(false);
+    await clearLocalSession();
+  };
+
+  // The server has already deleted the account, so this makes no API call: every request
+  // would 401 and raise Session Expired. Setting the flag also silences any request
+  // already in flight. onLogin resets it.
+  const onAccountDeleted = async () => {
+    sessionExpiredShown.current = true;
+    // The user's Live Activity tokens cascaded away on the server, so no remote end push
+    // will reach this device. Null off iOS (modules/call-live-activity/index.ts:20-39).
+    await CallLiveActivity?.endAllActivitiesAsync().catch(() => {});
+    await clearLocalSession();
   };
 
   useEffect(() => {
@@ -92,7 +110,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, onLogin, onLogout }}>
+    <AuthContext.Provider value={{ isAuthenticated, isLoading, onLogin, onLogout, onAccountDeleted }}>
       {children}
     </AuthContext.Provider>
   );
