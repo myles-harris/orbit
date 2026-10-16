@@ -131,6 +131,11 @@ meRouter.post('/accept-terms', requireJwt, async (req, res) => {
     });
     res.json(serializeUser(user));
   } catch (error) {
+    // P2025: the account was deleted (e.g. from another device) between requireJwt's
+    // check and this update — see DELETE /me's identical race above.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      return res.status(404).json({ error: 'not_found' });
+    }
     console.error('[POST /me/accept-terms] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
