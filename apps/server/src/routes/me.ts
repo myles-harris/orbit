@@ -8,6 +8,7 @@ import { dailyVideo } from '../services/dailyVideo.js';
 import { broadcastCallPresence, sendPresenceToToken } from '../services/callPresence.js';
 import { imageUploadSchema, decodeImageUpload } from '../util/imageUpload.js';
 import { deleteAccount } from '../services/accountDeletion.js';
+import { acceptTermsSchema } from '../util/acceptTerms.js';
 
 export const meRouter = Router();
 
@@ -24,6 +25,7 @@ const USER_PUBLIC_SELECT = {
   notify_sound: true,
   notify_vibrate: true,
   notify_break_focus: true,
+  accepted_terms_version: true,
   created_at: true,
 } satisfies Prisma.UserSelect;
 
@@ -36,6 +38,7 @@ type PublicUser = {
   notify_sound: boolean;
   notify_vibrate: boolean;
   notify_break_focus: boolean;
+  accepted_terms_version: number | null;
   created_at: Date;
 };
 
@@ -50,6 +53,7 @@ function serializeUser(user: PublicUser) {
     notify_sound: user.notify_sound,
     notify_vibrate: user.notify_vibrate,
     notify_break_focus: user.notify_break_focus,
+    accepted_terms_version: user.accepted_terms_version,
     created_at: user.created_at,
   };
 }
@@ -110,6 +114,24 @@ meRouter.delete('/', requireJwt, async (req, res) => {
       if (!remaining) return res.json({ status: 'deleted' });
     }
     console.error('[DELETE /me] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+/** Records acceptance of the current privacy policy and the 18+ requirement (AcceptTermsScreen). */
+meRouter.post('/accept-terms', requireJwt, async (req, res) => {
+  const parsed = acceptTermsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  try {
+    const userId = (req as any).userId as string;
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { accepted_terms_version: parsed.data.version, accepted_terms_at: new Date() },
+      select: USER_PUBLIC_SELECT,
+    });
+    res.json(serializeUser(user));
+  } catch (error) {
+    console.error('[POST /me/accept-terms] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });
