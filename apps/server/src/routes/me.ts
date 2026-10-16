@@ -7,6 +7,8 @@ import { scheduler } from '../services/scheduler.js';
 import { dailyVideo } from '../services/dailyVideo.js';
 import { broadcastCallPresence, sendPresenceToToken } from '../services/callPresence.js';
 import { imageUploadSchema, decodeImageUpload } from '../util/imageUpload.js';
+import { deleteAccount } from '../services/accountDeletion.js';
+import { acceptTermsSchema } from '../util/acceptTerms.js';
 
 export const meRouter = Router();
 
@@ -23,6 +25,7 @@ const USER_PUBLIC_SELECT = {
   notify_sound: true,
   notify_vibrate: true,
   notify_break_focus: true,
+  accepted_terms_version: true,
   created_at: true,
 } satisfies Prisma.UserSelect;
 
@@ -35,6 +38,7 @@ type PublicUser = {
   notify_sound: boolean;
   notify_vibrate: boolean;
   notify_break_focus: boolean;
+  accepted_terms_version: number | null;
   created_at: Date;
 };
 
@@ -49,6 +53,7 @@ function serializeUser(user: PublicUser) {
     notify_sound: user.notify_sound,
     notify_vibrate: user.notify_vibrate,
     notify_break_focus: user.notify_break_focus,
+    accepted_terms_version: user.accepted_terms_version,
     created_at: user.created_at,
   };
 }
@@ -84,6 +89,54 @@ meRouter.patch('/', requireJwt, async (req, res) => {
     res.json(serializeUser(user));
   } catch (error) {
     console.error('[PATCH /me] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+/**
+ * Permanently delete the caller's account. Returns a JSON body, not 204: ApiClient.request
+ * parses every successful response as JSON (packages/shared/src/apiClient.ts:89).
+ */
+meRouter.delete('/', requireJwt, async (req, res) => {
+  const userId = (req as any).userId as string;
+  try {
+    const { transferredGroups, deletedGroups } = await deleteAccount(userId);
+    console.log(`[DELETE /me] Deleted user ${userId}: transferred ${transferredGroups} group(s), deleted ${deletedGroups} group(s)`);
+    res.json({ status: 'deleted' });
+  } catch (error) {
+    // P2025 means a row vanished mid-transaction. If the user is gone, a concurrent
+    // DELETE /me won and this request succeeded too. If the user remains (a successor
+    // left mid-transaction), everything rolled back and the client should retry.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      const remaining = await prisma.user
+        .findUnique({ where: { id: userId }, select: { id: true } })
+        .catch(() => ({ id: userId }));
+      if (!remaining) return res.json({ status: 'deleted' });
+    }
+    console.error('[DELETE /me] Error:', error);
+    res.status(500).json({ error: 'internal_server_error' });
+  }
+});
+
+/** Records acceptance of the current privacy policy and the 18+ requirement (AcceptTermsScreen). */
+meRouter.post('/accept-terms', requireJwt, async (req, res) => {
+  const parsed = acceptTermsSchema.safeParse(req.body);
+  if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
+  try {
+    const userId = (req as any).userId as string;
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: { accepted_terms_version: parsed.data.version, accepted_terms_at: new Date() },
+      select: USER_PUBLIC_SELECT,
+    });
+    res.json(serializeUser(user));
+  } catch (error) {
+    // P2025: the account was deleted (e.g. from another device) between requireJwt's
+    // check and this update — see DELETE /me's identical race above.
+    if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2025') {
+      return res.status(404).json({ error: 'not_found' });
+    }
+    console.error('[POST /me/accept-terms] Error:', error);
     res.status(500).json({ error: 'internal_server_error' });
   }
 });

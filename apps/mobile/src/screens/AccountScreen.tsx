@@ -11,6 +11,7 @@ import {
   Modal,
   Pressable,
   useWindowDimensions,
+  Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -25,6 +26,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTutorial } from '../context/TutorialContext';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { layout, radius, spacing, type AppTheme } from '../theme';
+import { PRIVACY_POLICY_URL } from '../legal';
 import { useTheme, type ThemeMode } from '../context/ThemeContext';
 import { UserAvatar } from '../components/UserAvatar';
 import { Display } from '../components/Display';
@@ -33,6 +35,7 @@ import { Icon } from '../components/Icon';
 import { SettingRow } from '../components/SettingRow';
 import { syncCallChannel } from '../utils/notificationChannels';
 import { withAlpha } from '../utils/color';
+import { promptDeleteAccount } from '../utils/deleteAccount';
 
 // Vertical rhythm, from the mockup's absolute offsets: the avatar row sits 22pt under
 // the title (116 − (66 + 28)), and each section header 38pt under whatever precedes it.
@@ -57,7 +60,7 @@ interface Anchor { x: number; y: number; width: number; height: number }
 
 export default function AccountScreen() {
   const navigation = useNavigation<AccountNavigationProp>();
-  const { onLogout } = useAuth();
+  const { onLogout, onAccountDeleted } = useAuth();
   const { showTutorial } = useTutorial();
   const { theme: { colors, shadow }, mode, setMode } = useTheme();
   const insets = useSafeAreaInsets();
@@ -360,6 +363,23 @@ export default function AccountScreen() {
         <Text accessibilityRole="header" style={styles.sectionHeader}>About</Text>
         <View style={styles.group}>
           <SettingRow label="How it works" variant={{ type: 'chevron' }} onPress={showTutorial} />
+          <SettingRow
+            label="Privacy Policy"
+            variant={{ type: 'chevron' }}
+            onPress={() => { void Linking.openURL(PRIVACY_POLICY_URL); }}
+          />
+        </View>
+
+        {/* Mirrors the owner's Danger zone in Group Settings (GroupSettingsScreen.tsx:354-368). */}
+        <View style={styles.dangerBox}>
+          <Text style={styles.dangerHeading}>Danger zone</Text>
+          <SettingRow
+            label="Delete account"
+            danger
+            last
+            onPress={() => promptDeleteAccount(onAccountDeleted)}
+            variant={{ type: 'control', control: <Icon name="trash" size={20} color={colors.danger} /> }}
+          />
         </View>
 
         <Text style={styles.version}>Orbit 0.1.0</Text>
@@ -524,6 +544,19 @@ function makeStyles(colors: Colors, shadow: AppTheme['shadow']) {
     group: {
       borderTopWidth: StyleSheet.hairlineWidth,
       borderTopColor: colors.hairline,
+    },
+    dangerBox: {
+      marginTop: SECTION_GAP,
+      borderWidth: 1,
+      borderColor: colors.dangerBorder,
+      borderRadius: radius.xl,
+      paddingHorizontal: 14,
+    },
+    dangerHeading: {
+      fontFamily: 'Geist_600SemiBold',
+      fontSize: 13,
+      color: colors.danger,
+      paddingTop: 14,
     },
     version: {
       marginTop: SECTION_GAP,

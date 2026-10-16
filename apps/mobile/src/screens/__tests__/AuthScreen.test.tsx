@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { act } from 'react';
-import { Alert, Image, ScrollView, StyleSheet } from 'react-native';
+import { Alert, Image, Linking, ScrollView, StyleSheet } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as SecureStore from 'expo-secure-store';
 import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
@@ -11,6 +11,7 @@ import { OrbitLogo } from '../../components/OrbitLogo';
 import { setAccessToken } from '../../utils/apiClient';
 import { allText, textOf } from '../../testUtils/tree';
 import { darkTheme, lightTheme, onPhoto, scrim } from '../../theme';
+import { PRIVACY_POLICY_URL, TERMS_VERSION } from '../../legal';
 
 const mockRequest = jest.fn();
 const mockOnLogin = jest.fn();
@@ -22,6 +23,7 @@ jest.mock('@orbit/shared', () => ({
 }));
 jest.mock('../../config', () => ({ API_URL: 'http://test' }));
 jest.mock('../../utils/apiClient', () => ({ setAccessToken: jest.fn(async () => {}) }));
+jest.mock('../../legal', () => ({ PRIVACY_POLICY_URL: 'https://callyourfriendsonorbit.com/privacy', TERMS_VERSION: 1 }));
 jest.mock('expo-secure-store', () => ({ setItemAsync: jest.fn(async () => {}) }));
 jest.mock('expo-status-bar', () => ({ StatusBar: () => null }));
 jest.mock('../../context/AuthContext', () => ({ useAuth: () => ({ onLogin: mockOnLogin }) }));
@@ -72,6 +74,18 @@ const button = (tree: ReactTestRenderer, label: string) =>
 const tap = (tree: ReactTestRenderer, label: string) =>
   act(async () => { await button(tree, label).props.onPress(); });
 const has = (tree: ReactTestRenderer, text: string) => allText(tree).includes(text);
+const checkbox = (tree: ReactTestRenderer, label: string) =>
+  tree.root.findAll(
+    (n) => n.props.accessibilityRole === 'checkbox' && n.props.accessibilityLabel === label && typeof n.props.onPress === 'function',
+    { deep: false },
+  )[0];
+const check = (tree: ReactTestRenderer, label: string) =>
+  act(() => { checkbox(tree, label).props.onPress(); });
+const link = (tree: ReactTestRenderer, label: string) =>
+  tree.root.findAll(
+    (n) => n.props.accessibilityRole === 'link' && typeof n.props.onPress === 'function' && textOf(n) === label,
+    { deep: false },
+  )[0];
 
 /** Sends a code for a US number, so the tree is on the verify step. */
 async function reachVerify(tree: ReactTestRenderer) {
@@ -277,17 +291,19 @@ describe('AuthScreen username step', () => {
     await verifyWith(tree, NEW_USER);
   }
 
-  it('completes signup with the signup token and a trimmed username, then signs in', async () => {
+  it('completes signup with the signup token, a trimmed username, and accept_terms, then signs in', async () => {
     const tree = render();
     await reachUsername(tree);
     mockRequest.mockResolvedValueOnce({ access_token: 'new-access', refresh_token: 'new-refresh' });
     typeInto(tree, 'Username', '  sam  ');
+    check(tree, "I'm 18 or older");
     await tap(tree, 'Continue');
 
     expect(mockRequest).toHaveBeenLastCalledWith('POST', '/auth/complete-signup', {
       signup_token: 'signup-token',
       username: 'sam',
       time_zone: expect.any(String),
+      accept_terms: { version: TERMS_VERSION, age_confirmed: true },
     });
     expect(setAccessToken).toHaveBeenCalledWith('new-access');
     expect(SecureStore.setItemAsync).toHaveBeenCalledWith('refresh_token', 'new-refresh');
@@ -299,9 +315,22 @@ describe('AuthScreen username step', () => {
     await reachUsername(tree);
     const callsBefore = mockRequest.mock.calls.length;
     typeInto(tree, 'Username', '   ');
+    check(tree, "I'm 18 or older");
     await tap(tree, 'Continue');
 
     expect(Alert.alert).toHaveBeenLastCalledWith('Error', 'Please enter a username.');
+    expect(mockRequest.mock.calls.length).toBe(callsBefore);
+    expect(mockOnLogin).not.toHaveBeenCalled();
+  });
+
+  it('refuses an unchecked age box without asking the server', async () => {
+    const tree = render();
+    await reachUsername(tree);
+    const callsBefore = mockRequest.mock.calls.length;
+    typeInto(tree, 'Username', 'sam');
+    await tap(tree, 'Continue');
+
+    expect(Alert.alert).toHaveBeenLastCalledWith('Confirm your age', 'You must be 18 or older to use Orbit.');
     expect(mockRequest.mock.calls.length).toBe(callsBefore);
     expect(mockOnLogin).not.toHaveBeenCalled();
   });
@@ -315,20 +344,23 @@ describe('AuthScreen footer and colour', () => {
       .findAll((n) => (n.type as unknown) === 'Text' && StyleSheet.flatten(n.props.style)?.textDecorationLine === 'underline')
       .map((n: ReactTestInstance) => textOf(n));
 
-  it('shows the consent line, with both links underlined, on every step', async () => {
+  it('shows the consent line, with exactly one underlined span, on every step, and opens the policy when tapped', async () => {
     const tree = render();
     const consentShown = () => allText(tree).some((t) => t.startsWith('By continuing you agree to the'));
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined as never);
 
     expect(consentShown()).toBe(true);
-    expect(underlined(tree)).toEqual(['Terms of Service', 'Privacy Policy']);
+    expect(underlined(tree)).toEqual(['Privacy Policy']);
+    act(() => { link(tree, 'Privacy Policy').props.onPress(); });
+    expect(openURL).toHaveBeenLastCalledWith(PRIVACY_POLICY_URL);
 
     await reachVerify(tree);
     expect(consentShown()).toBe(true);
-    expect(underlined(tree)).toEqual(['Terms of Service', 'Privacy Policy']);
+    expect(underlined(tree)).toEqual(['Privacy Policy']);
 
     await verifyWith(tree, NEW_USER);
     expect(consentShown()).toBe(true);
-    expect(underlined(tree)).toEqual(['Terms of Service', 'Privacy Policy']);
+    expect(underlined(tree)).toEqual(['Privacy Policy']);
   });
 
   it('fills the one primary action with marigold and letters it in espresso', () => {

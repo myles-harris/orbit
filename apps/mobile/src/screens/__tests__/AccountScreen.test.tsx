@@ -1,5 +1,5 @@
 import { act } from 'react';
-import { ActivityIndicator, Alert, Dimensions, Modal, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, Linking, Modal, ScrollView, StyleSheet, View } from 'react-native';
 import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator } from 'expo-image-manipulator';
@@ -8,17 +8,23 @@ import { useTheme } from '../../context/ThemeContext';
 import { Icon } from '../../components/Icon';
 import { SettingRow } from '../../components/SettingRow';
 import { createAuthenticatedApiClient } from '../../utils/apiClient';
+import { promptDeleteAccount } from '../../utils/deleteAccount';
 import { allText, textOf } from '../../testUtils/tree';
 import { darkTheme, lightTheme } from '../../theme';
+import { PRIVACY_POLICY_URL } from '../../legal';
+
+jest.mock('../../legal', () => ({ PRIVACY_POLICY_URL: 'https://callyourfriendsonorbit.com/privacy' }));
 
 const mockSetMode = jest.fn();
 const mockLogout = jest.fn();
+const mockAccountDeleted = jest.fn();
 const mockShowTutorial = jest.fn();
 const mockGoBack = jest.fn();
 
 jest.mock('@react-navigation/native', () => ({ useNavigation: () => ({ goBack: mockGoBack }) }));
 jest.mock('../../context/ThemeContext', () => ({ useTheme: jest.fn() }));
-jest.mock('../../context/AuthContext', () => ({ useAuth: () => ({ onLogout: mockLogout }) }));
+jest.mock('../../context/AuthContext', () => ({ useAuth: () => ({ onLogout: mockLogout, onAccountDeleted: mockAccountDeleted }) }));
+jest.mock('../../utils/deleteAccount', () => ({ promptDeleteAccount: jest.fn() }));
 jest.mock('../../context/TutorialContext', () => ({ useTutorial: () => ({ showTutorial: mockShowTutorial }) }));
 jest.mock('../../utils/apiClient', () => ({
   createAuthenticatedApiClient: jest.fn(),
@@ -151,6 +157,13 @@ describe('AccountScreen content', () => {
     expect(mockShowTutorial).toHaveBeenCalledTimes(1);
   });
 
+  it('opens the Privacy Policy row in the browser', async () => {
+    const { tree } = await renderAccount();
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined as never);
+    act(() => { row(tree, 'Privacy Policy').props.onPress(); });
+    expect(openURL).toHaveBeenCalledWith(PRIVACY_POLICY_URL);
+  });
+
   it('asks before logging out, then logs out', async () => {
     const { tree } = await renderAccount();
     press(topMost(tree, (n) => n.props.accessibilityRole === 'button' && textOf(n) === 'Log out')[0]);
@@ -159,6 +172,24 @@ describe('AccountScreen content', () => {
     expect(mockLogout).not.toHaveBeenCalled();
     act(() => { alertButtons().find((b) => b.text === 'Log Out')!.onPress!(); });
     expect(mockLogout).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ─── Danger zone ──────────────────────────────────────────────────────────────
+
+describe('AccountScreen danger zone', () => {
+  it('draws a Danger zone heading and a Delete account row, below How it works', async () => {
+    const { tree } = await renderAccount();
+    const text = allText(tree);
+    expect(text).toEqual(expect.arrayContaining(['Danger zone', 'Delete account']));
+    expect(text.indexOf('Danger zone')).toBeGreaterThan(text.indexOf('How it works'));
+    expect(row(tree, 'Delete account').props.danger).toBe(true);
+  });
+
+  it('tapping the row calls promptDeleteAccount with the context\'s onAccountDeleted', async () => {
+    const { tree } = await renderAccount();
+    act(() => { row(tree, 'Delete account').props.onPress(); });
+    expect(promptDeleteAccount).toHaveBeenCalledWith(mockAccountDeleted);
   });
 });
 

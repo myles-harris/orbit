@@ -20,6 +20,8 @@ model User {
   notify_sound       Boolean   @default(true)
   notify_vibrate     Boolean   @default(true)
   notify_break_focus Boolean   @default(false)
+  accepted_terms_version Int?
+  accepted_terms_at      DateTime? @db.Timestamptz(6)
   created_at         DateTime  @default(now()) @db.Timestamptz(6)
 
   // Relations

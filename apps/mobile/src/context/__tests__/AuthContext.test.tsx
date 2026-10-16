@@ -1,10 +1,14 @@
 import { act } from 'react';
-import { Text } from 'react-native';
+import { Alert, Text } from 'react-native';
 import renderer, { type ReactTestRenderer } from 'react-test-renderer';
+import * as SecureStore from 'expo-secure-store';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { ApiClient } from '@orbit/shared';
 import { AuthProvider, useAuth } from '../AuthContext';
 import { HOME_CACHE_KEY } from '../../utils/homeCache';
 import { clearCachedCallPrefs } from '../../utils/notificationChannels';
+import { setSessionExpiredHandler, createAuthenticatedApiClient } from '../../utils/apiClient';
+import { CallLiveActivity } from '../../../modules/call-live-activity';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
   require('@react-native-async-storage/async-storage/jest/async-storage-mock'));
@@ -20,6 +24,10 @@ jest.mock('../../utils/apiClient', () => ({
 }));
 jest.mock('../../utils/notificationChannels', () => ({ clearCachedCallPrefs: jest.fn(async () => {}) }));
 jest.mock('@orbit/shared', () => ({ ApiClient: jest.fn() }));
+jest.mock('../../../modules/call-live-activity', () => ({
+  CallLiveActivity: { endAllActivitiesAsync: jest.fn(async () => {}) },
+}));
+jest.mock('../../legal', () => ({ TERMS_VERSION: 1 }));
 
 let auth!: ReturnType<typeof useAuth>;
 function Probe() {
@@ -37,6 +45,15 @@ async function mount() {
 beforeEach(async () => {
   await AsyncStorage.clear();
   (clearCachedCallPrefs as jest.Mock).mockClear();
+  (ApiClient as unknown as jest.Mock).mockClear();
+  (CallLiveActivity!.endAllActivitiesAsync as jest.Mock).mockClear();
+  (setSessionExpiredHandler as jest.Mock).mockClear();
+  // Default: already on the current policy version, so onLogin() in tests that have
+  // nothing to do with the terms gate never flips needsTermsAcceptance.
+  (createAuthenticatedApiClient as jest.Mock).mockReset().mockResolvedValue({
+    get: jest.fn().mockResolvedValue({ accepted_terms_version: 1 }),
+  });
+  jest.spyOn(Alert, 'alert').mockImplementation(() => {});
 });
 
 afterEach(() => {
@@ -87,5 +104,97 @@ describe('logout and the saved Home copy', () => {
     releaseRemoval();
     await act(async () => { await loggingOut; });
     expect(shown()).toBe('out');
+  });
+});
+
+// The server has already deleted the account by the time this runs, so it must never
+// make a network call of its own — every request against the deleted account would 401.
+describe('onAccountDeleted', () => {
+  const seedHome = () => AsyncStorage.setItem(HOME_CACHE_KEY, JSON.stringify({ groups: [], invitations: [], fetchedAt: 1 }));
+
+  it('signs out without constructing an ApiClient, clearing tokens, call prefs, and the Home cache', async () => {
+    await seedHome();
+    await mount();
+
+    await act(async () => { await auth.onAccountDeleted(); });
+
+    expect(ApiClient).not.toHaveBeenCalled();
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('access_token');
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('refresh_token');
+    expect(SecureStore.deleteItemAsync).toHaveBeenCalledWith('push_token');
+    expect(clearCachedCallPrefs).toHaveBeenCalled();
+    expect(await AsyncStorage.getItem(HOME_CACHE_KEY)).toBeNull();
+  });
+
+  it('ends every iOS Live Activity once', async () => {
+    await mount();
+
+    await act(async () => { await auth.onAccountDeleted(); });
+
+    expect(CallLiveActivity!.endAllActivitiesAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it('silences Session Expired after deletion; onLogin re-arms it', async () => {
+    await mount();
+    const handler = () => (setSessionExpiredHandler as jest.Mock).mock.calls[0][0] as () => void;
+
+    await act(async () => { await auth.onAccountDeleted(); });
+    act(() => { handler()(); });
+    expect(Alert.alert).not.toHaveBeenCalled();
+
+    await act(async () => { auth.onLogin(); });
+    act(() => { handler()(); });
+    expect(Alert.alert).toHaveBeenCalledWith('Session Expired', expect.any(String), expect.any(Array));
+  });
+});
+
+// AuthContext checks /me whenever a session starts, so AcceptTermsScreen (via
+// AppNavigator) can gate anyone below the current policy version without blocking
+// an outage from reaching their calls.
+describe('needsTermsAcceptance', () => {
+  function mockMe(user: Record<string, unknown>) {
+    (createAuthenticatedApiClient as jest.Mock).mockResolvedValue({
+      get: jest.fn().mockResolvedValue(user),
+    });
+  }
+
+  it('sets it when accepted_terms_version is null', async () => {
+    mockMe({ accepted_terms_version: null });
+    await mount();
+
+    await act(async () => { auth.onLogin(); });
+
+    expect(auth.needsTermsAcceptance).toBe(true);
+  });
+
+  it('leaves it false when accepted_terms_version is already current', async () => {
+    mockMe({ accepted_terms_version: 1 });
+    await mount();
+
+    await act(async () => { auth.onLogin(); });
+
+    expect(auth.needsTermsAcceptance).toBe(false);
+  });
+
+  it('leaves it false when /me is rejected — an outage never locks anyone out', async () => {
+    (createAuthenticatedApiClient as jest.Mock).mockResolvedValue({
+      get: jest.fn().mockRejectedValue(new Error('offline')),
+    });
+    await mount();
+
+    await act(async () => { auth.onLogin(); });
+
+    expect(auth.needsTermsAcceptance).toBe(false);
+  });
+
+  it('onTermsAccepted clears it', async () => {
+    mockMe({ accepted_terms_version: null });
+    await mount();
+    await act(async () => { auth.onLogin(); });
+    expect(auth.needsTermsAcceptance).toBe(true);
+
+    act(() => { auth.onTermsAccepted(); });
+
+    expect(auth.needsTermsAcceptance).toBe(false);
   });
 });

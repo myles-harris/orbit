@@ -5,6 +5,7 @@ import { useTheme } from '../context/ThemeContext';
 
 // Screens
 import AuthScreen from '../screens/AuthScreen';
+import AcceptTermsScreen from '../screens/AcceptTermsScreen';
 import HomeScreen from '../screens/HomeScreen';
 import GroupDetailScreen from '../screens/GroupDetailScreen';
 import CreateGroupScreen from '../screens/CreateGroupScreen';
@@ -16,6 +17,7 @@ import JoinInviteScreen from '../screens/JoinInviteScreen';
 
 export type RootStackParamList = {
   Auth: undefined;
+  AcceptTerms: undefined;
   Home: undefined;
   Account: undefined;
   GroupDetail: { groupId: string };
@@ -40,7 +42,13 @@ const linking = {
   },
 };
 
-export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boolean }) {
+export default function AppNavigator({
+  isAuthenticated,
+  needsTermsAcceptance,
+}: {
+  isAuthenticated: boolean;
+  needsTermsAcceptance: boolean;
+}) {
   const { theme: { colors, typography } } = useTheme();
 
   const sharedHeaderOptions = {
@@ -55,10 +63,12 @@ export default function AppNavigator({ isAuthenticated }: { isAuthenticated: boo
     <NavigationContainer ref={navigationRef} linking={linking}>
       <Stack.Navigator
         screenOptions={{ headerShown: false }}
-        initialRouteName={isAuthenticated ? 'Home' : 'Auth'}
+        initialRouteName={!isAuthenticated ? 'Auth' : needsTermsAcceptance ? 'AcceptTerms' : 'Home'}
       >
         {!isAuthenticated ? (
           <Stack.Screen name="Auth" component={AuthScreen} />
+        ) : needsTermsAcceptance ? (
+          <Stack.Screen name="AcceptTerms" component={AcceptTermsScreen} />
         ) : (
           <>
             <Stack.Screen name="Home" component={HomeScreen} />
