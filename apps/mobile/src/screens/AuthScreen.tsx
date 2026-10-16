@@ -10,6 +10,7 @@ import {
   Platform,
   ScrollView,
   Image,
+  Linking,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -23,6 +24,8 @@ import { layout, onPhoto, radius, scrim } from '../theme';
 import { useTheme } from '../context/ThemeContext';
 import { OrbitLogo } from '../components/OrbitLogo';
 import { LightStatusBar } from '../components/LightStatusBar';
+import { Icon } from '../components/Icon';
+import { PRIVACY_POLICY_URL, TERMS_VERSION } from '../legal';
 
 const signInSky = require('../../assets/signin-sky.jpg');
 
@@ -58,6 +61,7 @@ export default function AuthScreen() {
   const [username, setUsername] = useState('');
   const [signupToken, setSignupToken] = useState('');
   const [step, setStep] = useState<Step>('phone');
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
 
   // Whatever was typed or pasted — "(404) 555-0117", a whole "+44 7911 123456" — as E.164.
   const phone = toE164(countryCode, number);
@@ -100,12 +104,17 @@ export default function AuthScreen() {
       Alert.alert('Error', 'Please enter a username.');
       return;
     }
+    if (!ageConfirmed) {
+      Alert.alert('Confirm your age', 'You must be 18 or older to use Orbit.');
+      return;
+    }
     try {
       const response = await client.request<{ access_token: string; refresh_token: string }>(
         'POST', '/auth/complete-signup', {
           signup_token: signupToken,
           username: username.trim(),
           time_zone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          accept_terms: { version: TERMS_VERSION, age_confirmed: true },
         }
       );
       await setAccessToken(response.access_token);
@@ -225,16 +234,33 @@ export default function AuthScreen() {
                     maxFontSizeMultiplier={1.3}
                   />
                 </View>
+                <TouchableOpacity
+                  onPress={() => setAgeConfirmed((v) => !v)}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: ageConfirmed }}
+                  accessibilityLabel="I'm 18 or older"
+                  hitSlop={8}
+                  style={styles.ageRow}
+                >
+                  <View style={[styles.checkBox, ageConfirmed && styles.checkBoxOn]}>
+                    {ageConfirmed && <Icon name="check" size={14} color={onPhoto.backdrop} />}
+                  </View>
+                  <Text style={styles.ageLabel}>I'm 18 or older</Text>
+                </TouchableOpacity>
               </>
             )}
           </View>
 
           <View style={styles.footer}>
-            {/* Not yet tappable: there is no Terms or Privacy page to open. */}
             <Text style={styles.consent}>
               By continuing you agree to the{' '}
-              <Text style={styles.consentLink}>Terms of Service</Text> and{' '}
-              <Text style={styles.consentLink}>Privacy Policy</Text>.
+              <Text
+                style={styles.consentLink}
+                onPress={() => { void Linking.openURL(PRIVACY_POLICY_URL); }}
+                accessibilityRole="link"
+              >
+                Privacy Policy
+              </Text>.
             </Text>
             <TouchableOpacity
               onPress={action.onPress}
@@ -312,6 +338,18 @@ const styles = StyleSheet.create({
     lineHeight: 21,
     color: onPhoto.sub,
   },
+  ageRow: { marginTop: 14, flexDirection: 'row', alignItems: 'center', gap: 10, minHeight: layout.touchMin },
+  checkBox: {
+    width: 22,
+    height: 22,
+    borderRadius: radius.sm,
+    borderWidth: 1.5,
+    borderColor: onPhoto.title,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkBoxOn: { backgroundColor: onPhoto.title },
+  ageLabel: { fontFamily: 'Gelasio_400Regular', fontSize: 14, lineHeight: 21, color: onPhoto.title },
   // `marginTop: 'auto'` pushes the footer to the bottom when the form is short; the
   // padding is its floor when the keyboard leaves no room to spare.
   footer: {

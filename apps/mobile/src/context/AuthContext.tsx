@@ -4,15 +4,18 @@ import * as SecureStore from 'expo-secure-store';
 import { setSessionExpiredHandler, clearAccessToken, API_URL, createAuthenticatedApiClient } from '../utils/apiClient';
 import { clearCachedCallPrefs } from '../utils/notificationChannels';
 import { clearHomeCache } from '../utils/homeCache';
-import { ApiClient } from '@orbit/shared';
+import { ApiClient, type UserDTO } from '@orbit/shared';
 import { CallLiveActivity } from '../../modules/call-live-activity';
+import { TERMS_VERSION } from '../legal';
 
 interface AuthContextType {
   isAuthenticated: boolean;
   isLoading: boolean;
+  needsTermsAcceptance: boolean;
   onLogin: () => void;
   onLogout: () => void;
   onAccountDeleted: () => void;
+  onTermsAccepted: () => void;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -20,11 +23,32 @@ const AuthContext = createContext<AuthContextType | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [needsTermsAcceptance, setNeedsTermsAcceptance] = useState(false);
   const sessionExpiredShown = useRef(false);
 
   useEffect(() => {
     checkAuth();
   }, []);
+
+  // Accounts created before the 18+ requirement, or before the current policy version,
+  // accept once. Checked whenever a session starts. Fails open: an unreachable server
+  // must not lock anyone out of their calls.
+  useEffect(() => {
+    if (!isAuthenticated) {
+      setNeedsTermsAcceptance(false);
+      return;
+    }
+    let cancelled = false;
+    createAuthenticatedApiClient()
+      .then((client) => client.get<UserDTO>('/me'))
+      .then((user) => {
+        if (!cancelled) setNeedsTermsAcceptance((user.accepted_terms_version ?? 0) < TERMS_VERSION);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isAuthenticated]);
+
+  const onTermsAccepted = () => setNeedsTermsAcceptance(false);
 
   const checkAuth = async () => {
     try {
@@ -110,7 +134,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <AuthContext.Provider value={{ isAuthenticated, isLoading, onLogin, onLogout, onAccountDeleted }}>
+    <AuthContext.Provider
+      value={{ isAuthenticated, isLoading, needsTermsAcceptance, onLogin, onLogout, onAccountDeleted, onTermsAccepted }}
+    >
       {children}
     </AuthContext.Provider>
   );

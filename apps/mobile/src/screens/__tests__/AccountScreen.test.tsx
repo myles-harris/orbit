@@ -1,5 +1,5 @@
 import { act } from 'react';
-import { ActivityIndicator, Alert, Dimensions, Modal, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Alert, Dimensions, Linking, Modal, ScrollView, StyleSheet, View } from 'react-native';
 import renderer, { type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import * as ImagePicker from 'expo-image-picker';
 import { ImageManipulator } from 'expo-image-manipulator';
@@ -11,6 +11,9 @@ import { createAuthenticatedApiClient } from '../../utils/apiClient';
 import { promptDeleteAccount } from '../../utils/deleteAccount';
 import { allText, textOf } from '../../testUtils/tree';
 import { darkTheme, lightTheme } from '../../theme';
+import { PRIVACY_POLICY_URL } from '../../legal';
+
+jest.mock('../../legal', () => ({ PRIVACY_POLICY_URL: 'https://callyourfriendsonorbit.com/privacy' }));
 
 const mockSetMode = jest.fn();
 const mockLogout = jest.fn();
@@ -152,6 +155,13 @@ describe('AccountScreen content', () => {
     const { tree } = await renderAccount();
     act(() => { row(tree, 'How it works').props.onPress(); });
     expect(mockShowTutorial).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the Privacy Policy row in the browser', async () => {
+    const { tree } = await renderAccount();
+    const openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined as never);
+    act(() => { row(tree, 'Privacy Policy').props.onPress(); });
+    expect(openURL).toHaveBeenCalledWith(PRIVACY_POLICY_URL);
   });
 
   it('asks before logging out, then logs out', async () => {

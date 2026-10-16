@@ -11,6 +11,7 @@ import {
   Modal,
   Pressable,
   useWindowDimensions,
+  Linking,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useNavigation } from '@react-navigation/native';
@@ -25,6 +26,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTutorial } from '../context/TutorialContext';
 import { createAuthenticatedApiClient } from '../utils/apiClient';
 import { layout, radius, spacing, type AppTheme } from '../theme';
+import { PRIVACY_POLICY_URL } from '../legal';
 import { useTheme, type ThemeMode } from '../context/ThemeContext';
 import { UserAvatar } from '../components/UserAvatar';
 import { Display } from '../components/Display';
@@ -361,6 +363,11 @@ export default function AccountScreen() {
         <Text accessibilityRole="header" style={styles.sectionHeader}>About</Text>
         <View style={styles.group}>
           <SettingRow label="How it works" variant={{ type: 'chevron' }} onPress={showTutorial} />
+          <SettingRow
+            label="Privacy Policy"
+            variant={{ type: 'chevron' }}
+            onPress={() => { void Linking.openURL(PRIVACY_POLICY_URL); }}
+          />
         </View>
 
         {/* Mirrors the owner's Danger zone in Group Settings (GroupSettingsScreen.tsx:354-368). */}
