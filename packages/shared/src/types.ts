@@ -9,6 +9,7 @@ export type UserDTO = {
   created_at: string;
   has_avatar: boolean;
   avatar_updated_at: string | null;
+  accepted_terms_version: number | null;
 };
 
 export type GroupMember = { user_id: string; role: 'owner' | 'member' };

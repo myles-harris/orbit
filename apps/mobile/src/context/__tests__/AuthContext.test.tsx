@@ -7,7 +7,7 @@ import { ApiClient } from '@orbit/shared';
 import { AuthProvider, useAuth } from '../AuthContext';
 import { HOME_CACHE_KEY } from '../../utils/homeCache';
 import { clearCachedCallPrefs } from '../../utils/notificationChannels';
-import { setSessionExpiredHandler } from '../../utils/apiClient';
+import { setSessionExpiredHandler, createAuthenticatedApiClient } from '../../utils/apiClient';
 import { CallLiveActivity } from '../../../modules/call-live-activity';
 
 jest.mock('@react-native-async-storage/async-storage', () =>
@@ -27,6 +27,7 @@ jest.mock('@orbit/shared', () => ({ ApiClient: jest.fn() }));
 jest.mock('../../../modules/call-live-activity', () => ({
   CallLiveActivity: { endAllActivitiesAsync: jest.fn(async () => {}) },
 }));
+jest.mock('../../legal', () => ({ TERMS_VERSION: 1 }));
 
 let auth!: ReturnType<typeof useAuth>;
 function Probe() {
@@ -47,6 +48,11 @@ beforeEach(async () => {
   (ApiClient as unknown as jest.Mock).mockClear();
   (CallLiveActivity!.endAllActivitiesAsync as jest.Mock).mockClear();
   (setSessionExpiredHandler as jest.Mock).mockClear();
+  // Default: already on the current policy version, so onLogin() in tests that have
+  // nothing to do with the terms gate never flips needsTermsAcceptance.
+  (createAuthenticatedApiClient as jest.Mock).mockReset().mockResolvedValue({
+    get: jest.fn().mockResolvedValue({ accepted_terms_version: 1 }),
+  });
   jest.spyOn(Alert, 'alert').mockImplementation(() => {});
 });
 
@@ -136,8 +142,59 @@ describe('onAccountDeleted', () => {
     act(() => { handler()(); });
     expect(Alert.alert).not.toHaveBeenCalled();
 
-    act(() => { auth.onLogin(); });
+    await act(async () => { auth.onLogin(); });
     act(() => { handler()(); });
     expect(Alert.alert).toHaveBeenCalledWith('Session Expired', expect.any(String), expect.any(Array));
+  });
+});
+
+// AuthContext checks /me whenever a session starts, so AcceptTermsScreen (via
+// AppNavigator) can gate anyone below the current policy version without blocking
+// an outage from reaching their calls.
+describe('needsTermsAcceptance', () => {
+  function mockMe(user: Record<string, unknown>) {
+    (createAuthenticatedApiClient as jest.Mock).mockResolvedValue({
+      get: jest.fn().mockResolvedValue(user),
+    });
+  }
+
+  it('sets it when accepted_terms_version is null', async () => {
+    mockMe({ accepted_terms_version: null });
+    await mount();
+
+    await act(async () => { auth.onLogin(); });
+
+    expect(auth.needsTermsAcceptance).toBe(true);
+  });
+
+  it('leaves it false when accepted_terms_version is already current', async () => {
+    mockMe({ accepted_terms_version: 1 });
+    await mount();
+
+    await act(async () => { auth.onLogin(); });
+
+    expect(auth.needsTermsAcceptance).toBe(false);
+  });
+
+  it('leaves it false when /me is rejected — an outage never locks anyone out', async () => {
+    (createAuthenticatedApiClient as jest.Mock).mockResolvedValue({
+      get: jest.fn().mockRejectedValue(new Error('offline')),
+    });
+    await mount();
+
+    await act(async () => { auth.onLogin(); });
+
+    expect(auth.needsTermsAcceptance).toBe(false);
+  });
+
+  it('onTermsAccepted clears it', async () => {
+    mockMe({ accepted_terms_version: null });
+    await mount();
+    await act(async () => { auth.onLogin(); });
+    expect(auth.needsTermsAcceptance).toBe(true);
+
+    act(() => { auth.onTermsAccepted(); });
+
+    expect(auth.needsTermsAcceptance).toBe(false);
   });
 });

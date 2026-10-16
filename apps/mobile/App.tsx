@@ -57,7 +57,7 @@ Notifications.setNotificationHandler({
 });
 
 function AppContent() {
-  const { isAuthenticated, isLoading } = useAuth();
+  const { isAuthenticated, isLoading, needsTermsAcceptance } = useAuth();
   const appState = useRef(AppState.currentState);
 
   // Track active call presence state
@@ -435,7 +435,7 @@ function AppContent() {
   return (
     <>
       <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
-      <AppNavigator isAuthenticated={isAuthenticated} />
+      <AppNavigator isAuthenticated={isAuthenticated} needsTermsAcceptance={needsTermsAcceptance} />
       <TutorialModal />
     </>
   );

@@ -5,6 +5,7 @@ import { issueAccessAndRefreshTokens } from '../services/jwt.js';
 import { twilioVerify } from '../services/twilioVerify.js';
 import { prisma } from '../db/prisma.js';
 import { JWT_SECRET, REFRESH_TOKEN_SECRET } from '../util/env.js';
+import { acceptTermsSchema } from '../util/acceptTerms.js';
 
 export const authRouter = Router();
 
@@ -54,11 +55,14 @@ const completeSignupSchema = z.object({
   signup_token: z.string(),
   username: z.string().min(1),
   time_zone: z.string().optional(),
+  // Optional so TestFlight builds from before the age requirement can still sign up.
+  // Those accounts store null and see AcceptTermsScreen once they update.
+  accept_terms: acceptTermsSchema.optional(),
 });
 authRouter.post('/complete-signup', async (req, res) => {
   const parsed = completeSignupSchema.safeParse(req.body);
   if (!parsed.success) return res.status(400).json({ error: 'invalid_request' });
-  const { signup_token, username, time_zone } = parsed.data;
+  const { signup_token, username, time_zone, accept_terms } = parsed.data;
 
   let phone: string;
   try {
@@ -78,7 +82,15 @@ authRouter.post('/complete-signup', async (req, res) => {
     const existing = await prisma.user.findUnique({ where: { username }, select: { id: true } });
     if (existing) return res.status(409).json({ error: 'username_taken' });
 
-    const user = await prisma.user.create({ data: { phone, username, time_zone: seedTimezone } });
+    const user = await prisma.user.create({
+      data: {
+        phone,
+        username,
+        time_zone: seedTimezone,
+        // Written together: user_terms_consistency.
+        ...(accept_terms && { accepted_terms_version: accept_terms.version, accepted_terms_at: new Date() }),
+      },
+    });
     const tokens = issueAccessAndRefreshTokens({ userId: user.id });
     res.json({ user: { id: user.id, phone: user.phone, username: user.username, time_zone: user.time_zone, created_at: user.created_at, has_avatar: false }, ...tokens });
   } catch (error) {
